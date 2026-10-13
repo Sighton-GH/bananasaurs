@@ -1,11 +1,45 @@
-/** Navigation remains data so access, labelling and future states stay consistent across layouts. */
-export type NavStatus = 'built' | 'stub';
-export type NavGroup = 'Start here' | 'Moderation' | 'Messages' | 'Assistant' | 'Advanced / System';
+/** Navigation remains data so access, labelling and icons stay consistent across layouts. */
+import {
+  IconAiSetup,
+  IconArchive,
+  IconAccounts,
+  IconAudit,
+  IconAutomod,
+  IconBackups,
+  IconBehaviours,
+  IconCases,
+  IconConfig,
+  IconConnectedApps,
+  IconConversations,
+  IconDoctor,
+  IconGuide,
+  IconHistory,
+  IconJobs,
+  IconLogging,
+  IconMembers,
+  IconMemory,
+  IconOverview,
+  IconPanels,
+  IconPermissions,
+  IconResources,
+  IconReview,
+  IconSafety,
+  IconSchedules,
+  IconSearchPage,
+  IconSkills,
+  IconTasks,
+  IconTuning,
+  type LucideIcon,
+} from '../ui/icons.js';
+
+export type NavGroup = 'Club' | 'Moderation' | 'Assistant' | 'Messages' | 'System';
 
 export interface NavEntry {
   readonly path: string;
   readonly label: string;
-  readonly status: NavStatus;
+  readonly icon: LucideIcon;
+  /** Extra words the command palette matches on (P4 Task 4). */
+  readonly keywords?: readonly string[];
   readonly group: NavGroup;
   readonly ownerOnly?: true;
   /** Also shown to an account holding `tasks.manage` in this guild (ADR 0130). */
@@ -13,64 +47,66 @@ export interface NavEntry {
 }
 
 /**
- * ADR 0051 D6's rail groups, in order. The desktop rail and the mobile jump
- * sheet both render this order; empty groups render nothing rather than a
- * bare heading.
+ * The P4 rail groups, in order (plan Decision 1: grouped by what people do).
+ * The desktop rail and the mobile jump sheet both render this order; empty
+ * groups render nothing rather than a bare heading.
  */
-export const GROUPS = [
-  'Start here',
-  'Moderation',
-  'Messages',
-  'Assistant',
-  'Advanced / System',
-] as const;
+export const GROUPS = ['Club', 'Moderation', 'Assistant', 'Messages', 'System'] as const;
 
 export const NAV: readonly NavEntry[] = [
-  { path: '/', label: 'Overview', status: 'built', group: 'Start here' },
+  { path: '/', label: 'Overview', icon: IconOverview, group: 'Club' },
   {
     path: '/tasks',
     label: 'Tasks',
-    status: 'built',
-    group: 'Start here',
+    icon: IconTasks,
+    group: 'Club',
     ownerOnly: true,
     taskAccess: true,
   },
-  { path: '/docs', label: 'Guide', status: 'built', group: 'Start here' },
-  { path: '/safety', label: 'Safety', status: 'built', group: 'Start here' },
-  { path: '/permissions', label: 'Permissions', status: 'built', group: 'Start here' },
-  { path: '/logging', label: 'Logging', status: 'built', group: 'Start here' },
-  { path: '/panels', label: 'Self-granted roles', status: 'built', group: 'Start here' },
-  { path: '/automod', label: 'Automod', status: 'built', group: 'Moderation' },
-  { path: '/review', label: 'Review', status: 'built', group: 'Moderation' },
-  { path: '/cases', label: 'Cases', status: 'built', group: 'Moderation' },
-  { path: '/members', label: 'Members', status: 'built', group: 'Moderation' },
-  { path: '/jobs', label: 'Background tasks', status: 'built', group: 'Advanced / System' },
-  { path: '/audit', label: 'Audit', status: 'built', group: 'Advanced / System' },
-  { path: '/archive', label: 'Archive', status: 'built', group: 'Messages' },
-  { path: '/search', label: 'Search', status: 'built', group: 'Messages' },
-  { path: '/doctor', label: 'Doctor', status: 'built', group: 'Advanced / System' },
-  { path: '/backups', label: 'Backups', status: 'built', group: 'Advanced / System' },
-  { path: '/config', label: 'Configuration', status: 'built', group: 'Advanced / System' },
-  { path: '/accounts', label: 'Accounts', status: 'built', group: 'Advanced / System' },
-  { path: '/mcp', label: 'Connected apps', status: 'built', group: 'Advanced / System' },
-  // Task 9: the Assistant group is ordered setup-first, with History moved
-  // in from Advanced / System (ADR 0051 D6, revisited).
-  { path: '/assistant/setup', label: 'AI setup', status: 'built', group: 'Assistant' },
+  { path: '/panels', label: 'Role panels', icon: IconPanels, group: 'Club' },
+  { path: '/assistant/schedules', label: 'Schedules', icon: IconSchedules, group: 'Club' },
+  { path: '/docs', label: 'Guide', icon: IconGuide, group: 'Club' },
+  { path: '/automod', label: 'Automod', icon: IconAutomod, group: 'Moderation' },
+  { path: '/review', label: 'Review queue', icon: IconReview, group: 'Moderation' },
+  { path: '/cases', label: 'Cases', icon: IconCases, group: 'Moderation' },
+  { path: '/members', label: 'Members', icon: IconMembers, group: 'Moderation' },
+  { path: '/logging', label: 'Logging', icon: IconLogging, group: 'Moderation' },
+  {
+    path: '/safety',
+    label: 'Safety',
+    icon: IconSafety,
+    keywords: ['kill switch', 'dry run', 'breaker'],
+    group: 'Moderation',
+  },
+  { path: '/permissions', label: 'Permissions', icon: IconPermissions, group: 'Moderation' },
+  { path: '/assistant/setup', label: 'AI setup', icon: IconAiSetup, group: 'Assistant' },
   {
     path: '/assistant/tuning',
     label: 'AI tuning',
-    status: 'built',
+    icon: IconTuning,
     group: 'Assistant',
     ownerOnly: true,
   },
-  { path: '/assistant', label: 'Behaviours', status: 'built', group: 'Assistant' },
-  // Task 19: the Conversations list and transcript are built.
-  { path: '/assistant/conversations', label: 'Conversations', status: 'built', group: 'Assistant' },
-  { path: '/assistant/history', label: 'History', status: 'built', group: 'Assistant' },
-  { path: '/assistant/skills', label: 'Skills', status: 'built', group: 'Assistant' },
-  { path: '/assistant/resources', label: 'Resources', status: 'built', group: 'Assistant' },
-  { path: '/assistant/schedules', label: 'Schedules', status: 'built', group: 'Assistant' },
-  { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
+  { path: '/assistant', label: 'Behaviours', icon: IconBehaviours, group: 'Assistant' },
+  {
+    path: '/assistant/conversations',
+    label: 'Conversations',
+    icon: IconConversations,
+    group: 'Assistant',
+  },
+  { path: '/assistant/history', label: 'History', icon: IconHistory, group: 'Assistant' },
+  { path: '/assistant/skills', label: 'Skills', icon: IconSkills, group: 'Assistant' },
+  { path: '/assistant/resources', label: 'Resources', icon: IconResources, group: 'Assistant' },
+  { path: '/memory', label: 'Memory', icon: IconMemory, group: 'Assistant' },
+  { path: '/archive', label: 'Archive', icon: IconArchive, group: 'Messages' },
+  { path: '/search', label: 'Search', icon: IconSearchPage, group: 'Messages' },
+  { path: '/jobs', label: 'Background tasks', icon: IconJobs, group: 'System' },
+  { path: '/audit', label: 'Audit log', icon: IconAudit, group: 'System' },
+  { path: '/doctor', label: 'Doctor', icon: IconDoctor, group: 'System' },
+  { path: '/backups', label: 'Backups', icon: IconBackups, group: 'System' },
+  { path: '/config', label: 'Configuration', icon: IconConfig, group: 'System' },
+  { path: '/accounts', label: 'Accounts', icon: IconAccounts, group: 'System' },
+  { path: '/mcp', label: 'Connected apps', icon: IconConnectedApps, group: 'System' },
 ];
 
 /**
@@ -84,3 +120,34 @@ export const visibleNav = (instanceOwner: boolean, canManageTasks = false): read
     : NAV.filter(
         (entry) => entry.ownerOnly !== true || (canManageTasks && entry.taskAccess === true),
       );
+
+/**
+ * The NAV path a location belongs to. Detail routes (a task, a rule, a
+ * trace) sit under their list page: the longest path matching on a slash
+ * boundary wins, so `/assistant/history/t1` resolves to History, not
+ * Behaviours. The root matches only itself, and a bare prefix
+ * (`/tasksXYZ`) or an unknown path matches nothing. The rail's current
+ * marker, the jump sheet's orientation and the tab title all share this
+ * rule (P4 Task 1).
+ */
+export const activeNavPath = (location: string): string | undefined => {
+  let best: string | undefined;
+  for (const entry of NAV) {
+    if (entry.path === '/') {
+      if (location === '/' && best === undefined) best = '/';
+      continue;
+    }
+    if (
+      (location === entry.path || location.startsWith(`${entry.path}/`)) &&
+      (best === undefined || entry.path.length > best.length)
+    )
+      best = entry.path;
+  }
+  return best;
+};
+
+/** The rail label for a path, for the browser tab (ADR 0142 decision 8). */
+export const pageTitle = (path: string): string | undefined => {
+  const active = activeNavPath(path);
+  return active === undefined ? undefined : NAV.find((n) => n.path === active)?.label;
+};

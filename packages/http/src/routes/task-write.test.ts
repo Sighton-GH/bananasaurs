@@ -473,6 +473,47 @@ describe('task loop closure writes', () => {
     expect(taskRepo.getTask(scope, taskId)?.version).toBe(1);
   });
 
+  it('stores task links on create, replaces or clears them on edit, and refuses non-https links', async () => {
+    const headers = await loginHeaders('owner');
+    const scope = db.scopes.forGuild(GUILD);
+    const teamId = taskRepo.createTeam(scope, teamPayload(), ACTOR, NOW);
+    const docs = { label: 'Docs', url: 'https://example.com' };
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers,
+      payload: taskPayload(teamId, { links: [{ label: 'Docs', url: 'http://example.com' }] }),
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(taskRepo.listTasks(scope)).toHaveLength(0);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers,
+      payload: taskPayload(teamId, { links: [docs] }),
+    });
+    expect(created.statusCode).toBe(201);
+    const taskId = created.json<{ taskId: string }>().taskId;
+    const detail = () => app.inject({ method: 'GET', url: `/api/tasks/${taskId}`, headers });
+    expect((await detail()).json<{ links: unknown }>().links).toEqual([docs]);
+    const keep = await app.inject({
+      method: 'PUT',
+      url: `/api/tasks/${taskId}`,
+      headers,
+      payload: editPayload(1, { title: 'Renamed' }),
+    });
+    expect(keep.statusCode).toBe(200);
+    expect((await detail()).json<{ links: unknown }>().links).toEqual([docs]);
+    const version = taskRepo.getTask(scope, taskId)?.version ?? 0;
+    const cleared = await app.inject({
+      method: 'PUT',
+      url: `/api/tasks/${taskId}`,
+      headers,
+      payload: editPayload(version, { links: [] }),
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect((await detail()).json<{ links: unknown }>().links).toEqual([]);
+  });
   it('refuses a second team in the same category', async () => {
     const headers = await loginHeaders('owner');
     const first = await app.inject({

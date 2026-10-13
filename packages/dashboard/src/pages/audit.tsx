@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
@@ -66,6 +67,14 @@ export function AuditPage() {
   const load = useCallback(() => session.read<AuditRow[]>(toUrl(applied)), [session, applied]);
   const audit = useResource('the audit log', load);
 
+  const filtered = applied.since.trim() !== '' || applied.limit !== '50';
+  const clearFilters = () => {
+    const blank = { limit: '50', since: '' };
+    setSinceError(undefined);
+    setDraft(blank);
+    setApplied(blank);
+  };
+
   const apply = (e: React.FormEvent) => {
     e.preventDefault();
     if (parseSince(draft.since) === 'invalid') {
@@ -109,10 +118,18 @@ export function AuditPage() {
         resource={audit.resource}
         isEmpty={(a) => a.length === 0}
         empty={
-          <EmptyState
-            title="No audit activity yet"
-            detail="Actions and refusals will appear here with their actor and source. Try the Safety page to review the controls that govern every action."
-          />
+          filtered ? (
+            <EmptyState
+              title="No audit rows match these filters"
+              detail="Widen the duration or raise the row count to see more of the trail."
+              action={<Button onClick={clearFilters}>Clear filters</Button>}
+            />
+          ) : (
+            <EmptyState
+              title="No audit activity yet"
+              detail="Actions and refusals will appear here with their actor and source. Try the Safety page to review the controls that govern every action."
+            />
+          )
         }
       >
         {(rows) => (
@@ -121,7 +138,15 @@ export function AuditPage() {
             rows={rows}
             rowKey={(r) => String(r.auditId)}
             columns={[
-              { key: 'when', header: 'When', cell: (r) => new Date(r.at).toLocaleString() },
+              {
+                key: 'when',
+                header: 'When',
+                cell: (r) => (
+                  <span title={new Date(r.at).toLocaleString()}>
+                    {relativeTime(r.at, Date.now())}
+                  </span>
+                ),
+              },
               {
                 key: 'actor',
                 header: (

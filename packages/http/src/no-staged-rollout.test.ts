@@ -35,9 +35,11 @@ const SCANNED = [
 ];
 
 // `observe-only` is excluded: it names the read-only process mode
-// (`BANANASAURS_READONLY`, `storage/src/write.ts`), not automod.
+// (`BANANASAURS_READONLY`, `storage/src/write.ts`), not automod. A dotted
+// `.observe(` is the browser's ResizeObserver/MutationObserver method, not
+// wording, so a word right after a dot is not a hit.
 const FORBIDDEN =
-  /observe window|observe floor|observing|\bobserves?\b(?!-only)|rule modes?\b|cutover|cut over|sign-off|signoff|signed off|legacy ref|legacy-ref|legacyRuleRef|fixture|enforce mode|enforceSignedOff|cutoverState|observeStartedAt|automodTestingMode|OBSERVE_FLOOR/i;
+  /observe window|observe floor|observing|(?<!\.)\bobserves?\b(?!-only)|rule modes?\b|cutover|cut over|sign-off|signoff|signed off|legacy ref|legacy-ref|legacyRuleRef|fixture|enforce mode|enforceSignedOff|cutoverState|observeStartedAt|automodTestingMode|OBSERVE_FLOOR/i;
 
 const SKIPPED_NAMES = new Set(['test-fixtures.ts', 'test-support.ts', 'no-staged-rollout.test.ts']);
 
@@ -118,5 +120,14 @@ describe('no staged-rollout remnants (ADR 0121)', () => {
     expect(stripped).not.toContain('fixture');
     expect(stripped).toContain('"http://x"');
     expect(stripped.split('\n')).toHaveLength(2);
+  });
+
+  it('lets a browser observer method call through and still catches the wording', () => {
+    expect(FORBIDDEN.test('observer?.observe(header);')).toBe(false);
+    expect(FORBIDDEN.test('observer.observe(document.body, { childList: true });')).toBe(false);
+    expect(FORBIDDEN.test("const m = 'We observe the rule';")).toBe(true);
+    expect(FORBIDDEN.test('const m = `observes ${x}`;')).toBe(true);
+    expect(FORBIDDEN.test('const observeStartedAt = 1;')).toBe(true);
+    expect(FORBIDDEN.test('observe(rule);')).toBe(true);
   });
 });

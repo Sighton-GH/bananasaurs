@@ -37,7 +37,9 @@ export interface Session {
    *
    * A caller that renders one more status inline (Try-it's 429
    * `rate-limited`) lists it in `rethrowStatuses`; every other caller keeps
-   * the default and is unaffected.
+   * the default and is unaffected. Opting into 401 rethrows auth refusals;
+   * unauthenticated still shows the signed-out notice and calls onLoggedOut
+   * before it throws, so HTTP204 success can be distinguished from failure.
    */
   writeOrThrow<T>(
     url: string,
@@ -164,8 +166,12 @@ function SessionInner({
         if (
           err instanceof ApiError &&
           (err.status === 400 || err.status === 409 || rethrowStatuses.includes(err.status))
-        )
+        ) {
+          // An explicit 401 opt-in must not suppress the expired-session
+          // continuation. Other opt-in failures belong to the caller.
+          if (err.status === 401 && err.body.error === 'unauthenticated') handleWriteError(err);
           throw err;
+        }
         if (err instanceof ApiError) {
           handleWriteError(err);
           return undefined;

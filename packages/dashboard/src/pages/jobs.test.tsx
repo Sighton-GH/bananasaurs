@@ -109,4 +109,51 @@ describe('JobsPage', () => {
     expect(await within(dialog).findByRole('alert')).toBeTruthy();
     expect(within(dialog).getByRole('alert').textContent).toContain('job #4');
   });
+
+  it('shows run-after as relative time with the absolute time on hover', async () => {
+    stubFetch([
+      { url: '/api/jobs?limit=100', body: [{ ...JOBS[1], runAfter: Date.now() - 3 * 3_600_000 }] },
+    ]);
+    renderWithSession(<JobsPage />);
+    const when = await screen.findByText('3 hours ago');
+    expect(when.getAttribute('title')).toMatch(/\d/);
+  });
+
+  it('an empty queue and an empty failed filter say what will appear', async () => {
+    stubFetch([
+      { url: '/api/jobs?limit=100', body: [] },
+      { url: '/api/jobs?limit=100&failedOnly=true', body: [] },
+    ]);
+    renderWithSession(<JobsPage />);
+    expect(await screen.findByText('The queue is clear')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Failed only'));
+    expect(await screen.findByText('No failed jobs')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all jobs' }));
+    expect(await screen.findByText('The queue is clear')).toBeTruthy();
+  });
+
+  it('a failed load is unavailable, and a 403 is forbidden, not an empty queue', async () => {
+    stubFetch([{ url: '/api/jobs?limit=100', status: 500, body: { error: 'boom' } }]);
+    renderWithSession(<JobsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('The queue is clear')).toBeNull();
+    cleanup();
+    stubFetch([{ url: '/api/jobs?limit=100', status: 403, body: { error: 'forbidden' } }]);
+    renderWithSession(<JobsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('The queue is clear')).toBeNull();
+  });
+
+  it('the detail card shows the state as a badge and the last error in danger ink', async () => {
+    stubFetch([
+      { url: '/api/jobs?limit=100', body: JOBS },
+      { url: '/api/jobs/9', body: JOBS[1] },
+    ]);
+    renderWithSession(<JobsPage />);
+    await screen.findByText('#9');
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[1]!);
+    await screen.findByText('Duplicate-work key');
+    expect(screen.getAllByText('failed').length).toBe(2);
+    expect(document.querySelector('.text-danger')).toBeNull();
+  });
 });

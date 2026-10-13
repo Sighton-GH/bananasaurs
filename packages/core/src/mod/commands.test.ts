@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { vi, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import type { AuthzStore } from '../authz.js';
 import type { ModerationGatewayPort } from '../automod/subscriber.js';
@@ -168,6 +168,8 @@ function buildHarness(
   };
 
   const responder: SlashResponder = {
+    deferUpdate: vi.fn(async () => undefined),
+    showModal: vi.fn(async () => undefined),
     defer: async (ref, options) => {
       calls.defer.push({ ref, options });
     },

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantSkillsPage } from './assistant-skills.js';
@@ -171,10 +171,11 @@ describe('AssistantSkillsPage', () => {
   });
 
   it('renders the error state when the load fails', async () => {
-    stubFetch([]);
+    stubFetch([{ url: '/api/assistant', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AssistantSkillsPage />);
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText(/Could not load assistant skills/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't load assistant skills/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
   it('states that each skill scope decides who can use it (ADR 0086)', async () => {
@@ -335,4 +336,16 @@ it('describes Parallel queries and its training disclosure in look-up tools', as
       'Sends a short query to the Parallel search API. Parallel may use queries to train its models.',
     ),
   ).toBeTruthy();
+});
+
+it('filters the catalogue without changing skill scope or starting a run', async () => {
+  const mock = stubFetch([{ url: '/api/assistant', body: FULL }]);
+  renderWithSession(<AssistantSkillsPage />);
+  await screen.findByRole('link', { name: 'Search club knowledge' });
+  const filter = screen.getByLabelText('Filter skills');
+  fireEvent.change(filter, { target: { value: 'no matching skill' } });
+  expect(screen.getByText('No skills match these filters')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  expect(screen.getByRole('link', { name: 'Search club knowledge' })).toBeTruthy();
+  expect(mock.mock.calls).toHaveLength(1);
 });

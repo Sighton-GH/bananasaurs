@@ -5,6 +5,7 @@ import { useResource } from '../hooks/useResource.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { Moment } from './moderation/moment.js';
 import { statusBadge, type ModCase } from './cases.js';
 
 /**
@@ -26,6 +27,7 @@ export function MemberPage() {
     <>
       <PageHeader
         title="Member moderation history"
+        crumbs={[{ label: 'Members', href: '/members' }]}
         purpose="Every case for this member, open first."
       />
       <DataState
@@ -51,7 +53,7 @@ export function MemberPage() {
               {
                 key: 'opened',
                 header: 'Opened',
-                cell: (c) => new Date(c.openedAt).toLocaleString(),
+                cell: (c) => <Moment at={c.openedAt} />,
               },
               {
                 key: 'violations',

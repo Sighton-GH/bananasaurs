@@ -14,6 +14,7 @@ import { Card } from '../ui/Card.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { RadioGroup } from '../ui/RadioGroup.js';
 import { PrintOnceDialog } from '../ui/PrintOnceDialog.js';
 import { RoleCards } from '../ui/RoleCards.js';
 
@@ -103,7 +104,7 @@ export function AccountNewPage() {
         actions={
           <Link
             href="/accounts"
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border border-line bg-panel px-2.5 py-1 text-sm text-ink hover:border-ink-muted"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-control border border-line bg-panel px-2.5 py-1 text-small text-ink hover:border-ink-muted"
           >
             Back to accounts
           </Link>
@@ -125,26 +126,16 @@ export function AccountNewPage() {
           </Field>
         </Card>
         <Card title="Password">
-          <div role="radiogroup" aria-label="Password" className="grid gap-2">
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="password-choice"
-                checked={passwordChoice === 'generate'}
-                onChange={() => setPasswordChoice('generate')}
-              />
-              Generate one for me
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="password-choice"
-                checked={passwordChoice === 'choose'}
-                onChange={() => setPasswordChoice('choose')}
-              />
-              I&apos;ll choose one
-            </label>
-          </div>
+          <RadioGroup
+            legend="How the password is set"
+            name="password-choice"
+            value={passwordChoice}
+            onChange={(next) => setPasswordChoice(next === 'choose' ? 'choose' : 'generate')}
+            options={[
+              { value: 'generate', label: 'Generate one for me' },
+              { value: 'choose', label: "I'll choose one" },
+            ]}
+          />
           {passwordChoice === 'choose' && (
             <div className="mt-3">
               <Field
@@ -174,11 +165,11 @@ export function AccountNewPage() {
         </Card>
         <Card title="Review">
           {review === undefined ? (
-            <p className="text-sm text-ink-muted">
+            <p className="text-small text-ink-muted">
               Name the account above to review what it will be able to do.
             </p>
           ) : (
-            <p className="text-sm">{review}</p>
+            <p className="text-body">{review}</p>
           )}
           {error !== undefined && (
             <div className="mt-2">

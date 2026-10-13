@@ -98,6 +98,32 @@ const next = async () => {
 };
 
 describe('AssistantPromptWizardPage', () => {
+  it('titles the page with the loaded behaviour name, and keeps the generic title while loading', async () => {
+    renderWizard();
+    expect(screen.getByRole('heading', { level: 1, name: 'Build the prompt' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Club assistant' })).toBeTruthy();
+    expect(
+      document.querySelector('nav[aria-label="Breadcrumb"] [aria-current="page"]')!.textContent,
+    ).toBe('Club assistant');
+  });
+
+  it('keeps the generic title when the behaviour is missing or settings fail to load', async () => {
+    renderWizard([CLUB, IT], { body: { ok: true } }, '/assistant/behaviours/nope/wizard');
+    expect(await screen.findByText("That behaviour doesn't exist.")).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Build the prompt' })).toBeTruthy();
+    cleanup();
+    vi.unstubAllGlobals();
+    stubFetch([]);
+    const { hook } = memoryLocation({ path: '/assistant/behaviours/club/wizard' });
+    renderWithSession(
+      <Router hook={hook}>
+        <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
+      </Router>,
+    );
+    await screen.findByText(/assistant settings/);
+    expect(screen.getByRole('heading', { level: 1, name: 'Build the prompt' })).toBeTruthy();
+  });
+
   it('walks seven steps with a Step N of 7 progress line', async () => {
     renderWizard();
     expect(
@@ -481,4 +507,65 @@ describe('AssistantPromptWizardPage', () => {
     const call = mock.mock.calls.find((c) => c[0] === '/api/assistant/behaviours/club/try');
     expect(bodyOf(call!)).toEqual({ question: 'does it work?' });
   });
+});
+
+it('keeps a refused prompt and shows server field problems in the review step', async () => {
+  renderWizard([CLUB, IT], {
+    status: 400,
+    body: {
+      error: 'bad-request',
+      fields: [{ path: 'systemPrompt', problem: 'Use a shorter instruction.' }],
+    },
+  });
+  for (let i = 0; i < 6; i += 1) await next();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Instructions to save' }), {
+    target: { value: 'Keep this draft' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save instructions' }));
+  expect(await screen.findByRole('link', { name: 'Use a shorter instruction.' })).toBeTruthy();
+  expect(textAreaOf(screen.getByRole('textbox', { name: 'Instructions to save' })).value).toBe(
+    'Keep this draft',
+  );
+});
+
+it('dirty wizard discard confirms, restores loaded baseline locally, never writes', async () => {
+  const mock = renderWizard();
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const name = await screen.findByLabelText('Club or server name');
+  const original = inputOf(name).value;
+  fireEvent.change(name, { target: { value: 'Discard me' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+  expect(inputOf(name).value).toBe('Discard me');
+  expect(confirm).toHaveBeenCalledTimes(1);
+  confirm.mockReturnValue(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+  expect(inputOf(screen.getByLabelText('Club or server name')).value).toBe(original);
+  expect(mock.mock.calls.every((c) => (c[1]?.method ?? 'GET') === 'GET')).toBe(true);
+  confirm.mockRestore();
+});
+it('wizard failed final save retains draft before confirmed no-write discard', async () => {
+  const mock = renderWizard([CLUB, IT], {
+    status: 400,
+    body: {
+      error: 'invalid',
+      fields: [{ path: 'promptWizard.clubName', problem: 'Review the name' }],
+    },
+  });
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  fireEvent.change(await screen.findByLabelText('Club or server name'), {
+    target: { value: 'Kept after failure' },
+  });
+  for (let i = 0; i < 6; i++) await next();
+  fireEvent.click(screen.getByRole('button', { name: 'Save instructions' }));
+  await screen.findByRole('link', { name: 'Review the name' });
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  for (let i = 0; i < 5; i++) fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(inputOf(screen.getByLabelText('Club or server name')).value).toBe('Kept after failure');
+  const writes = mock.mock.calls.filter((c) => c[1]?.method === 'PUT').length;
+  fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+  expect(inputOf(screen.getByLabelText('Club or server name')).value).not.toBe(
+    'Kept after failure',
+  );
+  expect(mock.mock.calls.filter((c) => c[1]?.method === 'PUT')).toHaveLength(writes);
+  confirm.mockRestore();
 });

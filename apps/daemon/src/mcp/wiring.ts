@@ -6900,6 +6900,7 @@ const taskDetailPortFor = (deps: HttpDeps): McpTaskDetailPort => {
           createdAt: report.createdAt,
         })),
         reminders: reminderSlots(guildId, taskId),
+        links: taskRepo.listTaskLinks(scope, taskId),
       };
     },
     reminders: (guildId, accountId, taskId) => {

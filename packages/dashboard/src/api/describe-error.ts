@@ -76,6 +76,10 @@ const PROBLEM_TEXT: Readonly<Record<string, string>> = {
   custom: 'Not allowed.',
 };
 
+/** A known problem code, human instruction, or honest fallback for an unknown code. */
+export const readableFieldProblem = (problem: string): string =>
+  PROBLEM_TEXT[problem] ?? (/^[a-z][a-z0-9_]*$/.test(problem) ? 'Not valid.' : problem);
+
 /**
  * Human text for the first field problem at `path` (an exact match, or a
  * field whose path starts with `${path}.` so `entries` matches

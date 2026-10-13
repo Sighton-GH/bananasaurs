@@ -1,3 +1,5 @@
+import './messages-assistant/test-support.js';
+import userEvent from '@testing-library/user-event';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -51,14 +53,17 @@ describe('AssistantConversationsPage', () => {
     renderWithSession(<AssistantConversationsPage />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Conversations' })).toBeTruthy();
     const select = await screen.findByLabelText('Delete conversations older than');
-    const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+    select.focus();
+    await userEvent.keyboard('{Enter}');
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
     expect(options).toEqual(['2 months', '6 months', '12 months', 'Keep forever']);
     expect(
       screen.getByText(
         'Bananasaurs checks once a day and deletes older conversations and their details.',
       ),
     ).toBeTruthy();
-    expect((select as HTMLSelectElement).value).toBe('182');
+    await userEvent.keyboard('{Escape}');
+    expect(select.textContent).toContain('6 months');
   });
 
   it('saves the chosen auto-delete window', async () => {
@@ -69,7 +74,9 @@ describe('AssistantConversationsPage', () => {
     renderWithSession(<AssistantConversationsPage />);
     const select = await screen.findByLabelText('Delete conversations older than');
     await act(async () => {
-      fireEvent.change(select, { target: { value: '61' } });
+      select.focus();
+      await userEvent.keyboard('{Enter}');
+      await userEvent.click(screen.getByRole('option', { name: '2 months' }));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -94,7 +101,9 @@ describe('AssistantConversationsPage', () => {
     ]);
     renderWithSession(<AssistantConversationsPage />);
     const select = await screen.findByLabelText('Sort');
-    const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+    select.focus();
+    await userEvent.keyboard('{Enter}');
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
     expect(options).toEqual([
       'Newest activity',
       'Oldest activity',
@@ -102,7 +111,7 @@ describe('AssistantConversationsPage', () => {
       'Most turns',
     ]);
     await act(async () => {
-      fireEvent.change(select, { target: { value: 'turns-desc' } });
+      await userEvent.click(screen.getByRole('option', { name: 'Most turns' }));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
@@ -227,11 +236,11 @@ it('opens the selected daily summary', async () => {
 it('shows a detail error and allows retry', async () => {
   stubFetch([
     ...digestStubs(),
-    { url: '/api/assistant/digests/2026-10-09', status: 404, body: { error: 'not-found' } },
+    { url: '/api/assistant/digests/2026-10-09', status: 503, body: { error: 'unavailable' } },
   ]);
   renderWithSession(<AssistantConversationsPage />);
   fireEvent.click((await screen.findAllByRole('button', { name: 'Open' }))[0]!);
-  expect(await screen.findByText('Could not load daily digest detail.')).toBeTruthy();
+  expect(await screen.findByText("Couldn't load daily digest detail")).toBeTruthy();
   const mock = stubFetch([
     ...digestStubs(),
     {
@@ -269,7 +278,8 @@ it('clears the previous detail and ignores a late response for another day', asy
     fireEvent.click(buttons[1]!);
   });
   expect(screen.queryByText('First summary.')).toBeNull();
-  expect(screen.getByText('Loading…')).toBeTruthy();
+  // The kit's Loading appears only after 1 s (no flash), so assert nothing is shown yet.
+  expect(screen.queryByText('Second summary.')).toBeNull();
   await act(async () => {
     finishSecond(new Response(JSON.stringify(digestDetail('2026-10-10', 'Second summary.'))));
   });
@@ -279,4 +289,26 @@ it('clears the previous detail and ignores a late response for another day', asy
   });
   expect(screen.queryByText('First summary.')).toBeNull();
   expect(screen.getByText('Second summary.')).toBeTruthy();
+});
+
+it('shows denied audit access as permission denied, never an empty list or retryable outage', async () => {
+  stubFetch(
+    stubs({ conversations: [] }).map((route) =>
+      route.url.includes('/conversations?')
+        ? {
+            ...route,
+            status: 403,
+            body: {
+              error: 'no-grant',
+              title: 'Audit access needed',
+              message: 'This page needs audit.read.',
+            },
+          }
+        : route,
+    ),
+  );
+  renderWithSession(<AssistantConversationsPage />);
+  expect(await screen.findByText('Audit access needed')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  expect(screen.queryByText('No conversations yet')).toBeNull();
 });

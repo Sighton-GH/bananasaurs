@@ -59,7 +59,7 @@ describe('SearchPage', () => {
     renderWithSession(<SearchPage />);
     fireEvent.change(screen.getByLabelText('Search for'), { target: { value: 'compressor' } });
     fireEvent.change(screen.getByLabelText('Channel'), { target: { value: ' c9 ' } });
-    fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'a7' } });
+    fireEvent.change(screen.getByLabelText('Author (optional)'), { target: { value: 'a7' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     });
@@ -91,4 +91,19 @@ describe('SearchPage', () => {
     const link = await screen.findByRole('link', { name: 'Open' });
     expect(link.getAttribute('href')).toBe('/archive?browse=c1&message=m1');
   });
+});
+
+it('clears a search without issuing another retrieval', async () => {
+  const mock = stubFetch([
+    { url: '/api/guild/channels', body: CHANNELS },
+    { url: '/api/archive/search?q=compressor&limit=50', body: RESULT },
+  ]);
+  renderWithSession(<SearchPage />);
+  fireEvent.change(screen.getByLabelText('Search for'), { target: { value: 'compressor' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+  await screen.findByText('the compressor schedule is out');
+  const count = mock.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  expect(screen.getByRole('region', { name: 'Search the archive' })).toBeTruthy();
+  expect(mock.mock.calls.length).toBe(count);
 });

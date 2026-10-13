@@ -24,7 +24,8 @@
     "db:generate": "drizzle-kit generate",
     "postdb:generate": "node scripts/strictify.mjs",
     "db:migrate": "node scripts/migrate.mjs",
-    "restore": "node scripts/restore.mjs"
+    "restore": "node scripts/restore.mjs",
+    "smoke:cards": "node --env-file=.env scripts/card-gallery.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

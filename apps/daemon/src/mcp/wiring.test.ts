@@ -7699,6 +7699,14 @@ describe('MCP task admin full surface (owner-only)', () => {
       ).body,
     );
     expect(first.isError).not.toBe(true);
+    expect(taskNudgeRepo.listSlots(scope).filter((s) => s.kind === 'update')).toMatchObject([
+      {
+        slotId: `update:mcp:${requestId}`,
+        taskId,
+        state: 'pending',
+        payload: JSON.stringify({ reportId: `mcp:${requestId}` }),
+      },
+    ]);
     const second = text(
       (
         await call(send, 'task_progress', {
@@ -7713,6 +7721,7 @@ describe('MCP task admin full surface (owner-only)', () => {
     expect(second.isError).not.toBe(true);
     expect(second.text).toBe('Already recorded.');
     expect(taskRepo.listReports(scope, taskId)).toHaveLength(1);
+    expect(taskNudgeRepo.listSlots(scope).filter((s) => s.kind === 'update')).toHaveLength(1);
   });
 
   it('create_task twice with one requestId makes one task and one announce slot', async () => {

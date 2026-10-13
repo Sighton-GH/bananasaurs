@@ -9,6 +9,7 @@
  * reach another guild's data by omission.
  */
 
+import type { Modal } from '../ui/discord/kit.js';
 import type { MessageAttachment } from './events.js';
 
 export type Snowflake = string;
@@ -96,6 +97,18 @@ export interface InteractionRef {
   token: string;
 }
 
+/**
+ * A file uploaded with a message (ADR 0140). Card art is the only user today:
+ * referenced from a component as `attachment://<name>`.
+ */
+export interface OutgoingFile {
+  readonly name: string;
+  readonly contentType: string;
+  readonly data: Uint8Array;
+  /** Alt text Discord shows to screen readers. */
+  readonly description?: string;
+}
+
 export interface OutgoingMessage {
   content?: string | undefined;
   embeds?: readonly unknown[] | undefined;
@@ -145,6 +158,14 @@ export interface OutgoingMessage {
         readonly allowMultiselect: boolean;
       }
     | undefined;
+  /**
+   * Message flags (ADR 0140). Only `IS_COMPONENTS_V2` is set by callers; the
+   * adapter ORs in the ephemeral bit for private interaction follow-ups.
+   * Absent, the wire output is byte-identical to a message without flags.
+   */
+  flags?: number | undefined;
+  /** Files to upload with the message. Absent: no multipart, byte-identical to today. */
+  files?: readonly OutgoingFile[] | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */
@@ -615,6 +636,20 @@ export interface DiscordPort {
     ref: InteractionRef,
     message: OutgoingMessage,
   ): Promise<DiscordMessageRef | undefined>;
+
+  /**
+   * Acknowledges a component interaction without a visible reply (callback
+   * type 6). The message the button sits on is then edited with
+   * `editMessage`, and any follow-up through `respondToInteraction` is
+   * private to the member who clicked (ADR 0140).
+   */
+  deferUpdate(guildId: Snowflake, ref: InteractionRef): Promise<void>;
+
+  /**
+   * Answers an interaction with a modal (callback type 9). Must be the
+   * **first** response: it cannot follow a defer.
+   */
+  showModal(guildId: Snowflake, ref: InteractionRef, modal: Modal): Promise<void>;
 
   // --- audit log ---------------------------------------------------------
   /** Attribution for MESSAGE_DELETE, which carries no actor of its own. */

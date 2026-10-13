@@ -82,6 +82,7 @@ export function fingerprintOf(event: DomainEvent): string | undefined {
   switch (event.kind) {
     case 'interaction':
     case 'slashCommand':
+    case 'modalSubmit':
       // The only events carrying a usable id of their own. An interaction id is
       // minted per click and per invocation, so a dispatch replayed across a
       // reconnect collides here rather than answering the member twice.

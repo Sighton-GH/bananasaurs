@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { PermissionsPage } from './permissions.js';
 
@@ -87,42 +88,63 @@ const stubAll = (opts?: {
         ]),
   ]);
 
-afterEach(cleanup);
+beforeEach(() =>
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  ),
+);
+
+afterEach(() => {
+  cleanup();
+  window.history.replaceState(null, '', '/permissions');
+});
 afterEach(() => vi.unstubAllGlobals());
+
+const openChange = async (name: string) => {
+  await userEvent.setup().click(await screen.findByRole('button', { name: `Change ${name}` }));
+};
 
 describe('PermissionsPage', () => {
   it('shows effective state: via-category, off, and the category row itself', async () => {
     stubAll();
     renderWithSession(<PermissionsPage />);
     // Categories start collapsed; opening Community reveals inherited states.
-    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^[▸▾] Community$/ }));
     expect((await screen.findAllByText('On, via Community')).length).toBe(2);
     // mod-log is off on both axes and offers both enables.
     expect(screen.getAllByText('Off').length).toBeGreaterThan(0);
     // The category row shows its own On state.
     expect(screen.getAllByText('On').length).toBeGreaterThan(0);
     // The specialised surfaces are linked, not duplicated.
-    expect(screen.getByRole('link', { name: 'MCP connector' })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Specialised' }));
+    expect(screen.getByRole('link', { name: 'Connected apps' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Archive' })).toBeTruthy();
   });
 
   it('marks an excluded channel and overrides its rows', async () => {
     stubAll({ exclusions: ['333333333333333333'] });
     renderWithSession(<PermissionsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
-    expect(await screen.findByRole('button', { name: 'Restore access' })).toBeTruthy();
-    // Legend term + column header + two No-access buttons + the excluded
-    // channel's four badges (Read, Write, Archive, No access).
-    expect(screen.getAllByText('No access').length).toBe(8);
+    fireEvent.click(await screen.findByRole('button', { name: /^[▸▾] Community$/ }));
+    await openChange('#general');
+    expect(await screen.findByRole('menuitem', { name: 'Restore access' })).toBeTruthy();
+    // Legend term + column header + four effective-state badges.
+    // Other row actions live in closed menus and add no No-access text.
+    expect(screen.getAllByText('No access').length).toBe(6);
   });
 
   it('enables a channel with the chosen attachment policy', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const archiveButtons = await screen.findAllByRole('button', { name: 'Archive' });
-    fireEvent.change(screen.getByLabelText('Attachment policy'), { target: { value: 'bytes' } });
+    await screen.findByRole('radio', { name: 'text + attachment bytes' });
+    fireEvent.click(screen.getByRole('radio', { name: 'text + attachment bytes' }));
+    await openChange('#mod-log');
     // mod-log is the first channel with Archive off.
-    fireEvent.click(archiveButtons[0]!);
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: 'Archive' }));
     const post = mock.mock.calls.find(
       (c) => (c[1]?.method ?? 'GET') === 'POST' && c[0] === '/api/archive/channels',
     );
@@ -135,7 +157,8 @@ describe('PermissionsPage', () => {
   it('allow send posts the session account; stop send deletes', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const allowButtons = await screen.findAllByRole('button', { name: 'Allow send' });
+    await openChange('#mod-log');
+    const allowButtons = await screen.findAllByRole('menuitem', { name: 'Allow send' });
     fireEvent.click(allowButtons[0]!);
     const post = mock.mock.calls.find(
       (c) => (c[1]?.method ?? 'GET') === 'POST' && c[0] === '/api/send-allowlist',
@@ -146,7 +169,8 @@ describe('PermissionsPage', () => {
   it('stopping the category pauses it (history kept) instead of deleting', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const stop = await screen.findAllByRole('button', { name: 'Stop archiving' });
+    await openChange('Community');
+    const stop = await screen.findAllByRole('menuitem', { name: 'Stop archiving' });
     fireEvent.click(stop[0]!);
     const pause = mock.mock.calls.find(
       (c) =>
@@ -160,7 +184,8 @@ describe('PermissionsPage', () => {
   it('exclusion toggle posts and deletes the exclusion', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const excludeButtons = await screen.findAllByRole('button', { name: 'No access' });
+    await openChange('#mod-log');
+    const excludeButtons = await screen.findAllByRole('menuitem', { name: 'No access' });
     fireEvent.click(excludeButtons[0]!);
     const post = mock.mock.calls.find(
       (c) => (c[1]?.method ?? 'GET') === 'POST' && c[0] === '/api/log-exclusions',
@@ -180,7 +205,7 @@ describe('PermissionsPage', () => {
       readEntries: [{ channelId: '999999999999999999', scopeKind: 'category', addedAt: 1 }],
     });
     renderWithSession(<PermissionsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^[▸▾] Community$/ }));
     // Archive, Read and Write are each inherited from the Community category.
     expect((await screen.findAllByText('On, via Community')).length).toBe(3);
   });
@@ -190,8 +215,9 @@ describe('PermissionsPage', () => {
     renderWithSession(<PermissionsPage />);
     // Visible rows are Community, mod-log, announcements — each offers
     // Allow read; mod-log's is second.
-    const allowButtons = await screen.findAllByRole('button', { name: 'Allow read' });
-    fireEvent.click(allowButtons[1]!);
+    await openChange('#mod-log');
+    const allowButtons = await screen.findAllByRole('menuitem', { name: 'Allow read' });
+    fireEvent.click(allowButtons[0]!);
     const post = mock.mock.calls.find(
       (c) => (c[1]?.method ?? 'GET') === 'POST' && c[0] === '/api/read-scope',
     );
@@ -201,7 +227,8 @@ describe('PermissionsPage', () => {
   it('"Stop archiving" pauses without opening a dialog', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const stop = await screen.findAllByRole('button', { name: 'Stop archiving' });
+    await openChange('Community');
+    const stop = await screen.findAllByRole('menuitem', { name: 'Stop archiving' });
     fireEvent.click(stop[0]!);
     const pause = mock.mock.calls.find(
       (c) =>
@@ -234,7 +261,8 @@ describe('PermissionsPage', () => {
     });
     renderWithSession(<PermissionsPage />);
     expect(await screen.findByText('Off (history kept)')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Resume archiving' }));
+    await openChange('#mod-log');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Resume archiving' }));
     const resume = mock.mock.calls.find(
       (c) =>
         (c[1]?.method ?? 'GET') === 'POST' &&
@@ -264,11 +292,12 @@ describe('PermissionsPage', () => {
       },
     });
     renderWithSession(<PermissionsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^[▸▾] Community$/ }));
     // The own paused row wins over the collecting category: pause is a veto,
     // so the row reads Off with its own Resume button (I1).
     expect(await screen.findByText('Off (history kept)')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Resume archiving' }));
+    await openChange('#general');
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Resume archiving' }));
     const resume = mock.mock.calls.find(
       (c) =>
         (c[1]?.method ?? 'GET') === 'POST' &&
@@ -280,7 +309,8 @@ describe('PermissionsPage', () => {
   it('never issues DELETE against /api/archive', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const stop = await screen.findAllByRole('button', { name: 'Stop archiving' });
+    await openChange('Community');
+    const stop = await screen.findAllByRole('menuitem', { name: 'Stop archiving' });
     fireEvent.click(stop[0]!);
     expect(
       mock.mock.calls.some(
@@ -310,12 +340,16 @@ describe('PermissionsPage', () => {
       },
     });
     renderWithSession(<PermissionsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^[▸▾] Community$/ }));
     // The derived channel inherits the category pause, with the category named.
     expect(await screen.findByText('Off (history kept), via Community')).toBeTruthy();
     // Only the paused category row offers Resume; the derived channel offers
     // no per-channel archive button at all.
-    expect(screen.getAllByRole('button', { name: 'Resume archiving' }).length).toBe(1);
+    await openChange('#general');
+    expect(screen.queryByRole('menuitem', { name: 'Resume archiving' })).toBeNull();
+    await userEvent.setup().keyboard('{Escape}');
+    await openChange('Community');
+    expect(screen.getAllByRole('menuitem', { name: 'Resume archiving' }).length).toBe(1);
     expect(
       mock.mock.calls.some(
         (c) =>
@@ -328,6 +362,7 @@ describe('PermissionsPage', () => {
   it('explains each switch in plain words', async () => {
     stubAll();
     renderWithSession(<PermissionsPage />);
+    fireEvent.click(screen.getByText('What the switches mean'));
     expect(
       await screen.findByText(
         'May look up recent messages live from Discord. Off: the bot only sees the message that tagged it, the one it replies to, and the archive.',

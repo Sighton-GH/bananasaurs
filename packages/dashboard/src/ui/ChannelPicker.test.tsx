@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWithSession, stubFetch } from '../test-support.js';
@@ -31,7 +32,7 @@ describe('ChannelPicker', () => {
     stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
     renderWithSession(<Harness />);
     const option = await screen.findByRole('button', { name: /#general/ });
-    fireEvent.mouseDown(option);
+    fireEvent.click(option);
     expect(screen.getByTestId('value').textContent).toBe('333333333333333333');
     // The name and the id both stay in the box; nothing is printed below it.
     const input = screen.getByLabelText('Enable archiving for a channel');
@@ -52,7 +53,7 @@ describe('ChannelPicker', () => {
   it('hides the list once a channel is chosen, and shows it again on focus', async () => {
     stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
     renderWithSession(<Harness />);
-    fireEvent.mouseDown(await screen.findByRole('button', { name: /#general/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /#general/ }));
     expect(screen.queryByRole('button', { name: /#mod-log/ })).toBeNull();
     fireEvent.focus(screen.getByLabelText('Enable archiving for a channel'));
     expect(screen.getByRole('button', { name: /#mod-log/ })).toBeTruthy();
@@ -61,7 +62,7 @@ describe('ChannelPicker', () => {
   it('keeps filtering by name after the user edits the shown text', async () => {
     stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
     renderWithSession(<Harness />);
-    fireEvent.mouseDown(await screen.findByRole('button', { name: /#general/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /#general/ }));
     const input = screen.getByLabelText('Enable archiving for a channel');
     fireEvent.focus(input);
     // Backspacing into the name leaves "#genera ..." - not a channel, still a search.
@@ -113,5 +114,35 @@ describe('ChannelPicker', () => {
     stubFetch([{ url: '/api/guild/channels', body: { channels: [] } }]);
     renderWithSession(<Harness />);
     expect(await screen.findByText(/No channels are available yet/)).toBeTruthy();
+  });
+
+  it('keeps kind filtering and permits an explicit category list without inventing hidden channels', async () => {
+    stubFetch([
+      {
+        url: '/api/guild/channels',
+        body: {
+          channels: [
+            ...CHANNELS.channels,
+            { channelId: '666666666666666666', name: 'projects', kind: 'category' },
+            { channelId: '777777777777777777', name: 'voice-room', kind: 'voice' },
+          ],
+        },
+      },
+    ]);
+    const change = vi.fn();
+    const user = userEvent.setup();
+    const view = renderWithSession(<ChannelPicker label="Channel" value="" onChange={change} />);
+    await screen.findByRole('button', { name: /#general/ });
+    expect(screen.queryByRole('button', { name: /#projects|#voice-room|#hidden/ })).toBeNull();
+    view.unmount();
+    renderWithSession(
+      <ChannelPicker label="Channel" value="" onChange={change} kinds={['category']} />,
+    );
+    await screen.findByRole('button', { name: /#projects/ });
+    expect(screen.queryByRole('button', { name: /#general|#voice-room|#hidden/ })).toBeNull();
+    await user.tab();
+    await user.tab();
+    await user.keyboard('{Enter}');
+    expect(change.mock.calls).toEqual([['666666666666666666']]);
   });
 });

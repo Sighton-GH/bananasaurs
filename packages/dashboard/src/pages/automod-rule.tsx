@@ -1,7 +1,20 @@
 import { useCallback, useState } from 'react';
+import {
+  capsConfig,
+  rapidSpamConfig,
+  keywordFilterConfig,
+  inviteConfig,
+  linkDomainConfig,
+  mentionSpamConfig,
+  emojiConfig,
+} from '@bananasaurs/core';
+import { SchemaForm, inspectSchema } from '../lib/schema-form.js';
+import { Textarea } from '../ui/Textarea.js';
+import { ErrorSummary } from '../ui/ErrorSummary.js';
+import { RadioGroup } from '../ui/RadioGroup.js';
 import { useParams } from 'wouter';
 import { ApiError } from '../api.js';
-import { RULE_KIND_LABEL, type RuleDetail } from '../api/automod.js';
+import { RULE_KIND_LABEL, RULE_CONFIG_LABELS, type RuleDetail } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { describeError } from '../api/describe-error.js';
@@ -51,10 +64,37 @@ function RuleDetailView({
     }
   };
 
+  const schemas = {
+    keyword_filter: keywordFilterConfig,
+    caps: capsConfig,
+    rapid_spam: rapidSpamConfig,
+    invite: inviteConfig,
+    link_domain: linkDomainConfig,
+    mention_spam: mentionSpamConfig,
+    emoji: emojiConfig,
+  };
+  const schema = detail.kind in schemas ? schemas[detail.kind as keyof typeof schemas] : undefined;
+  const unsupported = inspectSchema(schema).unsupported;
+  const [structured, setStructured] = useState(detail.configObject);
+  const [jsonEditable, setJsonEditable] = useState(true);
   const [configText, setConfigText] = useState(() => JSON.stringify(detail.configObject, null, 2));
   const [configError, setConfigError] = useState<string | undefined>(undefined);
   const [configOpen, setConfigOpen] = useState(false);
   const [configBusy, setConfigBusy] = useState(false);
+
+  const editJson = (text: string) => {
+    setConfigText(text);
+    setConfigError(undefined);
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        setStructured(parsed as Record<string, unknown>);
+        setJsonEditable(true);
+      } else setJsonEditable(false);
+    } catch {
+      setJsonEditable(false);
+    }
+  };
 
   const openConfigConfirm = () => {
     try {
@@ -185,25 +225,53 @@ function RuleDetailView({
 
       <Card title="Configuration">
         <div className="mt-2 max-w-lg">
-          <Field
-            label="Configuration"
-            hint="JSON; validated against the kind's schema when you save"
-            {...(configError !== undefined ? { error: configError } : {})}
-          >
-            <textarea
-              value={configText}
-              onChange={(e) => setConfigText(e.target.value)}
-              rows={8}
-              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-            />
-          </Field>
-          <RuleConfigExample
-            kind={detail.kind}
-            onUse={(json) => {
-              setConfigText(json);
-              setConfigError(undefined);
-            }}
+          <ErrorSummary
+            errors={
+              configError === undefined
+                ? []
+                : [{ fieldId: 'rule-config-json', message: 'Review the configuration below' }]
+            }
           />
+          {unsupported && <p>This rule's settings are edited as JSON.</p>}
+          {!unsupported && schema !== undefined && jsonEditable && (
+            <SchemaForm
+              schema={schema}
+              emptyMessage={
+                detail.kind === 'keyword_filter'
+                  ? 'This rule has no settings; its word list is under Lists.'
+                  : 'This rule has no settings.'
+              }
+              value={structured}
+              labels={RULE_CONFIG_LABELS[detail.kind]}
+              onChange={(next) => {
+                setStructured(next);
+                setConfigText(JSON.stringify(next, null, 2));
+                setConfigError(undefined);
+              }}
+            />
+          )}
+          {!jsonEditable && (
+            <p>Fix the JSON to use the settings form. Your last settings have not been changed.</p>
+          )}
+          <details
+            open={unsupported || configError !== undefined || !jsonEditable}
+            className="mt-4"
+          >
+            <summary className="cursor-pointer text-small text-ink-muted">Advanced</summary>
+            <Field
+              label="Configuration"
+              htmlFor="rule-config-json"
+              hint="JSON; validated against the kind's schema when you save"
+              {...(configError !== undefined ? { error: configError } : {})}
+            >
+              <Textarea
+                value={configText}
+                onChange={(event) => editJson(event.target.value)}
+                rows={8}
+              />
+            </Field>
+            <RuleConfigExample kind={detail.kind} onUse={editJson} />
+          </details>
         </div>
         <div className="mt-3">
           <Button variant="primary" busy={configBusy} onClick={openConfigConfirm}>
@@ -251,20 +319,23 @@ function RuleDetailView({
             />
           </div>
         )}
-        <form onSubmit={(e) => void addExemption(e)} className="mt-3 flex max-w-lg items-end gap-2">
-          <div className="w-28">
-            <Field label="Type">
-              <select
-                value={exemptType}
-                onChange={(e) => setExemptType(e.target.value as 'role' | 'channel')}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                <option value="role">role</option>
-                <option value="channel">channel</option>
-              </select>
-            </Field>
+        <form
+          onSubmit={(e) => void addExemption(e)}
+          className="mt-3 flex max-w-lg flex-col gap-2 sm:flex-row sm:items-end"
+        >
+          <div className="sm:w-28 sm:shrink-0">
+            <RadioGroup
+              legend="Type"
+              name="exemption-type"
+              value={exemptType}
+              onChange={(value) => setExemptType(value as 'role' | 'channel')}
+              options={[
+                { value: 'role', label: 'Role' },
+                { value: 'channel', label: 'Channel' },
+              ]}
+            />
           </div>
-          <div className="flex-1">
+          <div className="w-full min-w-0 sm:flex-1">
             {exemptType === 'channel' ? (
               <ChannelPicker
                 label="Channel"
@@ -364,6 +435,7 @@ export function AutomodRulePage() {
     <>
       <PageHeader
         title={ruleId}
+        crumbs={[{ label: 'Automod', href: '/automod' }]}
         purpose="One automod rule: whether it is enabled, its configuration, and its exemptions."
       />
       <DataState resource={detail.resource}>

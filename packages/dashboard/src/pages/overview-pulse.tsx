@@ -1,5 +1,5 @@
 import { useCallback, type ReactElement } from 'react';
-import { Link } from 'wouter';
+import { ApiError } from '../api.js';
 import type { ReviewQueue } from '../api/automod.js';
 import type {
   ArchiveStatus,
@@ -13,9 +13,11 @@ import type { HealthInfo } from '../app/health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { auditActorCompact, auditViaText } from '../ui/auditWords.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
+import { Link } from '../ui/Link.js';
 
 interface AuditRow {
   readonly auditId: number;
@@ -184,38 +186,49 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
     ['failed jobs', failedJobs.resource],
     ['the backups', backups.resource],
   ] as const;
+  const failedChecks = pendingChecks.filter(([, r]) => r.state === 'error');
   const stillLoading = pendingChecks.filter(([, r]) => r.state === 'loading').map(([name]) => name);
 
   return (
     <div className="mt-6 grid max-w-6xl gap-3 lg:grid-cols-2">
       <div className="lg:col-span-2">
         <Card title="Needs attention">
-          {items.length === 0 && stillLoading.length === 0 && (
-            <p className="text-sm text-ink-muted">
+          {items.length === 0 && stillLoading.length === 0 && failedChecks.length === 0 && (
+            <p className="text-small text-ink-muted">
               <Badge tone="ok">clear</Badge>
               <span className="ml-2">Nothing needs attention right now.</span>
             </p>
           )}
           {items.length > 0 && (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-1.5 text-small">
               {items.map((item) => (
                 <li key={item.text} className="flex flex-wrap items-center gap-2">
                   <Badge tone={item.tone}>{item.tone === 'danger' ? 'act' : 'check'}</Badge>
                   <span>{item.text}</span>
-                  <Link href={item.href} className="text-ink-muted underline">
-                    {item.linkText} →
-                  </Link>
+                  <Link href={item.href}>{item.linkText} →</Link>
                 </li>
               ))}
             </ul>
           )}
           {stillLoading.length > 0 && (
-            <p className="mt-1 text-sm text-ink-muted">Still checking {stillLoading.join(', ')}…</p>
+            <p className="mt-1 text-small text-ink-muted">
+              Still checking {stillLoading.join(', ')}…
+            </p>
+          )}
+          {failedChecks.length > 0 && (
+            <p className="mt-1 text-small">
+              <Badge tone="hold">incomplete</Badge>
+              <span className="ml-2">
+                Some checks could not run, so this list may be missing items.
+              </span>
+            </p>
           )}
           {pendingChecks.map(([name, resource]) =>
             resource.state === 'error' ? (
-              <p key={name} className="mt-1 text-sm text-ink-muted">
-                Could not check {name}: {resource.message}
+              <p key={name} className="mt-1 text-small text-ink-muted">
+                {resource.error instanceof ApiError && resource.error.status === 403
+                  ? `You do not have permission to check ${name}.`
+                  : `Could not check ${name}: ${resource.message}`}
               </p>
             ) : null,
           )}
@@ -226,17 +239,14 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
         <DataState
           resource={auditTail.resource}
           isEmpty={(rows) => rows.length === 0}
-          empty={<p className="text-sm text-ink-muted">Nothing has been audited yet.</p>}
+          empty={<p className="text-small text-ink-muted">Nothing has been audited yet.</p>}
         >
           {(rows) => (
-            <ul className="space-y-1.5 text-sm">
+            <ul className="space-y-1.5 text-small">
               {rows.map((row) => (
                 <li key={row.auditId} className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="text-ink-muted">
-                    {new Date(row.at).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                  <span className="text-ink-muted" title={new Date(row.at).toLocaleString()}>
+                    {relativeTime(row.at, Date.now())}
                   </span>
                   <span className="font-medium">{row.action}</span>
                   <span className="text-ink-muted">
@@ -248,9 +258,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
             </ul>
           )}
         </DataState>
-        <Link href="/audit" className="mt-2 inline-block text-sm text-ink-muted underline">
-          Full audit log →
-        </Link>
+        <Link href="/audit">Full audit log →</Link>
       </Card>
 
       <Card title="Archive">
@@ -258,7 +266,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
           resource={archive.resource}
           isEmpty={(status) => status.channels.length === 0}
           empty={
-            <p className="text-sm text-ink-muted">
+            <p className="text-small text-ink-muted">
               No channels are archived yet — enable one to start keeping history.
             </p>
           }
@@ -267,7 +275,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
             const messages = status.channels.reduce((sum, c) => sum + c.messageCount, 0);
             const backfilling = status.channels.filter((c) => c.backfillState !== 'done').length;
             return (
-              <div className="space-y-1.5 text-sm">
+              <div className="space-y-1.5 text-small">
                 <p>
                   <span className="font-medium">{status.channels.length}</span>{' '}
                   {status.channels.length === 1 ? 'channel' : 'channels'} archived,{' '}
@@ -289,12 +297,8 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
           }}
         </DataState>
         <span className="mt-2 flex flex-wrap gap-3">
-          <Link href="/archive" className="text-sm text-ink-muted underline">
-            Archive →
-          </Link>
-          <Link href="/search" className="text-sm text-ink-muted underline">
-            Search →
-          </Link>
+          <Link href="/archive">Archive →</Link>
+          <Link href="/search">Search →</Link>
         </span>
       </Card>
 
@@ -303,7 +307,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
           resource={connector.resource}
           isEmpty={({ clients, sends }) => clients.length === 0 && sends.length === 0}
           empty={
-            <p className="text-sm text-ink-muted">
+            <p className="text-small text-ink-muted">
               Nothing is connected yet — register a client to let tools send through the connector.
             </p>
           }
@@ -312,7 +316,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
             const sent = sends.filter((s) => s.outcome === 'sent').length;
             const dryRun = sends.length - sent;
             return (
-              <div className="space-y-1.5 text-sm">
+              <div className="space-y-1.5 text-small">
                 <p>
                   <span className="font-medium">{clients.length}</span> registered{' '}
                   {clients.length === 1 ? 'client' : 'clients'}
@@ -337,12 +341,8 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
           }}
         </DataState>
         <span className="mt-2 flex flex-wrap gap-3">
-          <Link href="/mcp" className="text-sm text-ink-muted underline">
-            Connector →
-          </Link>
-          <Link href="/providers" className="text-sm text-ink-muted underline">
-            Providers →
-          </Link>
+          <Link href="/mcp">Connector →</Link>
+          <Link href="/providers">Providers →</Link>
         </span>
       </Card>
     </div>

@@ -1,19 +1,23 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { THEME_STORAGE_KEY } from './theme-boot.js';
 
 /**
  * Light/dark is an operator choice, not only a system one: the shell and
- * login carry a toggle that pins the scheme, persisted in localStorage. Untouched, the app keeps following
- * `prefers-color-scheme`; once the operator picks, the `data-theme`
- * attribute on <html> wins over the media query (styles.css).
+ * login carry a toggle that pins the scheme, persisted in localStorage.
+ * A first visit is light (ADR 0142). A saved choice wins; a saved `system`
+ * follows the OS. The `data-theme` attribute on <html> wins over the media
+ * query (styles.css).
  */
 export type Scheme = 'light' | 'dark';
 export type ThemeChoice = 'system' | Scheme;
 
-const STORAGE_KEY = 'bananasaurs-theme';
-
 const readChoice = (): ThemeChoice => {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  return stored === 'light' || stored === 'dark' ? stored : 'system';
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' || stored === 'system' ? stored : 'light';
+  } catch {
+    return 'light';
+  }
 };
 
 const media = (): MediaQueryList | undefined =>
@@ -52,7 +56,7 @@ export function ThemeProvider({ children }: { readonly children: ReactNode }) {
   }, [choice]);
 
   const setChoice = (next: ThemeChoice) => {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    window.localStorage.setItem(THEME_STORAGE_KEY, next);
     setChoiceState(next);
   };
 

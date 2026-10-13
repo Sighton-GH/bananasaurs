@@ -174,6 +174,8 @@ function buildModWiring(): {
       }),
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+      showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
@@ -318,6 +320,8 @@ function buildModWiring(): {
       },
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+        showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
@@ -327,6 +331,8 @@ function buildModWiring(): {
     } satisfies HistoryDeps,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+      showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },

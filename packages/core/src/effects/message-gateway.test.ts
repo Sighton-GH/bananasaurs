@@ -45,6 +45,13 @@ interface FakeCall {
  * mean this gateway reached outside its documented surface.
  */
 class MinimalSendDiscord implements DiscordPort {
+  async deferUpdate(): Promise<void> {
+    throw new Error('not used');
+  }
+  async showModal(): Promise<void> {
+    throw new Error('not used');
+  }
+
   calls: FakeCall[] = [];
   sentMessages: OutgoingMessage[] = [];
   /** Simulated network latency, for the concurrency probe below. */

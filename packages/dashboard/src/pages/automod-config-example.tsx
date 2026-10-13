@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { CodeBlock } from '../ui/CodeBlock.js';
+import { Button } from '../ui/Button.js';
 import type { RuleKind } from '../api/automod.js';
 import { RULE_CONFIG_EXAMPLE, RULE_KIND_LABEL } from '../api/automod.js';
 
@@ -18,27 +20,25 @@ export function RuleConfigExample({
 }) {
   const example = RULE_CONFIG_EXAMPLE[kind];
   const [used, setUsed] = useState(false);
+  const [open, setOpen] = useState(false);
   return (
-    <details className="mt-1">
+    <details className="mt-1" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="cursor-pointer text-xs text-ink-muted">
         Show an example for {RULE_KIND_LABEL[kind]}
       </summary>
       <div className="mt-1">
-        <pre className="overflow-x-auto rounded-sm border border-line bg-canvas px-2 py-1 text-xs break-words whitespace-pre-wrap text-ink">
-          {example.json}
-        </pre>
+        {open && <CodeBlock code={example.json} language="json" label="Configuration example" />}
         <p className="mt-1 text-xs text-ink-muted">{example.note}</p>
         {onUse !== undefined && (
-          <button
-            type="button"
-            className="mt-1 text-xs text-ink-muted underline hover:text-ink"
+          <Button
+            size="sm"
             onClick={() => {
               onUse(example.json);
               setUsed(true);
             }}
           >
             {used ? 'Example copied into the form' : 'Use this example'}
-          </button>
+          </Button>
         )}
       </div>
     </details>

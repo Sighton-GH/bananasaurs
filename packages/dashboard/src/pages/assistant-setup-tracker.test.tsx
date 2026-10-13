@@ -379,7 +379,7 @@ describe('SetupTracker', () => {
       .getAllByRole('listitem')
       .find((li) => within(li).queryByText('Choose who can ask') !== null)!;
     fireEvent.click(within(whoRow).getByRole('checkbox', { name: 'Member' }));
-    fireEvent.click(within(whoRow).getByRole('button', { name: 'Save who can ask' }));
+    fireEvent.click(within(whoRow).getByRole('button', { name: 'Save' }));
     await screen.findByText('Saved who can ask');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/default' && c[1]?.method === 'PUT',
@@ -430,9 +430,7 @@ describe('SetupTracker', () => {
       .getAllByRole('listitem')
       .find((li) => within(li).queryByText('Choose who can ask') !== null)!;
     fireEvent.click(within(whoRow).getByRole('checkbox', { name: 'Helper' }));
-    fireEvent.click(
-      within(whoRow).getByRole('button', { name: 'Save who can ask Club assistant' }),
-    );
+    fireEvent.click(within(whoRow).getByRole('button', { name: 'Save' }));
     await screen.findByText('Saved who can ask');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',

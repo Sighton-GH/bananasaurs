@@ -1056,6 +1056,81 @@ describe('slash commands', () => {
 });
 
 /**
+ * Modal submits (ADR 0140). Driven as raw packets through discord.js's
+ * `InteractionCreate` action, like every other interaction here: a type-5
+ * dispatch builds a real `ModalSubmitInteraction` whose
+ * `isChatInputCommand()`/`isButton()`/`isStringSelectMenu()` are false,
+ * `isModalSubmit()` is true, and `fields.fields` is a `Collection` keyed by
+ * custom id — text inputs under action rows (type 4), newer components such
+ * as radio groups (type 21, one value or `null`) under labels (type 18).
+ */
+const MODAL_CUSTOM_ID = 'bs.task:update:00000000-0000-4000-8000-000000000001';
+
+const modalPacket = (over: Record<string, unknown> = {}): object => ({
+  ...commandPacket(),
+  // InteractionType.ModalSubmit
+  type: 5,
+  message: {
+    id: MESSAGE,
+    channel_id: CHANNEL,
+    type: 0,
+    content: 'task card',
+    author: { id: BOT, username: 'bananasaurs', discriminator: '0' },
+    timestamp: '2026-01-01T00:00:00.000Z',
+    edited_timestamp: null,
+  },
+  data: {
+    custom_id: MODAL_CUSTOM_ID,
+    components: [
+      // A legacy action row carries text inputs.
+      { type: 1, components: [{ type: 4, custom_id: 'body', value: 'Left side done' }] },
+      // Newer components sit under a label; a radio group reports one value or null.
+      { type: 18, component: { type: 21, custom_id: 'duration', value: '1h' } },
+      { type: 18, component: { type: 21, custom_id: 'empty', value: null } },
+    ],
+  },
+  ...over,
+});
+
+describe('modal submits (ADR 0140)', () => {
+  it('translates a modal submit, keeping text inputs and chosen radio values', () => {
+    const h = harness();
+    h.packet('InteractionCreate', modalPacket());
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({
+      kind: 'modalSubmit',
+      guildId: GUILD,
+      interactionId: INTERACTION,
+      token: 'interaction-token',
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      userId: USER,
+      customId: MODAL_CUSTOM_ID,
+      receivedAtMs: 1_700_000_000_000,
+    });
+    // Exact: the radio group left unanswered (value null) must not become a
+    // field — a toMatchObject subset would not notice an extra `empty` key.
+    expect((h.events[0] as { fields?: unknown }).fields).toEqual({
+      body: 'Left side done',
+      duration: '1h',
+    });
+    expect(h.errors).toEqual([]);
+  });
+
+  it('translates a modal submit that carries no message with messageId undefined', () => {
+    const h = harness();
+    const packet = modalPacket() as Record<string, unknown>;
+    delete packet['message'];
+    h.packet('InteractionCreate', packet);
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({ kind: 'modalSubmit', messageId: undefined });
+    expect(h.errors).toEqual([]);
+  });
+});
+
+/**
  * Audit-log entries (ADR 0123).
  *
  * `GUILD_AUDIT_LOG_ENTRY_CREATE` has a real action class

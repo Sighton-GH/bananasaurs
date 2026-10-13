@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Button } from './Button.js';
 
 /**
@@ -28,6 +28,37 @@ export function PrintOnceDialog({
   readonly onDone: () => void;
 }): ReactElement {
   const [copied, setCopied] = useState(false);
+  // Return focus to whatever opened the dialog when Done closes it (the
+  // secret is cleared by the caller; focus must not fall to <body>).
+  const openerRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const revealFrame = useRef<number | null>(null);
+  const revealGen = useRef(0);
+  // A queued reveal must never outlive its open: close/unmount cancels it and
+  // bumps the generation so a stale frame cannot act on a later open.
+  useEffect(() => {
+    if (open) return undefined;
+    revealGen.current += 1;
+    if (revealFrame.current !== null) cancelAnimationFrame(revealFrame.current);
+    revealFrame.current = null;
+    return undefined;
+  }, [open]);
+  useEffect(
+    () => () => {
+      revealGen.current += 1;
+      if (revealFrame.current !== null) cancelAnimationFrame(revealFrame.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (wasOpen.current && !open) {
+      const opener = openerRef.current;
+      openerRef.current = null;
+      if (opener !== null && opener.isConnected) opener.focus();
+    }
+    wasOpen.current = open;
+  }, [open]);
 
   const copy = async () => {
     if (secret === undefined) return;
@@ -49,9 +80,34 @@ export function PrintOnceDialog({
       onOpenChange={() => undefined}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-canvas/70" />
+        <Dialog.Overlay
+          className="fixed inset-0 z-[60] bg-canvas/70"
+          // A press on the inert backdrop must not blur the dialog to <body>.
+          onMouseDown={(e) => e.preventDefault()}
+        />
         <Dialog.Content
-          className="fixed top-1/2 left-1/2 w-[28rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-md border border-line bg-panel p-4 text-ink"
+          className="fixed z-[70] top-1/2 left-1/2 max-h-[calc(100dvh-2rem)] w-[28rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-md border border-line bg-panel p-4 text-ink [overflow-wrap:anywhere]"
+          ref={contentRef}
+          onOpenAutoFocus={() => {
+            openerRef.current =
+              document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            // Radix focuses after this handler; reveal the focused action once it has.
+            const generation = ++revealGen.current;
+            if (revealFrame.current !== null) cancelAnimationFrame(revealFrame.current);
+            revealFrame.current = requestAnimationFrame(() => {
+              revealFrame.current = null;
+              if (generation !== revealGen.current) return;
+              const active = document.activeElement;
+              if (
+                contentRef.current?.contains(active) === true &&
+                active instanceof HTMLElement &&
+                typeof active.scrollIntoView === 'function'
+              ) {
+                active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+              }
+            });
+          }}
+          onCloseAutoFocus={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
           onPointerDownOutside={(e) => e.preventDefault()}
         >
@@ -67,7 +123,7 @@ export function PrintOnceDialog({
           <p className="mt-3 rounded-sm border border-line bg-canvas px-3 py-2 font-mono text-sm break-all select-all">
             {secret}
           </p>
-          <div className="mt-4 flex justify-end gap-2">
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
             <Button onClick={() => void copy()}>{copied ? 'Copied' : 'Copy'}</Button>
             <Button variant="primary" onClick={onDone}>
               I have saved it

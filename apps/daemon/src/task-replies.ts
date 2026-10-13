@@ -53,7 +53,10 @@ export const createTaskReplySubscriber = (
         event.referencedMessageId,
       );
       if (!slot) return;
-      if ((slot.kind === 'pre_due' || slot.kind === 'custom') && slot.taskId)
+      if (
+        (slot.kind === 'pre_due' || slot.kind === 'custom' || slot.kind === 'update') &&
+        slot.taskId
+      )
         candidateIds = [slot.taskId];
       else if (slot.kind === 'evaluate' && slot.taskId) {
         candidateIds = [slot.taskId];

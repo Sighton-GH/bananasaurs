@@ -7,6 +7,11 @@ import { upsertGuild } from './guilds.js';
 import { listSlots } from './task-nudges.js';
 import {
   DEFAULT_QUIET_HOURS,
+  listTaskLinks,
+  anchorFor,
+  staleTaskCards,
+  markCardRendered,
+  lastPickup,
   approveTask,
   archiveTask,
   changeChild,
@@ -999,5 +1004,301 @@ describe('task tracking migration', () => {
         .prepare('SELECT task_id FROM task_nudge_slot_tasks WHERE guild_id = ? AND slot_id = ?')
         .get(A, 'slot-cascade'),
     ).toBeUndefined();
+  });
+});
+
+describe('task links (ADR 0140)', () => {
+  it('stores links in order on create and returns them', () => {
+    const teamId = seedTeam();
+    const taskId = seedTask(teamId, {
+      links: [
+        { label: 'Wiring diagram', url: 'https://drive.example/a.pdf' },
+        { label: 'BOM sheet', url: 'https://docs.example/bom' },
+      ],
+    });
+    expect(listTaskLinks(a, taskId)).toEqual([
+      { label: 'Wiring diagram', url: 'https://drive.example/a.pdf' },
+      { label: 'BOM sheet', url: 'https://docs.example/bom' },
+    ]);
+  });
+
+  it('replaces links on edit when given, keeps them when omitted, clears them with []', () => {
+    const teamId = seedTeam();
+    const taskId = seedTask(teamId, { links: [{ label: 'One', url: 'https://one.example' }] });
+    const base = {
+      title: 'Project',
+      assignmentKind: 'team' as const,
+      dueAt: 3000,
+      timezone: 'America/Vancouver',
+      destinationId: '444444444444444444',
+    };
+    expect(updateTask(a, taskId, 1, base, ACTOR, 5)).toBe('ok');
+    expect(listTaskLinks(a, taskId)).toEqual([{ label: 'One', url: 'https://one.example' }]);
+    expect(
+      updateTask(
+        a,
+        taskId,
+        2,
+        { ...base, links: [{ label: 'Two', url: 'https://two.example' }] },
+        ACTOR,
+        6,
+      ),
+    ).toBe('ok');
+    expect(listTaskLinks(a, taskId)).toEqual([{ label: 'Two', url: 'https://two.example' }]);
+    expect(updateTask(a, taskId, 3, { ...base, links: [] }, ACTOR, 7)).toBe('ok');
+    expect(listTaskLinks(a, taskId)).toEqual([]);
+  });
+
+  it('never returns another guild’s links', () => {
+    const teamA = seedTeam(a);
+    const taskA = seedTask(teamA, { links: [{ label: 'A', url: 'https://a.example' }] }, a);
+    expect(listTaskLinks(b, taskA)).toEqual([]);
+  });
+
+  it('the database refuses an http link and a sixth link', () => {
+    const teamId = seedTeam();
+    expect(() =>
+      seedTask(teamId, { links: [{ label: 'x', url: 'http://plain.example' }] }),
+    ).toThrow();
+    const six = Array.from({ length: 6 }, (_, i) => ({
+      label: `L${i}`,
+      url: `https://x.example/${i}`,
+    }));
+    expect(() => seedTask(teamId, { links: six })).toThrow();
+  });
+
+  it('deleting the task deletes its links', () => {
+    const teamId = seedTeam();
+    const taskId = seedTask(teamId, { links: [{ label: 'x', url: 'https://x.example' }] });
+    deleteTask(a, taskId, 1, ACTOR, 9);
+    expect(listTaskLinks(a, taskId)).toEqual([]);
+  });
+});
+
+describe('task card render state (ADR 0140)', () => {
+  const CHANNEL = '444444444444444444';
+  const MESSAGE = '555555555555555555';
+  const anchorTask = () => {
+    const teamId = seedTeam();
+    const taskId = seedTask(teamId);
+    expect(recordTaskAnchor(a, taskId, CHANNEL, MESSAGE, 3)).toBe('recorded');
+    return taskId;
+  };
+
+  it('a new anchor is stale until marked rendered at the current version', () => {
+    const taskId = anchorTask();
+    expect(staleTaskCards(a, 10)).toMatchObject([
+      { taskId, channelId: CHANNEL, messageId: MESSAGE, version: 1 },
+    ]);
+    markCardRendered(a, taskId, 1, 4);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+    expect(anchorFor(a, taskId)).toEqual({ channelId: CHANNEL, messageId: MESSAGE });
+  });
+
+  it('deleting a report makes the anchored card stale so the deleted update is refreshed away', () => {
+    const taskId = anchorTask();
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 5)).toBe('recorded');
+    const shown = getTask(a, taskId)!.version;
+    markCardRendered(a, taskId, shown, 6);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+    expect(deleteReport(a, taskId, 'r1', ACTOR, 7)).toBe('ok');
+    expect(listReports(a, taskId)).toEqual([]);
+    expect(getTask(a, taskId)!.version).toBe(shown + 1);
+    expect(staleTaskCards(a, 10)).toMatchObject([
+      { taskId, channelId: CHANNEL, messageId: MESSAGE, version: shown + 1 },
+    ]);
+    markCardRendered(a, taskId, shown + 1, 8);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('deleting a report while awaiting approval keeps the posted review approvable', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 4)).toBe(true);
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 5)).toBe('recorded');
+    const shown = getTask(a, taskId)!.version;
+    expect(requestCompletion(a, taskId, shown, MEMBER_ACTOR, 6)).toBe(true);
+    const reviewVersion = getTask(a, taskId)!.version;
+    expect(getTask(a, taskId)!.status).toBe('awaiting_approval');
+    markCardRendered(a, taskId, reviewVersion, 7);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+    expect(deleteReport(a, taskId, 'r1', ACTOR, 8)).toBe('ok');
+    expect(listReports(a, taskId)).toEqual([]);
+    // No version bump: the already-posted review card's buttons still match.
+    expect(getTask(a, taskId)!.version).toBe(reviewVersion);
+    expect(getTask(a, taskId)!.status).toBe('awaiting_approval');
+    // The anchored card is still refreshed, so the deleted update disappears.
+    expect(staleTaskCards(a, 10)).toMatchObject([
+      { taskId, channelId: CHANNEL, messageId: MESSAGE, version: reviewVersion },
+    ]);
+    expect(approveTask(a, taskId, reviewVersion, ACTOR, 9)).toBe(true);
+    expect(getTask(a, taskId)!.status).toBe('done');
+  });
+
+  it('a render finished after an overlapping report delete cannot clear the dirty marker', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 4)).toBe(true);
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 5)).toBe('recorded');
+    const shown = getTask(a, taskId)!.version;
+    expect(requestCompletion(a, taskId, shown, MEMBER_ACTOR, 6)).toBe(true);
+    const reviewVersion = getTask(a, taskId)!.version;
+    // The card is stale from the completion request; the refresh pass picks it
+    // up and awaits the Discord edit. While it awaits, the report is deleted.
+    const picked = staleTaskCards(a, 10)[0]!;
+    expect(picked).toMatchObject({ taskId, version: reviewVersion });
+    expect(deleteReport(a, taskId, 'r1', ACTOR, 9)).toBe('ok');
+    // The pre-delete render completes with the fence it was picked with: the
+    // dirty marker must survive (a 4-arg mark without the fence is the bug the
+    // phase re-review probed - it erases the marker and strands the card).
+    markCardRendered(a, taskId, picked.version, 8, picked.updatedAt);
+    expect(staleTaskCards(a, 10).map((s) => s.taskId)).toEqual([taskId]);
+    // A render read after the delete carries the current fence and clears it.
+    const fresh = staleTaskCards(a, 10)[0]!;
+    markCardRendered(a, taskId, fresh.version, 10, fresh.updatedAt);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('deleting an unknown or wrong-guild report leaves the card fresh', () => {
+    const taskId = anchorTask();
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 5)).toBe('recorded');
+    const shown = getTask(a, taskId)!.version;
+    markCardRendered(a, taskId, shown, 6);
+    expect(deleteReport(a, taskId, 'nope', ACTOR, 7)).toBe('missing');
+    expect(deleteReport(b, taskId, 'r1', ACTOR, 7)).toBe('missing');
+    expect(listReports(a, taskId)).toHaveLength(1);
+    expect(getTask(a, taskId)!.version).toBe(shown);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('a failed report delete rolls back, leaving the report and the card fresh', () => {
+    const taskId = anchorTask();
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 5)).toBe('recorded');
+    const shown = getTask(a, taskId)!.version;
+    markCardRendered(a, taskId, shown, 6);
+    db.raw.exec(
+      `CREATE TRIGGER fail_report_delete_audit BEFORE INSERT ON audit_events
+       WHEN NEW.action = 'task.report_deleted' BEGIN SELECT RAISE(ABORT, 'boom'); END`,
+    );
+    expect(() => deleteReport(a, taskId, 'r1', ACTOR, 7)).toThrow();
+    expect(listReports(a, taskId)).toHaveLength(1);
+    expect(getTask(a, taskId)!.version).toBe(shown);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('a version bump or a newer report makes the card stale again', () => {
+    const taskId = anchorTask();
+    markCardRendered(a, taskId, 1, 4);
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    expect(staleTaskCards(a, 10).map((s) => s.version)).toEqual([2]);
+    markCardRendered(a, taskId, 2, 6);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+    expect(recordReport(a, taskId, 'r1', '444444444444444444', 'did it', MEMBER_ACTOR, 7)).toBe(
+      'recorded',
+    );
+    expect(staleTaskCards(a, 10)).toHaveLength(1);
+  });
+
+  it('never moves rendered_version backwards', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    markCardRendered(a, taskId, 2, 6);
+    markCardRendered(a, taskId, 1, 7);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('skips archived tasks', () => {
+    const taskId = anchorTask();
+    archiveTask(a, taskId, 1, ACTOR, 5);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('is scoped to the guild', () => {
+    anchorTask();
+    expect(staleTaskCards(b, 10)).toEqual([]);
+  });
+
+  it('reports who last picked the task up, from the audit trail', () => {
+    const taskId = anchorTask();
+    expect(lastPickup(a, taskId)).toBeUndefined();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    expect(lastPickup(a, taskId)).toEqual({ actorId: MEMBER_ACTOR.actorId, at: 5 });
+  });
+
+  it('a lower-version render completion is rejected wholly, including its timestamp', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    markCardRendered(a, taskId, 2, 6);
+    expect(recordReport(a, taskId, 'r1', '444444444444444444', 'did it', MEMBER_ACTOR, 7)).toBe(
+      'recorded',
+    );
+    markCardRendered(a, taskId, 1, 8);
+    expect(staleTaskCards(a, 10)).toHaveLength(1);
+  });
+
+  it('rejects an obsolete render timestamp when version alone cannot make the card stale', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    markCardRendered(a, taskId, 2, 6);
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 7)).toBe('recorded');
+    // Adversarial fixture: even an accepted v1 would satisfy the task version.
+    // Only the unseen report can make this card stale, isolating the timestamp guard.
+    db.raw
+      .prepare('UPDATE club_tasks SET version = 1 WHERE guild_id = ? AND task_id = ?')
+      .run(A, taskId);
+    expect(staleTaskCards(a, 10)).toMatchObject([
+      { taskId, channelId: CHANNEL, messageId: MESSAGE, version: 1 },
+    ]);
+    markCardRendered(a, taskId, 1, 8);
+    expect(staleTaskCards(a, 10)).toMatchObject([
+      { taskId, channelId: CHANNEL, messageId: MESSAGE, version: 1 },
+    ]);
+  });
+
+  it('an equal-version re-ack clears a newer report after its snapshot is rendered', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    markCardRendered(a, taskId, 2, 6);
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 7)).toBe('recorded');
+    expect(staleTaskCards(a, 10)).toHaveLength(1);
+    markCardRendered(a, taskId, 2, 9);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('an equal-version older snapshot preserves the MAX render timestamp', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    expect(recordReport(a, taskId, 'r1', CHANNEL, 'did it', MEMBER_ACTOR, 7)).toBe('recorded');
+    markCardRendered(a, taskId, 2, 9);
+    expect(staleTaskCards(a, 10)).toEqual([]);
+    markCardRendered(a, taskId, 2, 4);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT rendered_at AS renderedAt FROM task_message_anchors WHERE guild_id = ? AND task_id = ?',
+        )
+        .get(A, taskId),
+    ).toEqual({ renderedAt: 9 });
+    expect(staleTaskCards(a, 10)).toEqual([]);
+  });
+
+  it('picks the latest pickup across actors, breaking a timestamp tie by audit order', () => {
+    const taskId = anchorTask();
+    const other = { actorType: 'member', actorId: '555555555555555555', via: 'gateway' } as const;
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    expect(setStatus(a, taskId, 2, 'not_started', ACTOR, 5)).toBe(true);
+    expect(setStatus(a, taskId, 3, 'in_progress', other, 5)).toBe(true);
+    expect(lastPickup(a, taskId)).toEqual({ actorId: other.actorId, at: 5 });
+    expect(lastPickup(b, taskId)).toBeUndefined();
+  });
+
+  it('reports no pickup when the latest pickup has no actor', () => {
+    const taskId = anchorTask();
+    expect(setStatus(a, taskId, 1, 'in_progress', MEMBER_ACTOR, 5)).toBe(true);
+    db.raw
+      .prepare(
+        `INSERT INTO audit_events (guild_id, at, actor_type, actor_id, action, subject_type, subject_id, after)
+         VALUES (?, 9, 'system', NULL, 'task.status_set', 'club_task', ?, '{"status":"in_progress"}')`,
+      )
+      .run(A, taskId);
+    expect(lastPickup(a, taskId)).toBeUndefined();
   });
 });

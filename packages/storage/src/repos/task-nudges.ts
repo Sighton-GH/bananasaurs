@@ -23,7 +23,8 @@ export type NudgeKind =
   | 'announce'
   | 'review'
   | 'clarify'
-  | 'evaluate';
+  | 'evaluate'
+  | 'update';
 export type NudgeSlot = typeof taskNudgeSlots.$inferSelect;
 
 /** Stable keys make repeated scans and restarts harmless. Caller chooses the cycle. */

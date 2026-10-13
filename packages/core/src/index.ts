@@ -34,6 +34,7 @@ export type {
   FetchedMessage,
   InteractionRef,
   OutgoingMessage,
+  OutgoingFile,
   ReactionUserPage,
   RecentMessage,
   RecentMessagesPage,
@@ -52,6 +53,7 @@ export type {
   InteractionEvent,
   MemberEvent,
   MessageEvent,
+  ModalSubmitEvent,
   NativeAutoModAction,
   NativeAutoModTrigger,
   ReactionEvent,
@@ -695,6 +697,14 @@ export {
   type TaskCommandDeps,
   type TaskCommandRow,
 } from './task/commands.js';
+export {
+  TASK_LINK_LABEL_MAX,
+  TASK_LINK_URL_MAX,
+  TASK_LINKS_MAX,
+  taskLinkSchema,
+  taskLinksSchema,
+  type TaskLinkInput,
+} from './task/links.js';
 export { isValidTimeZone, timeZoneSchema } from './task/timezone.js';
 export {
   staleTaskPostsEnvWarning,
@@ -708,6 +718,35 @@ export {
 } from './task/posts.js';
 export { ACK_PHRASES, isProgressUpdate } from './task/progress.js';
 export {
+  actorLabel,
+  buildUpdateModal,
+  renderCheckinCard,
+  renderClarifyCard,
+  renderCompletePickerCard,
+  renderDigestCard,
+  renderPickCard,
+  renderReminderCard,
+  renderReviewDecisionCard,
+  renderReviewRequestCard,
+  renderTaskCard,
+  renderTaskListCard,
+  renderUpdateCard,
+  TASK_UPDATE_BLOCKER_MAX,
+  TASK_UPDATE_BODY_MAX,
+  type CheckinCardView,
+  type DigestCardView,
+  type DigestItem,
+  type PickCardView,
+  type ReminderCardView,
+  type ReviewDecisionView,
+  type ReviewRequestView,
+  type TaskAudience,
+  type TaskCardView,
+  type TaskListView,
+  type TaskStatus,
+  type UpdateCardView,
+} from './task/cards.js';
+export {
   buildTaskEvaluationInput,
   parseTaskEvaluation,
   TASK_EVALUATION_INSTRUCTION,
@@ -715,13 +754,9 @@ export {
   type TaskEvaluation,
 } from './task/evaluate.js';
 export {
-  buildCompleteSelect,
-  buildPickComponents,
-  buildReviewComponents,
   buildTaskCustomId,
   parseTaskCustomId,
   TASK_CUSTOM_ID_PREFIX,
-  TASK_REPLY_NOTICE,
   type ParsedTaskCustomId,
 } from './task/components.js';
 export {
@@ -755,3 +790,14 @@ export {
 export * from './providers/model-capabilities.js';
 export * from './providers/gemini-quota.js';
 export * from './assistant/router.js';
+
+export * from './ui/discord/index.js';
+export { ERROR_COPY, type CopyAudience, type ErrorCode, type ErrorCopy } from './copy/errors.js';
+
+// Runtime schemas for the dashboard's generated automod editor. Predicate logic is unchanged.
+export { capsConfig } from './automod/predicates/caps.js';
+export { rapidSpamConfig } from './automod/predicates/rapid-spam.js';
+export { inviteConfig } from './automod/predicates/invite.js';
+export { linkDomainConfig } from './automod/predicates/link-domain.js';
+export { mentionSpamConfig } from './automod/predicates/mention-spam.js';
+export { emojiConfig } from './automod/predicates/emoji.js';

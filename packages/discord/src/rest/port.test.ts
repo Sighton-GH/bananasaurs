@@ -43,6 +43,19 @@ interface Recorded {
   authorization: string | undefined;
 }
 
+/**
+ * A multipart request, reduced to its JSON payload and the uploaded files,
+ * keyed by their exact field name — `files[0]` must pair with attachment id 0.
+ */
+const multipartSummary = (form: FormData): { payload: unknown; files: Record<string, string> } => {
+  const payload = form.get('payload_json');
+  const files: Record<string, string> = {};
+  for (const [key, value] of form.entries()) {
+    if (key.startsWith('files[') && typeof value !== 'string') files[key] = (value as File).name;
+  }
+  return { payload: typeof payload === 'string' ? JSON.parse(payload) : undefined, files };
+};
+
 function harness(replies: Reply[] = [{ status: 204 }], restOptions: Record<string, unknown> = {}) {
   const requests: Recorded[] = [];
   let next = 0;
@@ -57,7 +70,12 @@ function harness(replies: Reply[] = [{ status: 204 }], restOptions: Record<strin
         method: init.method ?? 'GET',
         path: parsed.pathname,
         query: parsed.search,
-        body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined,
+        body:
+          typeof init.body === 'string'
+            ? JSON.parse(init.body)
+            : init.body instanceof FormData
+              ? multipartSummary(init.body)
+              : undefined,
         // discord.js percent-encodes this header, correctly: it must be
         // ASCII-safe on the wire and a reason can contain anything.
         reason: decodeURIComponent(headers.get('x-audit-log-reason') ?? '') || undefined,
@@ -2129,5 +2147,147 @@ describe('T15 thumbnail selection', () => {
     expect(
       (await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl,
     ).toBe('https://media.discordapp.net/proxy.png');
+  });
+});
+
+describe('components V2 cards (ADR 0140)', () => {
+  const card = {
+    components: [{ type: 17, accent_color: 1, components: [{ type: 10, content: 'hi' }] }],
+    flags: 1 << 15,
+    allowedMentions: { parse: [] as [] },
+  };
+  const file = {
+    name: 'saur-thumb.png',
+    contentType: 'image/png',
+    data: new Uint8Array([137, 80, 78, 71]),
+    description: 'The Bananasaurs banana-saur',
+  };
+  const file2 = {
+    name: 'saur-full.png',
+    contentType: 'image/png',
+    data: new Uint8Array([137, 80, 78, 71, 13, 10]),
+    description: 'The Bananasaurs banana-saur, full art',
+  };
+
+  it('sends flags on a plain JSON message when there are no files', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, card);
+    expect(last(requests).body).toMatchObject({ flags: 32768, components: card.components });
+  });
+
+  it('uploads files as multipart with matching attachments metadata', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, { ...card, files: [file] });
+    const body = last(requests).body as {
+      payload: Record<string, unknown>;
+      files: Record<string, string>;
+    };
+    expect(body.files).toEqual({ 'files[0]': 'saur-thumb.png' });
+    expect(body.payload['attachments']).toEqual([
+      { id: 0, filename: 'saur-thumb.png', description: 'The Bananasaurs banana-saur' },
+    ]);
+    expect(body.payload['flags']).toBe(32768);
+  });
+
+  it('clears content and embeds when an edit turns a message into a card', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.editMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, card);
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).body).toMatchObject({ content: null, embeds: null, flags: 32768 });
+  });
+
+  it('leaves a plain edit byte-identical to before', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.editMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, { content: 'x' });
+    expect(last(requests).body).toEqual({ content: 'x' });
+  });
+
+  it('defers an update with callback type 6 and makes the follow-up ephemeral', async () => {
+    const { port, requests } = harness([
+      { status: 204 },
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    const ref = { interactionId: '888888888888888888', token: 'tok' };
+    await port.deferUpdate(GUILD, ref);
+    expect(requests[0]?.body).toEqual({ type: 6 });
+    expect(requests[0]?.authorization).toBeUndefined();
+    await port.respondToInteraction(GUILD, ref, card);
+    // 64 (ephemeral) | 32768 (components v2)
+    expect(last(requests).body).toMatchObject({ flags: 32768 | 64 });
+  });
+
+  it('uploads files on an edit as multipart with matching attachments metadata', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.editMessage(
+      GUILD,
+      { channelId: CHANNEL, messageId: MESSAGE },
+      { ...card, files: [file, file2] },
+    );
+    expect(last(requests).method).toBe('PATCH');
+    const body = last(requests).body as {
+      payload: Record<string, unknown>;
+      files: Record<string, string>;
+    };
+    // The field key is the attachment id: files[0] pairs with id 0, files[1] with id 1.
+    expect(body.files).toEqual({ 'files[0]': 'saur-thumb.png', 'files[1]': 'saur-full.png' });
+    expect(body.payload['attachments']).toEqual([
+      { id: 0, filename: 'saur-thumb.png', description: 'The Bananasaurs banana-saur' },
+      { id: 1, filename: 'saur-full.png', description: 'The Bananasaurs banana-saur, full art' },
+    ]);
+    expect(body.payload['flags']).toBe(32768);
+    // Still a card edit: content and embeds are cleared.
+    expect(body.payload['content']).toBeNull();
+    expect(body.payload['embeds']).toBeNull();
+  });
+
+  it('uploads files on an interaction follow-up as multipart, without bot auth', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    const ref = { interactionId: '888888888888888888', token: 'tok' };
+    await port.respondToInteraction(GUILD, ref, { ...card, files: [file, file2] });
+    const body = last(requests).body as {
+      payload: Record<string, unknown>;
+      files: Record<string, string>;
+    };
+    // The field key is the attachment id: files[0] pairs with id 0, files[1] with id 1.
+    expect(body.files).toEqual({ 'files[0]': 'saur-thumb.png', 'files[1]': 'saur-full.png' });
+    expect(body.payload['attachments']).toEqual([
+      { id: 0, filename: 'saur-thumb.png', description: 'The Bananasaurs banana-saur' },
+      { id: 1, filename: 'saur-full.png', description: 'The Bananasaurs banana-saur, full art' },
+    ]);
+    // Not deferred, so the card's own flags stand alone.
+    expect(body.payload['flags']).toBe(32768);
+    expect(last(requests).authorization).toBeUndefined();
+  });
+
+  it('keeps explicit flags when not deferred, and omits flags when there are none', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    const ref = { interactionId: '888888888888888888', token: 'tok' };
+    await port.respondToInteraction(GUILD, ref, { content: 'x', flags: 64 });
+    expect(requests[0]?.body).toEqual({ content: 'x', flags: 64 });
+    await port.respondToInteraction(GUILD, ref, { content: 'y' });
+    expect(requests[1]?.body).toEqual({ content: 'y' });
+  });
+
+  it('shows a modal with callback type 9', async () => {
+    const { port, requests } = harness([{ status: 204 }]);
+    const modal = { custom_id: 'bs.task:update:x', title: 'Post an update', components: [] };
+    await port.showModal(GUILD, { interactionId: '888888888888888888', token: 'tok' }, modal);
+    expect(last(requests).body).toEqual({ type: 9, data: modal });
+    expect(last(requests).authorization).toBeUndefined();
   });
 });

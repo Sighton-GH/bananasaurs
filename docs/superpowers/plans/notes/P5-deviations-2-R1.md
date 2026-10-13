@@ -1,0 +1,13 @@
+# P5 Task 2 repair R1
+
+Base: 4e704287b3c432eb88cb15d3eaa52ef5656491e9. Local-only repair; original move commits preserved.
+
+- Renamed the Radix/jsdom test helper to the existing legitimate test-support basename. Seven import occurrences updated; plain observe/unobserve/disconnect. Guard unchanged. This is structural, not behavioral RED evidence.
+- Added readableFieldProblem beside the single existing PROBLEM_TEXT map. useFieldErrors uses exact paths, maps codes, retains human instructions, and keeps server order for other consumers. Task-local summary adds field/row names and visible form order, preserving selected-assignee mapping. All invalid client link rows get their actual validation text.
+- Archive opening waits for the menu close lifecycle before opening the dialog, suppressing only this Task2 menu's automatic close focus. Additive optional ConfirmDialog returnFocus and DropdownMenu onCloseAutoFocus preserve defaults. Focus returns to the matching row, then Status or New task when unavailable. A reload-completion effect handles an opener replaced after the dialog closes. Archive URL/version unchanged; cancellations never write.
+- Unknown due uses an explicit neutral Dashboard draft; no card renderer or fake due/urgency. Known due still calls renderTaskCard. Missing Updated withholds the saved preview instead of inventing metadata. Real timestamps remain real. Preview omits pickedUp/lastUpdate and may differ from the refreshed Discord card; no activity invented.
+- Lead approved additive optional userNames and indicateExternalLinks presentation props in DiscordCardPreview/discord-markdown. Defaults stay unchanged and the original preview/markdown tests are unchanged. Known loaded names and explicitly unresolved IDs are displayed, plus visible new-tab notices; actual Discord wire output is unchanged.
+- Task-local Status/Team/Due wrapping; description 5000 and link-label 34 limits explained before typing. No shared form limits changed. Plain list scope hint restored without permission changes.
+- Existing summary-only text assertions updated to stronger field-prefixed copy. Existing request/body/URL/version/permission/guard assertions remain intact. One saved-preview test fixture now supplies a real updatedAt; a separate regression covers missing updatedAt honestly.
+
+Verification and limitations: see the delivered R1 report and raw logs. Native source re-review, actual Chrome zoom/light/dark/Back/Forward/screenshots and screen-reader testing were not performed by this implementer. No pixel, native-focus or AT-readiness claim. Full-root tests remain a phase-end obligation under the lead's cadence.

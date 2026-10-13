@@ -463,6 +463,7 @@ describe(GET_TASK_TOOL_NAME, () => {
     archived: false,
     children: [],
     reports: [],
+    links: [],
     reminders: [],
   };
   const slots = [{ slotId: `custom:task:${DUE}`, kind: 'custom', dueAt: DUE, state: 'pending' }];

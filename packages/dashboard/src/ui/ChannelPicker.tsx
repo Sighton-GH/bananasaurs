@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { GuildChannelInfo } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -39,6 +39,7 @@ export function ChannelPicker({
   );
   const { resource } = useResource('the channel list', load);
   const [focused, setFocused] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
 
   const channels = resource.state === 'ready' ? resource.data.channels : undefined;
   const wanted = kinds ?? ['text', 'announcement', 'forum'];
@@ -59,13 +60,22 @@ export function ChannelPicker({
         );
 
   return (
-    <div className="text-sm">
+    <div
+      ref={root}
+      className="text-sm"
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        // A Tab or touch move into a choice must not remove it before click.
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+      }}
+    >
       <Field
         label={label}
         hint={hint ?? 'Search by channel name and choose a result.'}
         {...(error !== undefined ? { error } : {})}
       >
         <Input
+          onClick={() => setFocused(true)}
           value={shown}
           onChange={(e) => onChange(e.target.value)}
           onFocus={(e) => {
@@ -73,7 +83,6 @@ export function ChannelPicker({
             // Typing over a chosen channel should replace it, not append to it.
             if (selected !== undefined) e.currentTarget.select();
           }}
-          onBlur={() => setFocused(false)}
           placeholder="Search channel names"
           autoComplete="off"
         />
@@ -97,14 +106,14 @@ export function ChannelPicker({
             <li key={c.channelId}>
               <button
                 type="button"
-                // onMouseDown runs before the input's blur, so a click still
-                // lands when the list is about to hide.
-                onMouseDown={(e) => {
-                  e.preventDefault();
+                // Keep pointer focus on the input, but let the native click
+                // handle mouse, touch, Enter and Space exactly once.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
                   onChange(c.channelId);
-                  // Close the list on a pick: it sits in flow, so staying
-                  // open pushes the submit button down and the next click's
-                  // blur-and-shift eats the click entirely.
+                  root.current?.querySelector('input')?.focus();
+                  // Close after focus returns so the next Tab reaches the form
+                  // action instead of reopening the in-flow choice list.
                   setFocused(false);
                 }}
                 className="flex w-full items-baseline justify-between gap-2 px-2 py-1.5 text-left text-ink hover:bg-canvas"

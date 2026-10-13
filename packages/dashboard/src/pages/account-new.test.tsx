@@ -193,4 +193,30 @@ describe('AccountNewPage', () => {
     expect(await screen.findByText('That username is already in use.')).toBeTruthy();
     expect(screen.queryByText('Give this account access')).toBeNull();
   });
+
+  it('(7c) password choice is the kit RadioGroup and a refused create keeps what was typed', async () => {
+    stubFetch([
+      {
+        method: 'POST',
+        url: '/api/accounts',
+        status: 409,
+        body: { error: 'username-taken', message: 'That username is already in use.' },
+      },
+    ]);
+    renderNew();
+    const group = screen.getByRole('radio', { name: 'Generate one for me' }).closest('fieldset');
+    expect(group?.querySelector('legend')?.textContent).toBe('How the password is set');
+    fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
+    fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'sam' } });
+    fireEvent.change(screen.getByLabelText('New password'), {
+      target: { value: 'correct horse battery' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+    });
+    await screen.findByText('That username is already in use.');
+    expect(inputOf(screen.getByLabelText('Username')).value).toBe('sam');
+    expect(inputOf(screen.getByLabelText('New password')).value).toBe('correct horse battery');
+    expect(document.querySelector('.rounded-sm')).toBeNull();
+  });
 });

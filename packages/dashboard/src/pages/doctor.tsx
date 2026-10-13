@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Link } from 'wouter';
+import { Link } from '../ui/Link.js';
 import type { DoctorProblem, DoctorReport, PublicSurfaceReport } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -8,41 +8,63 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { HelpTip } from '../ui/HelpTip.js';
+import { CodeBlock } from '../ui/CodeBlock.js';
+import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
-function ReportBody({ text, data }: { readonly text: string; readonly data: unknown }) {
+function ReportBody({
+  text,
+  data,
+  label,
+}: {
+  readonly text: string;
+  readonly data: unknown;
+  readonly label: string;
+}) {
   return (
-    <details className="mt-2">
-      <summary className="cursor-pointer text-sm text-ink-muted">Raw diagnostics</summary>
-      <pre className="mt-1 text-sm break-words whitespace-pre-wrap">{text}</pre>
-      <pre className="mt-1 overflow-x-auto text-xs break-words whitespace-pre-wrap">
-        {JSON.stringify(data, null, 2)}
-      </pre>
+    <details className="mt-3 min-w-0">
+      <summary className="cursor-pointer text-small text-ink-muted">Advanced</summary>
+      <p className="my-2 text-small text-ink-muted">Copy report</p>
+      <CodeBlock
+        label={label}
+        code={`${text}\n\n${JSON.stringify(data, null, 2)}`}
+        maxHeight={320}
+      />
     </details>
   );
 }
 
-/**
- * One finding, led by what to do about it: what is wrong, why it matters,
- * the exact fix, and a direct link to the dashboard control when one exists.
- */
-function ProblemCard({ problem }: { readonly problem: DoctorProblem }) {
+function Problems({ problems }: { readonly problems: readonly DoctorProblem[] }) {
   return (
-    <li className="rounded border border-line p-3">
-      <p className="text-sm font-medium">{problem.title}</p>
-      <p className="mt-1 text-sm text-ink-muted">Why it matters: {problem.impact}</p>
-      <p className="mt-1 text-sm">Fix: {problem.fix}</p>
-      {problem.route !== undefined && (
-        <p className="mt-1 text-sm">
-          <Link href={problem.route} className="text-accent underline">
-            Open {problem.route}
-          </Link>
-        </p>
-      )}
-      {problem.details !== undefined && (
-        <p className="mt-1 text-xs text-ink-muted">{problem.details}</p>
-      )}
-    </li>
+    <DataTable
+      caption="Doctor problems"
+      rows={problems}
+      rowKey={(p) => p.title}
+      columns={[
+        { key: 'state', header: 'State', cell: () => <Badge tone="danger">Needs attention</Badge> },
+        {
+          key: 'name',
+          header: 'Problem',
+          cell: (p) => (
+            <>
+              <p className="font-medium">{p.title}</p>
+              {p.details !== undefined && <p className="text-small text-ink-muted">{p.details}</p>}
+            </>
+          ),
+        },
+        { key: 'impact', header: 'Why it matters', cell: (p) => p.impact },
+        {
+          key: 'fix',
+          header: 'Fix',
+          cell: (p) => (
+            <>
+              <p>{p.fix}</p>
+              {p.route !== undefined && <Link href={p.route}>Open {p.route}</Link>}
+            </>
+          ),
+        },
+      ]}
+    />
   );
 }
 
@@ -100,18 +122,16 @@ export function DoctorPage() {
                   )}
                 </p>
                 {(report.data.problems?.length ?? 0) > 0 && (
-                  <ol className="mb-3 grid gap-2">
-                    {report.data.problems!.map((problem, index) => (
-                      <ProblemCard key={`${problem.title}:${String(index)}`} problem={problem} />
-                    ))}
-                  </ol>
+                  <Problems problems={report.data.problems!} />
                 )}
                 {(report.data.advisories?.length ?? 0) > 0 && (
                   <div className="mb-3">
                     <p className="text-sm font-medium">Worth knowing (not problems)</p>
                     <ul className="mt-1 list-disc pl-5 text-sm text-ink-muted">
                       {report.data.advisories!.map((advisory) => (
-                        <li key={advisory}>{advisory}</li>
+                        <li key={advisory}>
+                          <Badge tone="hold">Advisory</Badge> {advisory}
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -128,7 +148,7 @@ export function DoctorPage() {
                     </p>
                   </div>
                 )}
-                <ReportBody text={report.text} data={report.data} />
+                <ReportBody text={report.text} data={report.data} label="Bot and server report" />
               </>
             )}
           </DataState>
@@ -147,7 +167,7 @@ export function DoctorPage() {
               <>
                 <p className="mb-2">
                   {!report.probed ? (
-                    <Badge tone="neutral">
+                    <Badge wrap tone="neutral">
                       not checked - the public connector URL is not configured
                     </Badge>
                   ) : report.ok ? (
@@ -171,7 +191,7 @@ export function DoctorPage() {
                     </Link>
                   </div>
                 )}
-                <ReportBody text={report.text} data={report.data} />
+                <ReportBody text={report.text} data={report.data} label="Internet access report" />
               </>
             )}
           </DataState>

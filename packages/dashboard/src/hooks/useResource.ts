@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * The four states `docs/06` requires every page to make explicit. A page
@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from 'react';
  * definition, so both import paths name the same type.
  */
 export type Resource<T> =
-  | { readonly state: 'loading' }
+  | { readonly state: 'loading'; readonly retry?: () => void }
   | {
       readonly state: 'error';
       readonly request: string;
@@ -35,24 +35,29 @@ export interface UseResource<T> {
  */
 export function useResource<T>(request: string, load: () => Promise<T>): UseResource<T> {
   const [generation, setGeneration] = useState(0);
-  const [resource, setResource] = useState<Resource<T>>({ state: 'loading' });
-  const reload = useCallback(() => setGeneration((g) => g + 1), []);
+  const requestToken = useRef(0);
+  const reload = useCallback(() => {
+    // Invalidate immediately, including before React runs the next effect.
+    requestToken.current += 1;
+    setGeneration((g) => g + 1);
+  }, []);
+  const [resource, setResource] = useState<Resource<T>>({ state: 'loading', retry: reload });
 
   useEffect(() => {
-    let cancelled = false;
-    setResource({ state: 'loading' });
+    const token = ++requestToken.current;
+    setResource({ state: 'loading', retry: reload });
     load().then(
       (data) => {
-        if (!cancelled) setResource({ state: 'ready', data });
+        if (token === requestToken.current) setResource({ state: 'ready', data });
       },
       (err: unknown) => {
-        if (cancelled) return;
+        if (token !== requestToken.current) return;
         const message = err instanceof Error ? err.message : String(err);
         setResource({ state: 'error', request, message, error: err, retry: reload });
       },
     );
     return () => {
-      cancelled = true;
+      requestToken.current += 1;
     };
     // `load` is expected to be stable (wrap it in useCallback at the call site).
   }, [generation, load, request, reload]);

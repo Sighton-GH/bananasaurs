@@ -7,6 +7,8 @@ import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
+import { DescriptionList } from '../ui/DescriptionList.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { Checkbox } from '../ui/Field.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
@@ -15,6 +17,10 @@ import { EmptyState } from '../ui/EmptyState.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
+
+const When = ({ at }: { readonly at: number }) => (
+  <span title={new Date(at).toLocaleString()}>{relativeTime(at, Date.now())}</span>
+);
 
 const stateTone = (state: string): 'danger' | 'ok' | 'neutral' =>
   state === 'failed' ? 'danger' : state === 'done' ? 'ok' : 'neutral';
@@ -144,7 +150,7 @@ export function JobsPage() {
               {
                 key: 'runAfter',
                 header: 'Run after',
-                cell: (j) => new Date(j.runAfter).toLocaleString(),
+                cell: (j) => <When at={j.runAfter} />,
               },
               {
                 key: 'error',
@@ -153,7 +159,7 @@ export function JobsPage() {
                   j.lastError === null ? (
                     <span className="text-ink-muted">—</span>
                   ) : (
-                    <span className="text-danger">{j.lastError}</span>
+                    <span className="text-tone-danger-ink">{j.lastError}</span>
                   ),
               },
               {
@@ -188,22 +194,29 @@ export function JobsPage() {
       {selected !== undefined && (
         <div className="mt-4 max-w-2xl">
           <Card title={`Job #${String(selected.jobId)}`}>
-            <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[10rem_1fr]">
-              <dt className="text-ink-muted">Kind</dt>
-              <dd>{selected.kind}</dd>
-              <dt className="text-ink-muted">State</dt>
-              <dd>{selected.state}</dd>
-              <dt className="text-ink-muted">Attempts</dt>
-              <dd>
-                {String(selected.attempts)} of {String(selected.maxAttempts)}
-              </dd>
-              <dt className="text-ink-muted">Run after</dt>
-              <dd>{new Date(selected.runAfter).toLocaleString()}</dd>
-              <dt className="text-ink-muted">Duplicate-work key</dt>
-              <dd className="break-all">{selected.dedupeKey}</dd>
-              <dt className="text-ink-muted">Last error</dt>
-              <dd className="break-all">{selected.lastError ?? '—'}</dd>
-            </dl>
+            <DescriptionList
+              columns={2}
+              items={[
+                { term: 'Kind', value: selected.kind },
+                {
+                  term: 'State',
+                  value: <Badge tone={stateTone(selected.state)}>{selected.state}</Badge>,
+                },
+                {
+                  term: 'Attempts',
+                  value: `${String(selected.attempts)} of ${String(selected.maxAttempts)}`,
+                },
+                { term: 'Run after', value: <When at={selected.runAfter} /> },
+                {
+                  term: 'Duplicate-work key',
+                  value: <span className="break-all">{selected.dedupeKey}</span>,
+                },
+                {
+                  term: 'Last error',
+                  value: <span className="break-all">{selected.lastError ?? '—'}</span>,
+                },
+              ]}
+            />
           </Card>
         </div>
       )}
@@ -223,7 +236,7 @@ export function JobsPage() {
         onCancel={() => setRetrying(undefined)}
       >
         {refusal !== undefined && (
-          <p role="alert" className="mt-3 rounded-sm border border-danger px-3 py-2 text-sm">
+          <p role="alert" className="mt-3 rounded-panel border border-danger px-3 py-2 text-small">
             {refusal}
           </p>
         )}

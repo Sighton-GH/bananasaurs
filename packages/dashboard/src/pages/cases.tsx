@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { MemberRef } from '../ui/MemberRef.js';
 import { Link } from 'wouter';
 import { useHealth } from '../app/health.js';
@@ -9,6 +9,10 @@ import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { RadioGroup } from '../ui/RadioGroup.js';
+import { Button } from '../ui/Button.js';
+import { Empty } from '../ui/states.js';
+import { Moment } from './moderation/moment.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 /** One row of the `/cases` list and the `/members/:memberId` history. */
@@ -43,6 +47,7 @@ export function CasesPage() {
     [session],
   );
   const cases = useResource('the moderation cases', load);
+  const [status, setStatus] = useState<'all' | ModCase['status']>('all');
 
   const resource =
     cases.resource.state === 'ready' &&
@@ -71,41 +76,67 @@ export function CasesPage() {
       >
         {(rows) => {
           const openCount = rows.filter((c) => c.status === 'open').length;
+          const shown = status === 'all' ? rows : rows.filter((c) => c.status === status);
           return (
             <Card title={`${String(openCount)} open`}>
               <p className="mb-3 text-sm text-ink-muted">
                 A case collects one member&apos;s violations; the tier rises as they add up.
               </p>
-              <DataTable
-                caption="Moderation cases"
-                rows={rows}
-                rowKey={(c) => c.caseId}
-                columns={[
-                  {
-                    key: 'case',
-                    header: 'Case',
-                    cell: (c) => <Link href={`/cases/${c.caseId}`}>{c.caseId}</Link>,
-                  },
-                  {
-                    key: 'member',
-                    header: 'Member',
-                    cell: (c) => <MemberRef id={c.memberId} member={c.member} />,
-                  },
-                  {
-                    key: 'opened',
-                    header: 'Opened',
-                    cell: (c) => new Date(c.openedAt).toLocaleString(),
-                  },
-                  {
-                    key: 'violations',
-                    header: 'Violations',
-                    numeric: true,
-                    cell: (c) => c.violationCount,
-                  },
-                  { key: 'tier', header: 'Tier', numeric: true, cell: (c) => c.escalationTier },
-                  { key: 'status', header: 'Status', cell: (c) => statusBadge(c.status) },
-                ]}
-              />
+              <div className="mb-3 flex flex-wrap items-end gap-3">
+                <RadioGroup
+                  legend="Status"
+                  name="case-status"
+                  orientation="horizontal"
+                  value={status}
+                  onChange={(v) => setStatus(v as 'all' | ModCase['status'])}
+                  options={[
+                    { value: 'all', label: 'All' },
+                    { value: 'open', label: 'Open' },
+                    { value: 'closed', label: 'Closed' },
+                  ]}
+                />
+                <p className="text-sm text-ink-muted">
+                  Showing {String(shown.length)} of {String(rows.length)} loaded.
+                </p>
+              </div>
+              {shown.length === 0 ? (
+                <Empty
+                  art={false}
+                  title="No cases match these filters"
+                  action={<Button onClick={() => setStatus('all')}>Clear filters</Button>}
+                />
+              ) : (
+                <DataTable
+                  caption="Moderation cases"
+                  rows={shown}
+                  rowKey={(c) => c.caseId}
+                  columns={[
+                    {
+                      key: 'case',
+                      header: 'Case',
+                      cell: (c) => <Link href={`/cases/${c.caseId}`}>{c.caseId}</Link>,
+                    },
+                    {
+                      key: 'member',
+                      header: 'Member',
+                      cell: (c) => <MemberRef id={c.memberId} member={c.member} />,
+                    },
+                    {
+                      key: 'opened',
+                      header: 'Opened',
+                      cell: (c) => <Moment at={c.openedAt} />,
+                    },
+                    {
+                      key: 'violations',
+                      header: 'Violations',
+                      numeric: true,
+                      cell: (c) => c.violationCount,
+                    },
+                    { key: 'tier', header: 'Tier', numeric: true, cell: (c) => c.escalationTier },
+                    { key: 'status', header: 'Status', cell: (c) => statusBadge(c.status) },
+                  ]}
+                />
+              )}
             </Card>
           );
         }}

@@ -90,3 +90,20 @@ describe('findGuideTopic', () => {
     expect(findGuideTopic('   ')).toBeUndefined();
   });
 });
+
+// ADR 0140: pin the copy shared by the dashboard and connected-app guide.
+describe('Tasks through a connection copy', () => {
+  it('says progress records are posted as update cards when task posts are on', () => {
+    const body = findGuideTopic('claude-tools-tasks')!.body;
+    expect(body.split('\n')).toContain(
+      '- `task_progress`: record a progress report on an open task, posted to the task channel as an update card when task posts are on, or delete a report by hand.',
+    );
+    expect(body).not.toContain('without posting it');
+  });
+
+  it('names the five-link limit and both task link editing tools', () => {
+    expect(findGuideTopic('claude-tools-tasks')!.body.split('\n')).toContain(
+      'Tasks can carry up to 5 links (`links` on `create_task` / `update_task edit`).',
+    );
+  });
+});

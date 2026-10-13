@@ -125,6 +125,9 @@ export const updateTaskParams = {
   dueAt: editTaskParams.dueAt.optional().describe('edit uses this.'),
   timezone: editTaskParams.timezone.optional().describe('edit uses this.'),
   destinationId: editTaskParams.destinationId.optional().describe('edit uses this.'),
+  links: editTaskParams.links
+    .optional()
+    .describe('edit uses this. Omit to keep the links; [] clears them.'),
   status: setStatusParams.status.optional().describe('set_status uses this.'),
 };
 export const runUpdateTask = (
@@ -204,7 +207,7 @@ export const runTaskReminders = (
 export const TASK_PROGRESS_TOOL_NAME = 'task_progress';
 export const TASK_PROGRESS_TOOL_DESCRIPTION = [
   'Manage the progress reports of a task.',
-  'record: record a progress report on an open task; does not post it. Retrying with the same requestId is a no-op.',
+  "record: record a progress report on an open task. When task posts are on, it is posted to the task's channel as an update card within a minute. Retrying with the same requestId is a no-op.",
   'delete_report: delete one progress report from a task, by hand. This is how a member data-deletion request is honoured.',
 ].join('\n');
 export const TASK_PROGRESS_ACTIONS = {

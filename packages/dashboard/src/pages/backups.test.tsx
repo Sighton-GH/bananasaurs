@@ -63,4 +63,42 @@ describe('BackupsPage', () => {
     expect(bodyOf(post)).toEqual({});
     expect(mock.mock.calls.filter((c) => (c[0] as string) === '/api/backups')).toHaveLength(2);
   });
+
+  it('shows created as relative time with the absolute time on hover, and the checksum as a badge', async () => {
+    stubFetch([
+      {
+        url: '/api/backups',
+        body: {
+          backups: [
+            {
+              fileName: 'a.db',
+              sizeBytes: 1,
+              createdAtMs: Date.now() - 2 * 86_400_000,
+              hasChecksum: false,
+            },
+          ],
+        },
+      },
+    ]);
+    renderWithSession(<BackupsPage />);
+    const when = await screen.findByText('2 days ago');
+    expect(when.getAttribute('title')).toMatch(/\d/);
+    expect(screen.getByText('missing').className).toContain('border-tone-hold');
+  });
+
+  it('an empty list offers the first backup; a 500 is unavailable and a 403 forbidden', async () => {
+    stubFetch([{ url: '/api/backups', body: { backups: [] } }]);
+    renderWithSession(<BackupsPage />);
+    expect(await screen.findByText('No backups on disk')).toBeTruthy();
+    cleanup();
+    stubFetch([{ url: '/api/backups', status: 500, body: { error: 'boom' } }]);
+    renderWithSession(<BackupsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('No backups on disk')).toBeNull();
+    cleanup();
+    stubFetch([{ url: '/api/backups', status: 403, body: { error: 'forbidden' } }]);
+    renderWithSession(<BackupsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('No backups on disk')).toBeNull();
+  });
 });

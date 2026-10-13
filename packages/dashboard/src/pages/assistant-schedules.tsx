@@ -1,4 +1,7 @@
-import { useCallback } from 'react';
+import { Moment } from './messages-assistant/time.js';
+import { Field, Input } from '../ui/Field.js';
+import { Empty } from '../ui/states.js';
+import { useCallback, useState } from 'react';
 import {
   ASSISTANT_URL,
   reminderCancelUrl,
@@ -24,14 +27,30 @@ import { reminderTone } from './assistant-shared.js';
  */
 export function AssistantSchedulesPage() {
   const session = useSession();
+  const [filter, setFilter] = useState('');
   const load = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
   const assistant = useResource('assistant schedules', load);
+  const loaded = assistant.resource.state === 'ready' ? assistant.resource.data : undefined;
   return (
     <>
       <PageHeader
         title="Schedules"
         purpose="Reminders the assistant will post, and what already went out."
       />
+      <div className="mb-3 flex max-w-2xl flex-wrap items-end gap-2">
+        <Field label="Filter loaded reminders">
+          <Input value={filter} onChange={(event) => setFilter(event.target.value)} />
+        </Field>
+        {filter === '' ||
+        loaded === undefined ||
+        loaded.reminders.some((row) =>
+          `${row.text} ${row.status} ${loaded.channels?.find((c) => c.id === row.destinationId)?.name ?? row.destinationId}`
+            .toLowerCase()
+            .includes(filter.toLowerCase()),
+        ) ? (
+          <Button onClick={() => setFilter('')}>Clear filters</Button>
+        ) : null}
+      </div>
       <DataState
         resource={assistant.resource}
         isEmpty={(data) => data.reminders.length === 0}
@@ -46,7 +65,19 @@ export function AssistantSchedulesPage() {
       >
         {(data) => {
           const channelName = (id: string) => data.channels?.find((c) => c.id === id)?.name;
+          const rows = data.reminders.filter((row) =>
+            `${row.text} ${row.status} ${channelName(row.destinationId) ?? row.destinationId}`
+              .toLowerCase()
+              .includes(filter.toLowerCase()),
+          );
           const failed = data.reminders.filter((r) => r.status === 'failed').length;
+          if (rows.length === 0)
+            return (
+              <Empty
+                title="No reminders match these filters"
+                action={<Button onClick={() => setFilter('')}>Clear filters</Button>}
+              />
+            );
           return (
             <Card title="Reminders">
               <p className="mb-3 text-sm text-ink-muted">
@@ -64,14 +95,14 @@ export function AssistantSchedulesPage() {
               </p>
               <DataTable
                 caption="Assistant reminders"
-                rows={[...data.reminders].sort((a, b) => a.dueAt - b.dueAt)}
+                rows={[...rows].sort((a, b) => a.dueAt - b.dueAt)}
                 rowKey={(r: ReminderRow) => r.id}
                 columns={[
                   { key: 'reminder', header: 'Reminder', cell: (r) => r.text },
                   {
                     key: 'when',
                     header: 'Runs at',
-                    cell: (r) => new Date(r.dueAt).toLocaleString('en-CA'),
+                    cell: (r) => <Moment at={r.dueAt} />,
                   },
                   {
                     key: 'destination',

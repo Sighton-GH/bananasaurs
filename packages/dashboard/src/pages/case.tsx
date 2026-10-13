@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { Moment } from './moderation/moment.js';
 import { useParams } from 'wouter';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -52,6 +53,7 @@ export function CasePage() {
     <>
       <PageHeader
         title="Moderation case"
+        crumbs={[{ label: 'Cases', href: '/cases' }]}
         purpose="One moderation case and what Bananasaurs did about it."
       />
       <DataState resource={detail.resource}>
@@ -70,7 +72,9 @@ export function CasePage() {
                       : `${item.member.displayName} (@${item.member.username})`}
                   </dd>
                   <dt className="text-ink-muted">Opened</dt>
-                  <dd>{new Date(item.openedAt).toLocaleString()}</dd>
+                  <dd>
+                    <Moment at={item.openedAt} />
+                  </dd>
                   <dt className="text-ink-muted">Violations</dt>
                   <dd>{item.violationCount}</dd>
                   <dt className="text-ink-muted">Tier</dt>
@@ -93,7 +97,7 @@ export function CasePage() {
                       {
                         key: 'when',
                         header: 'When',
-                        cell: (e) => new Date(e.at).toLocaleString(),
+                        cell: (e) => <Moment at={e.at} />,
                       },
                       { key: 'rule', header: 'Rule', cell: (e) => e.ruleId },
                       { key: 'category', header: 'Category', cell: (e) => e.matchedCategory },

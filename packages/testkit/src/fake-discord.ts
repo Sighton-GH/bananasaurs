@@ -17,6 +17,8 @@ import {
   type NativeAutoModAction,
   type NativeAutoModTrigger,
   type OutgoingMessage,
+  type OutgoingFile,
+  type Modal,
   type ReactionUserPage,
   type RecentMessage,
   type RecentMessagesPage,
@@ -73,6 +75,9 @@ interface FakeMessage {
   referencedAuthorName: string | undefined;
   /** The poll `sendMessage` attached, for the `pollOf` inspector (MCP slice 5). */
   poll: OutgoingMessage['poll'];
+  flags?: number | undefined;
+  components?: readonly unknown[] | undefined;
+  files?: readonly OutgoingFile[] | undefined;
 }
 
 /**
@@ -109,7 +114,10 @@ interface FakeAuditEntry extends AuditLogEntry {
 interface FakeInteraction {
   token: string;
   createdAtMs: number;
+  acknowledged: boolean;
   deferred: boolean;
+  updateDeferred: boolean;
+  modals: Modal[];
   ephemeral: boolean;
   replies: OutgoingMessage[];
   /**
@@ -821,7 +829,10 @@ export class FakeDiscord implements DiscordPort {
     this.interactions.set(p.interactionId, {
       token: p.token,
       createdAtMs: this.clock,
+      acknowledged: false,
       deferred: false,
+      updateDeferred: false,
+      modals: [],
       ephemeral: false,
       replies: [],
       channelId: p.channelId,
@@ -853,6 +864,54 @@ export class FakeDiscord implements DiscordPort {
       values: p.values,
     });
     return interactionId;
+  }
+
+  async emitModalSubmit(p: {
+    channelId: Snowflake;
+    messageId?: Snowflake;
+    userId: Snowflake;
+    customId: string;
+    fields: Readonly<Record<string, string>>;
+    interactionId?: Snowflake;
+  }): Promise<Snowflake> {
+    const interactionId = p.interactionId ?? this.nextId();
+    const token = `tok-${interactionId}`;
+    this.registerInteraction({ interactionId, token, channelId: p.channelId });
+    await this.emit({
+      kind: 'modalSubmit',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      interactionId,
+      token,
+      channelId: p.channelId,
+      messageId: p.messageId,
+      userId: p.userId,
+      customId: p.customId,
+      fields: p.fields,
+    });
+    return interactionId;
+  }
+
+  modalsShown(interactionId: Snowflake): readonly Modal[] {
+    return this.interactions.get(interactionId)?.modals ?? [];
+  }
+
+  wasUpdateDeferred(interactionId: Snowflake): boolean {
+    return this.interactions.get(interactionId)?.updateDeferred ?? false;
+  }
+
+  /** The latest components/flags/files the bot sent or edited onto a message. */
+  sentCard(ref: DiscordMessageRef):
+    | {
+        flags?: number | undefined;
+        components?: readonly unknown[] | undefined;
+        files?: readonly OutgoingFile[] | undefined;
+      }
+    | undefined {
+    const m = this.messages.get(key(ref.channelId, ref.messageId));
+    return m === undefined
+      ? undefined
+      : { flags: m.flags, components: m.components, files: m.files };
   }
 
   /** What the member actually saw, and whether only they saw it. */
@@ -1321,7 +1380,11 @@ export class FakeDiscord implements DiscordPort {
     this.check('sendMessage', guildId);
     const messageId = this.nextId();
     this.defineMessage({ channelId, messageId, authorId: BOT_USER_ID });
-    this.mustMessage({ channelId, messageId }).poll = message.poll;
+    const m = this.mustMessage({ channelId, messageId });
+    m.poll = message.poll;
+    m.flags = message.flags;
+    m.components = message.components;
+    m.files = message.files;
     return { channelId, messageId };
   }
 
@@ -1338,6 +1401,9 @@ export class FakeDiscord implements DiscordPort {
     // else's message, so this is the failure that makes adopted panels
     // reaction-only.
     if (m.authorId !== BOT_USER_ID) throw FakeDiscord.missingPermissions();
+    m.flags = message.flags;
+    m.components = message.components;
+    m.files = message.files;
   }
 
   /**
@@ -1827,11 +1893,36 @@ export class FakeDiscord implements DiscordPort {
     this.record('deferInteraction', [guildId, { interactionId: ref.interactionId }, options]);
     this.check('deferInteraction', guildId);
     const state = this.mustInteraction(ref);
-    if (this.clock - state.createdAtMs > ACK_DEADLINE_MS) {
+    if (state.acknowledged || this.clock - state.createdAtMs > ACK_DEADLINE_MS) {
       throw FakeDiscord.unknownInteraction();
     }
+    state.acknowledged = true;
     state.deferred = true;
     state.ephemeral = options.ephemeral;
+  }
+
+  async deferUpdate(guildId: Snowflake, ref: InteractionRef): Promise<void> {
+    this.record('deferUpdate', [guildId, { interactionId: ref.interactionId }]);
+    this.check('deferUpdate', guildId);
+    const state = this.mustInteraction(ref);
+    if (state.acknowledged || this.clock - state.createdAtMs > ACK_DEADLINE_MS)
+      throw FakeDiscord.unknownInteraction();
+    state.acknowledged = true;
+    state.deferred = true;
+    state.updateDeferred = true;
+    // Follow-ups after a deferred update are private to the clicker (ADR 0140).
+    state.ephemeral = true;
+  }
+
+  async showModal(guildId: Snowflake, ref: InteractionRef, modal: Modal): Promise<void> {
+    this.record('showModal', [guildId, { interactionId: ref.interactionId }, modal]);
+    this.check('showModal', guildId);
+    const state = this.mustInteraction(ref);
+    // A modal must be the first response; any acknowledgement consumes that slot.
+    if (state.acknowledged || this.clock - state.createdAtMs > ACK_DEADLINE_MS)
+      throw FakeDiscord.unknownInteraction();
+    state.acknowledged = true;
+    state.modals.push(modal);
   }
 
   async respondToInteraction(
@@ -1843,10 +1934,12 @@ export class FakeDiscord implements DiscordPort {
     this.check('respondToInteraction', guildId);
     const state = this.mustInteraction(ref);
     const age = this.clock - state.createdAtMs;
-    // Undeferred, the initial-response window still applies. Deferred, there
-    // are fifteen minutes to follow up.
-    if (!state.deferred && age > ACK_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
+    // The three-second window guards only the initial response. Once the
+    // interaction has been acknowledged — reply, defer, deferred update, or
+    // modal — follow-ups ride the token for the remaining fifteen minutes.
+    if (!state.acknowledged && age > ACK_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
     if (age > FOLLOWUP_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
+    state.acknowledged = true;
     state.replies.push(message);
     // Mirrors the REST adapter: a real follow-up always reports the posted
     // message's ref. This fake can only do the same when it was told the

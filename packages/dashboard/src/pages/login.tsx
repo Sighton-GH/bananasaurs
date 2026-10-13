@@ -6,6 +6,7 @@ import { Brand } from '../ui/Brand.js';
 import { Button } from '../ui/Button.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
+import { Select } from '../ui/Select.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 
 function Card({ title, children }: { readonly title: string; readonly children: React.ReactNode }) {
@@ -18,11 +19,11 @@ function Card({ title, children }: { readonly title: string; readonly children: 
         <div className="mb-6 flex justify-center">
           <Brand />
         </div>
-        <div className="rounded-md border border-line bg-panel/95 p-6 shadow-2xl shadow-black/20">
-          <h1 className="text-xl tracking-[-0.02em]">{title}</h1>
+        <div className="rounded-panel border border-line bg-panel/95 p-6 shadow-2xl shadow-black/20">
+          <h1 className="text-title font-semibold">{title}</h1>
           {children}
         </div>
-        <Attribution className="mt-5 text-center text-xs text-ink-muted" />
+        <Attribution className="mt-5 text-center text-caption text-ink-muted" />
       </div>
     </main>
   );
@@ -103,17 +104,14 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
         </Field>
         {choices !== undefined && (
           <Field label="Server">
-            <select
-              value={guildId ?? ''}
-              onChange={(e) => setGuildId(e.target.value)}
-              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-            >
-              {choices.map((choice) => (
-                <option key={choice.guildId} value={choice.guildId}>
-                  {choice.name ?? choice.guildId}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={guildId}
+              onValueChange={setGuildId}
+              options={choices.map((choice) => ({
+                value: choice.guildId,
+                label: choice.name ?? choice.guildId,
+              }))}
+            />
           </Field>
         )}
         <div>
@@ -169,7 +167,9 @@ export function BootstrapForm({
 
   return (
     <Card title="First-run setup">
-      <p className="mt-1 text-sm text-ink-muted">Create the owner account. This link works once.</p>
+      <p className="mt-1 text-small text-ink-muted">
+        Create the owner account. This link works once.
+      </p>
       <form onSubmit={(e) => void submit(e)} className="mt-4 grid gap-3">
         <Field
           label="Username"

@@ -273,7 +273,7 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
   'adoption allow': {
     kind: 'exception',
     reason:
-      'Not yet on the web: no page offers it. The API route POST /api/adoption-allowance exists, and the Self-granted roles page shows the adoption state but cannot grant a batch. Terminal-only until a page offers it.',
+      'Not yet on the web: no page offers it. The API route POST /api/adoption-allowance exists, and the Role panels page shows the adoption state but cannot grant a batch. Terminal-only until a page offers it.',
   },
   undo: { kind: 'covered', page: 'Audit', control: 'reverse one batch from its audit row' },
   killswitch: {

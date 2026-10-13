@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { INVALID_ARGUMENTS_MESSAGE } from '../scope.js';
 import { parseGuildId } from '@bananasaurs/core';
 import {
   runTaskAdmin,
@@ -227,6 +228,22 @@ describe('MCP task admin params for every tool', () => {
       taskId: UUID_A,
       expectedVersion: 4,
     });
+  });
+  it('create_club_task refuses a non-https link and passes https links to the port', async () => {
+    const { admin, execute } = port();
+    const bad = await runTaskAdmin(principal, admin, 'create_club_task', {
+      ...validArgs['create_club_task'],
+      links: [{ label: 'Docs', url: 'http://x.example' }],
+    });
+    expect(bad).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    expect(execute).not.toHaveBeenCalled();
+    const links = [{ label: 'Docs', url: 'https://x.example' }];
+    const ok = await runTaskAdmin(principal, admin, 'create_club_task', {
+      ...validArgs['create_club_task'],
+      links,
+    });
+    expect(ok.ok).toBe(true);
+    expect(execute.mock.calls[0]?.[3]).toMatchObject({ links });
   });
   it('create_club_task requires requestId', async () => {
     const { admin, execute } = port();

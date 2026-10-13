@@ -143,7 +143,7 @@ function renderPage(detail: unknown = SKILL_DETAIL, assistant: unknown = ASSISTA
 describe('AssistantSkillPage', () => {
   it('renders every section: overview, who can use this, the instruction, tools and recent runs, with no per-behaviour toggles', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Skill' });
+    await screen.findByRole('heading', { level: 1, name: 'Search club knowledge' });
 
     const overview = screen.getByRole('heading', { name: 'Overview' }).closest('section')!;
     expect(within(overview).getByText('Search club knowledge')).toBeTruthy();
@@ -161,7 +161,7 @@ describe('AssistantSkillPage', () => {
     ).toBeTruthy();
 
     const told = screen.getByRole('heading', { name: 'What the AI is told' }).closest('section')!;
-    expect(within(told).getByText(SKILL_DETAIL.instructionLine).tagName).toBe('PRE');
+    expect(within(told).getByText(SKILL_DETAIL.instructionLine).tagName).toBe('CODE');
 
     const tools = screen.getByRole('heading', { name: 'Tools' }).closest('section')!;
     expect(within(tools).getByText('search_archive')).toBeTruthy();
@@ -273,7 +273,7 @@ describe('AssistantSkillPage', () => {
 
   it('shows no acts note for a skill that does not act', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Skill' });
+    await screen.findByRole('heading', { level: 1, name: 'Search club knowledge' });
     expect(screen.queryByText(/This skill acts/)).toBeNull();
   });
 
@@ -317,7 +317,8 @@ describe('AssistantSkillPage', () => {
         <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
       </Router>,
     );
-    expect(await screen.findByText("That skill doesn't exist.")).toBeTruthy();
+    expect(await screen.findByText("skill doesn't exist or was deleted")).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Skill' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Back to Skills' }).getAttribute('href')).toBe(
       '/assistant/skills',
     );

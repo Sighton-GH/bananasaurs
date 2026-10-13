@@ -143,7 +143,11 @@ const individualTask = (title: string, assignees: string[]): string =>
   );
 const sentSlot = (
   slotId: string,
-  extra: { taskId?: string; teamId?: string; kind: 'pre_due' | 'custom' | 'digest' | 'evaluate' },
+  extra: {
+    taskId?: string;
+    teamId?: string;
+    kind: 'pre_due' | 'custom' | 'digest' | 'evaluate' | 'update';
+  },
   messageId: string,
   channelId = CHANNEL,
 ): void => {
@@ -478,4 +482,16 @@ describe('task reply subscriber', () => {
     expect(taskNudgeRepo.getSlot(scope, `followup:${MESSAGE}`)).toBeUndefined();
     expect(taskNudgeRepo.getSlot(scope, `evaluate:${MESSAGE}`)).toBeUndefined();
   });
+});
+
+it('records a member reply to an update card on that card task', async () => {
+  taskBindingRepo.addMembership(scope, teamId, ACTOR, 'member', ACTOR_OBJ, 3);
+  const updateMessage = '555555555555555559';
+  sentSlot('update:modal:one', { kind: 'update', taskId }, updateMessage);
+  await createTaskReplySubscriber(scope, client, discord).handle(
+    reply({ referencedMessageId: updateMessage }),
+  );
+  expect(taskRepo.listReports(scope, taskId)).toMatchObject([
+    { reportId: MESSAGE, body: 'Measurements done' },
+  ]);
 });

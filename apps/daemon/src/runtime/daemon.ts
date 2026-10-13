@@ -46,6 +46,7 @@ import { createConversationPruneTimer } from './conversation-prune-timer.js';
 import { createDailyDigestTimer } from './digest-timer.js';
 import { createHousekeepingTimer } from './housekeeping-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
+import { refreshTaskCards } from '../jobs/task-cards.js';
 import { deliverTaskNudges, planTaskNudges } from '../jobs/task-nudges.js';
 import { createTaskUpdateEvaluator } from '../jobs/task-evaluate.js';
 import { reserveEntryCall } from '../assistant/local-limit.js';
@@ -714,6 +715,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
             quietStart: config.TASK_NUDGE_QUIET_START,
             quietEnd: config.TASK_NUDGE_QUIET_END,
             evaluate: taskUpdateEvaluator,
+            logger,
+          });
+          await refreshTaskCards(scope, discord, now(), {
+            enabled: taskPostsEnabledFor(scope, config.BANANASAURS_DRY_RUN),
             logger,
           });
         } catch (err) {

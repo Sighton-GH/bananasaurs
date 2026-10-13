@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ChannelType, type Client } from 'discord.js';
-import {
-  parseGuildId,
-  parseTaskCustomId,
-  TASK_REPLY_NOTICE,
-  type DiscordPort,
-  type Logger,
-} from '@bananasaurs/core';
+import { parseGuildId, parseTaskCustomId, type DiscordPort, type Logger } from '@bananasaurs/core';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -21,7 +15,9 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { deliverTaskNudges, isQuiet, isGuildQuiet, planTaskNudges } from './task-nudges.js';
+import { scheduleUpdatePost } from './task-update-slot.js';
 import type { TaskUpdateEvaluator } from './task-evaluate.js';
+import { refreshTaskCards } from './task-cards.js';
 
 let db: MigratedTestDatabase, scope: GuildScope;
 const G = parseGuildId('111111111111111111');
@@ -167,6 +163,8 @@ afterEach(() => db.close());
 
 interface SentMessage {
   content?: string;
+  flags?: number;
+  files?: { name: string }[];
   allowedMentions?: { parse: readonly string[]; users?: string[]; roles?: string[] };
   components?: {
     type: number;
@@ -177,7 +175,31 @@ interface SentMessage {
 const sentMessages = (): { channelId: string; message: SentMessage }[] =>
   send.mock.calls.map((c) => ({ channelId: c[1], message: c[2] as SentMessage }));
 const findSend = (prefix: string) =>
-  sentMessages().find((s) => s.message.content?.startsWith(prefix));
+  sentMessages().find(
+    (s) =>
+      cardText(s.message).includes(prefix) &&
+      (prefix !== 'WAITING FOR REVIEW' || cardText(s.message).includes('Marked done by')),
+  );
+const cardText = (m: SentMessage): string => JSON.stringify(m.components ?? []);
+const cardButtons = (
+  m: SentMessage,
+): { type: number; style: number; custom_id: string; label: string }[] => {
+  const walk = (
+    value: unknown,
+  ): { type: number; style: number; custom_id: string; label: string }[] => {
+    if (Array.isArray(value)) return value.flatMap(walk);
+    if (value && typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (obj['type'] === 2)
+        return [obj as { type: number; style: number; custom_id: string; label: string }];
+      return Object.values(obj).flatMap(walk);
+    }
+    return [];
+  };
+  return walk(m.components);
+};
+const findAnnounce = () =>
+  sentMessages().find((s) => s.message.flags === 32768 && cardText(s.message).includes('NEW TASK'));
 const slotState = (slotId: string) =>
   taskNudgeRepo.listSlots(scope).find((s) => s.slotId === slotId)?.state;
 
@@ -256,37 +278,40 @@ it('pings individual assignees on a pre-due reminder', async () => {
   seedTask(teamId, { assignmentKind: 'individual', assigneeIds: [U1, U2] });
   planTaskNudges(scope, monday);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Upcoming deadline');
-  expect(found?.message.content).toContain(`<@${U1}> <@${U2}>`);
-  expect(found?.message.content).toContain(TASK_REPLY_NOTICE);
-  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [U1, U2], roles: [] });
+  const found = findSend('DUE SOON');
+  expect(cardText(found?.message ?? {})).toContain(`<@${U1}> <@${U2}>`);
+  expect(found?.message.flags).toBe(32768);
+  expect(found?.message.files?.map((f) => f.name)).toContain('saur-thumb.png');
+  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [U1, U2] });
 });
 it('pings the team member role on a team task with a member role', async () => {
   const teamId = seedTeam({ memberRoleId: MEMBER });
   seedTask(teamId, { title: 'Wire' });
   planTaskNudges(scope, monday);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Upcoming deadline');
-  expect(found?.message.content).toContain(`<@&${MEMBER}>`);
-  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [], roles: [MEMBER] });
+  const found = findSend('DUE SOON');
+  expect(cardText(found?.message ?? {})).toContain(`<@&${MEMBER}>`);
+  expect(found?.message.allowedMentions).toEqual({ parse: [], roles: [MEMBER] });
 });
 it('sends no mentions for a team task without a member role', async () => {
   const teamId = seedTeam();
   seedTask(teamId, { title: 'Wire' });
   planTaskNudges(scope, monday);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Upcoming deadline');
-  expect(found?.message.content).not.toContain('<@');
-  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [], roles: [] });
+  const found = findSend('DUE SOON');
+  expect(cardText(found?.message ?? {})).not.toContain('<@');
+  expect(found?.message.allowedMentions).toEqual({ parse: [] });
 });
 it('announces a new task, records its anchor, and never re-sends it', async () => {
   const teamId = seedTeam();
   const taskId = seedTask(teamId, { title: 'Build' });
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('New task:');
+  const found = findAnnounce();
   expect(found?.channelId).toBe(CHANNEL);
-  expect(found?.message.content).toContain('**Build**');
-  expect(found?.message.content).toContain(TASK_REPLY_NOTICE);
+  expect(found?.message.flags).toBe(32768);
+  expect(found?.message.files?.map((f) => f.name)).toContain('saur-thumb.png');
+  expect(cardText(found!.message)).toContain('NEW TASK');
+  expect(cardText(found!.message)).toContain('Build');
   const announceSlot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'announce')!;
   expect(announceSlot.messageId).toBeTruthy();
   expect(taskRepo.taskForAnchor(scope, CHANNEL, announceSlot.messageId!)).toBe(taskId);
@@ -294,6 +319,34 @@ it('announces a new task, records its anchor, and never re-sends it', async () =
   await deliverTaskNudges(scope, client, discord, monday + 1, { enabled: true });
   expect(send.mock.calls.length).toBe(calls);
   expect(slotState(announceSlot.slotId)).toBe('sent');
+});
+it('marks a newly announced card as rendered at the current version, so the next refresh pass edits nothing', async () => {
+  const teamId = seedTeam();
+  const taskId = seedTask(teamId, { title: 'Build' });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(findAnnounce()).toBeDefined();
+  const version = taskRepo.getTask(scope, taskId)!.version;
+  const row = db.raw
+    .prepare('SELECT rendered_version AS v FROM task_message_anchors WHERE task_id = ?')
+    .get(taskId) as { v: number };
+  expect(row.v).toBe(version);
+  expect(taskRepo.staleTaskCards(scope, 10)).toEqual([]);
+  const edit = vi.fn(async () => undefined);
+  const refreshDiscord = { editMessage: edit } as unknown as DiscordPort;
+  expect(await refreshTaskCards(scope, refreshDiscord, monday + 1000, { enabled: true })).toBe(0);
+  expect(edit).not.toHaveBeenCalled();
+});
+it('announces to the member role of a team task', async () => {
+  const teamId = seedTeam({ memberRoleId: MEMBER });
+  seedTask(teamId, { title: 'Wire' });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(findAnnounce()?.message.allowedMentions).toEqual({ parse: [], roles: [MEMBER] });
+});
+it('announces to the assignees of an individual task', async () => {
+  const teamId = seedTeam();
+  seedTask(teamId, { title: 'Edit', assignmentKind: 'individual', assigneeIds: [U1, U2] });
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(findAnnounce()?.message.allowedMentions).toEqual({ parse: [], users: [U1, U2] });
 });
 it('settles an announce as planned with no anchor when the send flag is off', async () => {
   const teamId = seedTeam();
@@ -309,11 +362,11 @@ it('posts a review request pinging the subteam lead with approve and send-back b
   const taskId = seedTask(teamId, { title: 'Arm' });
   expect(taskRepo.requestCompletion(scope, taskId, 1, MEMBER_ACTOR, monday)).toBe(true);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Ready for review:');
-  expect(found?.message.content).toContain(`<@${U1}>`);
-  expect(found?.message.content).toContain(`<@&${LEAD}> please review.`);
-  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [], roles: [LEAD] });
-  const buttons = found?.message.components?.[0]?.components ?? [];
+  const found = findSend('WAITING FOR REVIEW');
+  expect(cardText(found?.message ?? {})).toContain(`<@${U1}>`);
+  expect(cardText(found?.message ?? {})).toContain(`<@&${LEAD}> review this task`);
+  expect(found?.message.allowedMentions).toEqual({ parse: [], roles: [LEAD] });
+  const buttons = cardButtons(found?.message ?? {});
   expect(buttons.map((b) => [b.label, b.type, b.style])).toEqual([
     ['Approve', 2, 3],
     ['Send back', 2, 2],
@@ -335,9 +388,9 @@ it('pings the president role for a review on an exec team', async () => {
   const taskId = seedTask(teamId, { title: 'Budget' });
   expect(taskRepo.requestCompletion(scope, taskId, 1, MEMBER_ACTOR, monday)).toBe(true);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Ready for review:');
-  expect(found?.message.content).toContain(`<@&${PRESIDENT}> please review.`);
-  expect(found?.message.allowedMentions).toEqual({ parse: [], users: [], roles: [PRESIDENT] });
+  const found = findSend('WAITING FOR REVIEW');
+  expect(cardText(found?.message ?? {})).toContain(`<@&${PRESIDENT}> review this task`);
+  expect(found?.message.allowedMentions).toEqual({ parse: [], roles: [PRESIDENT] });
 });
 it('supersedes a review when the task is no longer awaiting approval', async () => {
   const teamId = seedTeam({ leadRoleId: LEAD });
@@ -345,7 +398,7 @@ it('supersedes a review when the task is no longer awaiting approval', async () 
   expect(taskRepo.requestCompletion(scope, taskId, 1, MEMBER_ACTOR, monday)).toBe(true);
   expect(taskRepo.approveTask(scope, taskId, 2, ACTOR, monday)).toBe(true);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  expect(findSend('Ready for review:')).toBeUndefined();
+  expect(findSend('WAITING FOR REVIEW')).toBeUndefined();
   expect(slotState(`review:${taskId}:2`)).toBe('superseded');
 });
 it('groups one destination into a single Monday check-in listing every task', async () => {
@@ -357,12 +410,13 @@ it('groups one destination into a single Monday check-in listing every task', as
   ];
   planTaskNudges(scope, monday);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const checkins = sentMessages().filter((s) => s.message.content?.startsWith('Weekly check-in'));
+  const checkins = sentMessages().filter((s) => cardText(s.message).includes('WEEKLY CHECK-IN'));
   expect(checkins).toHaveLength(1);
-  expect(checkins[0]?.message.content).toContain('**One**');
-  expect(checkins[0]?.message.content).toContain('**Two**');
-  expect(checkins[0]?.message.content).toContain('**Three**');
-  expect(checkins[0]?.message.content).toContain(TASK_REPLY_NOTICE);
+  expect(cardText(checkins[0]?.message ?? {})).toContain('**One**');
+  expect(cardText(checkins[0]?.message ?? {})).toContain('**Two**');
+  expect(cardText(checkins[0]?.message ?? {})).toContain('**Three**');
+  expect(checkins[0]?.message.flags).toBe(32768);
+  expect(checkins[0]?.message.files?.map((f) => f.name)).toContain('saur-thumb.png');
   const slot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'checkin')!;
   expect(taskNudgeRepo.listSlotTasks(scope, slot.slotId).sort()).toEqual([...ids].sort());
 });
@@ -384,10 +438,13 @@ it('sends an exec team with an announcement channel its weekly digest', async ()
       .map((s) => s.teamId),
   ).toContain(teamId);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = sentMessages().find((s) => s.message.content?.startsWith('Weekly Exec digest'));
+  const found = sentMessages().find((s) => cardText(s.message).includes('WEEKLY DIGEST'));
   expect(found?.channelId).toBe(ANNOUNCEMENTS);
-  expect(found?.message.content).toContain('**Budget**');
-  expect(found?.message.content).toContain('Not started');
+  expect(cardText(found?.message ?? {})).toContain('Budget');
+  expect(cardText(found?.message ?? {})).toContain('Due this week');
+  expect(found?.message.flags).toBe(32768);
+  expect(found?.message.files?.map((f) => f.name)).toContain('banner-digest.png');
+  expect(found?.message.allowedMentions).toEqual({ parse: [] });
 });
 it('holds a due pre-due through quiet hours while a review still sends', async () => {
   const teamId = seedTeam();
@@ -396,7 +453,7 @@ it('holds a due pre-due through quiet hours while a review still sends', async (
   expect(taskRepo.requestCompletion(scope, taskId, 1, MEMBER_ACTOR, monday)).toBe(true);
   setMorningQuiet();
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  expect(findSend('Ready for review:')).toBeDefined();
+  expect(findSend('WAITING FOR REVIEW')).toBeDefined();
   const pre = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'pre_due')!;
   expect(pre.state).toBe('pending');
   expect(taskNudgeRepo.listDeliveries(scope).filter((d) => d.slotId === pre.slotId)).toHaveLength(
@@ -415,7 +472,7 @@ it('sends to an archived-but-unlocked thread: Discord unarchives on send', async
   const teamId = seedTeam();
   seedTask(teamId, { title: 'Threaded', destinationId: THREAD });
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  expect(findSend('New task:')).toBeDefined();
+  expect(findAnnounce()).toBeDefined();
   const announceSlot = taskNudgeRepo.listSlots(scope).find((s) => s.kind === 'announce')!;
   expect(announceSlot.state).toBe('sent');
 });
@@ -510,18 +567,21 @@ it('replies to the member message with pick buttons for a clarification', async 
   );
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
   const clarifyCall = send.mock.calls.find((c) =>
-    (c[2] as SentMessage).content?.startsWith('Which task is this update for?'),
+    cardText(c[2] as SentMessage).includes('Which task is this update for?'),
   );
   expect(clarifyCall).toBeDefined();
   const [guildId, channelId, message] = clarifyCall as [string, string, SentMessage];
   expect(guildId).toBe(G);
   expect(channelId).toBe(CHANNEL);
-  expect(message.content).toBe('Which task is this update for?');
+  expect(message.flags).toBe(32768);
+  expect(cardText(message)).toContain('Which task is this update for?');
+  expect(message.files).toBeUndefined();
+  expect(message.allowedMentions).toEqual({ parse: [] });
   expect(message.replyTo).toBe(REPLY_MSG);
   expect(message.components).toHaveLength(1);
-  const buttons = message.components?.[0]?.components ?? [];
+  const buttons = cardButtons(message);
   expect(buttons).toHaveLength(2);
-  expect(buttons.map((b) => b.style)).toEqual([1, 1]);
+  expect(buttons.map((b) => b.style)).toEqual([2, 2]);
   expect(parseTaskCustomId(buttons[0]?.custom_id ?? '')).toEqual({
     action: 'pick',
     choiceMessageId: REPLY_MSG,
@@ -554,13 +614,15 @@ it('supersedes a clarification when fewer than two candidates stay open', async 
   expect(findSend('Which task is this update for?')).toBeUndefined();
   expect(slotState(`clarify:${REPLY_MSG}`)).toBe('superseded');
 });
-it('falls back to an ISO due label when the stored timezone is invalid', async () => {
+it('uses Discord timestamps regardless of the stored timezone', async () => {
   const teamId = seedTeam();
   seedTask(teamId, { title: 'Odd zone', timezone: 'Nope/Zone' });
   planTaskNudges(scope, monday);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Upcoming deadline');
-  expect(found?.message.content).toContain('2026-09-30 15:00 UTC');
+  const found = findSend('DUE SOON');
+  expect(cardText(found?.message ?? {})).toContain(
+    `<t:${Math.floor((monday + 48 * 3_600_000) / 1000)}:f>`,
+  );
 });
 it('creates durable 48h, weekly, and team digest slots; planning records without sending', async () => {
   const teamId = seedTeam();
@@ -702,13 +764,16 @@ it('posts nothing when the update is clear', async () => {
   expect(send).not.toHaveBeenCalled();
   expect(slotState(`evaluate:${REPLY_MSG}`)).toBe('superseded');
 });
-it('replies once with the question and the notice when the update is unclear', async () => {
+it('replies once with the question card when the update is unclear', async () => {
   seedEvaluateWorld();
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true, evaluate: unclearEval });
   expect(send).toHaveBeenCalledTimes(1);
   const [, channelId, message] = send.mock.calls[0] as [string, string, SentMessage];
   expect(channelId).toBe(CHANNEL);
-  expect(message.content).toBe(`What did you finish?\n\n${TASK_REPLY_NOTICE}`);
+  expect(message.flags).toBe(32768);
+  expect(cardText(message)).toContain('QUICK QUESTION');
+  expect(cardText(message)).toContain('What did you finish?');
+  expect(message.files).toBeUndefined();
   expect(message.replyTo).toBe(REPLY_MSG);
   expect(message.allowedMentions).toEqual({ parse: [] });
   expect(slotState(`evaluate:${REPLY_MSG}`)).toBe('sent');
@@ -763,7 +828,7 @@ it('delivers an event kind during quiet hours past a full page of held slots', a
     );
   setMorningQuiet();
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  expect(findSend('Ready for review:')).toBeDefined();
+  expect(findSend('WAITING FOR REVIEW')).toBeDefined();
   expect(
     taskNudgeRepo.listSlots(scope).filter((s) => s.kind === 'custom' && s.state === 'pending'),
   ).toHaveLength(45);
@@ -787,14 +852,14 @@ it('skips the pre-due slot for a task created less than 48h before due', () => {
   planTaskNudges(scope, monday);
   expect(taskNudgeRepo.listSlots(scope).filter((s) => s.kind === 'pre_due')).toHaveLength(0);
 });
-it('names the owner when the review was requested by a non-member actor', async () => {
+it('names a non-member review requester as an organiser', async () => {
   const teamId = seedTeam({ leadRoleId: LEAD });
   const taskId = seedTask(teamId, { title: 'Arm' });
   expect(taskRepo.requestCompletion(scope, taskId, 1, ACTOR, monday)).toBe(true);
   await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
-  const found = findSend('Ready for review:');
-  expect(found?.message.content).toContain('marked complete by the owner.');
-  expect(found?.message.content).not.toContain('<@owner>');
+  const found = findSend('WAITING FOR REVIEW');
+  expect(cardText(found?.message ?? {})).toContain('Marked done by an organiser');
+  expect(cardText(found?.message ?? {})).not.toContain('<@owner>');
 });
 it('isolates a throwing slot and still sends the next one', async () => {
   const teamId = seedTeam();
@@ -837,4 +902,243 @@ it('isolates a throwing slot and still sends the next one', async () => {
       .map((s) => s.state)
       .sort(),
   ).toEqual(['failed', 'sent']);
+});
+
+const seedUpdate = (reportId = 'modal:900000000000000001') => {
+  const id = seedTask(seedTeam());
+  taskRepo.recordTaskAnchor(scope, id, CHANNEL, REPLY_MSG, monday);
+  taskRepo.recordReport(scope, id, reportId, U1, 'Left side done', MEMBER_ACTOR, monday);
+  scheduleUpdatePost(scope, id, reportId, monday);
+  return id;
+};
+it('posts an update card replying to the task anchor and evaluates the report against the new card', async () => {
+  const reportId = 'modal:900000000000000001';
+  const taskId = seedUpdate(reportId);
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  const updates = sentMessages().filter((s) => cardText(s.message).includes('UPDATE'));
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toMatchObject({
+    channelId: CHANNEL,
+    message: {
+      flags: 32768,
+      replyTo: REPLY_MSG,
+      allowedMentions: { parse: [] },
+    },
+  });
+  expect(cardText(updates[0]!.message)).toContain('Left side done');
+  const slot = taskNudgeRepo.listSlots(scope).find((s) => s.slotId === `update:${reportId}`)!;
+  expect(slot.state).toBe('sent');
+  const evaluate = taskNudgeRepo
+    .listSlots(scope)
+    .find((s) => s.slotId === `evaluate:${slot.messageId}`)!;
+  expect(JSON.parse(evaluate.payload!)).toEqual({
+    taskId,
+    channelId: CHANNEL,
+    messageId: slot.messageId,
+    reportId,
+  });
+});
+it('posts MCP updates without scheduling evaluation', async () => {
+  seedUpdate('mcp:00000000-0000-4000-8000-000000000001');
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(sentMessages().filter((s) => cardText(s.message).includes('UPDATE'))).toHaveLength(1);
+  expect(taskNudgeRepo.listSlots(scope).filter((s) => s.kind === 'evaluate')).toEqual([]);
+});
+it('settles update posts as planned without sending in planning mode', async () => {
+  seedUpdate();
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: false });
+  expect(send).not.toHaveBeenCalled();
+  expect(slotState('update:modal:900000000000000001')).toBe('planned');
+});
+it('supersedes update slots whose report is gone', async () => {
+  const id = seedTask(seedTeam());
+  expect(
+    taskRepo.recordReport(scope, id, 'modal:gone', U1, 'Deleted update', MEMBER_ACTOR, monday),
+  ).toBe('recorded');
+  scheduleUpdatePost(scope, id, 'modal:gone', monday);
+  expect(taskRepo.deleteReport(scope, id, 'modal:gone', ACTOR, monday)).toBe('ok');
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(slotState('update:modal:gone')).toBe('superseded');
+  expect(sentMessages().filter((s) => cardText(s.message).includes('UPDATE'))).toEqual([]);
+});
+it('evaluate finds the modal report by reportId rather than the update card message id', async () => {
+  const id = seedTask(seedTeam());
+  taskRepo.recordReport(
+    scope,
+    id,
+    'modal:900000000000000001',
+    U1,
+    'Left side done',
+    MEMBER_ACTOR,
+    monday,
+  );
+  taskNudgeRepo.schedule(
+    scope,
+    {
+      slotId: `evaluate:${REPLY_MSG}`,
+      kind: 'evaluate',
+      taskId: id,
+      dueAt: monday,
+      payload: JSON.stringify({
+        taskId: id,
+        channelId: CHANNEL,
+        messageId: REPLY_MSG,
+        reportId: 'modal:900000000000000001',
+      }),
+    },
+    monday,
+  );
+  const evaluate = vi.fn<TaskUpdateEvaluator>(async () => ({ ok: true, clear: true }));
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true, evaluate });
+  expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ update: 'Left side done' }));
+});
+
+it('includes the newest report in a review card with no art', async () => {
+  const teamId = seedTeam({ leadRoleId: LEAD });
+  const taskId = seedTask(teamId);
+  expect(taskRepo.setStatus(scope, taskId, 1, 'in_progress', ACTOR, monday - 3)).toBe(true);
+  expect(taskRepo.recordReport(scope, taskId, 'old', U1, 'Older update', ACTOR, monday - 2)).toBe(
+    'recorded',
+  );
+  expect(taskRepo.recordReport(scope, taskId, 'new', U1, 'Newest update', ACTOR, monday - 1)).toBe(
+    'recorded',
+  );
+  expect(taskRepo.requestCompletion(scope, taskId, 2, MEMBER_ACTOR, monday)).toBe(true);
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  const found = sentMessages().find((s) => cardText(s.message).includes('Marked done by'));
+  expect(found?.message.flags).toBe(32768);
+  expect(found?.message.files).toBeUndefined();
+  expect(cardText(found?.message ?? {})).toContain('Newest update');
+  expect(cardText(found?.message ?? {})).not.toContain('Older update');
+});
+it('sends custom reminders with art and the original audience', async () => {
+  const teamId = seedTeam({ memberRoleId: MEMBER });
+  const taskId = seedTask(teamId);
+  taskNudgeRepo.schedule(
+    scope,
+    { slotId: 'custom:card', taskId, kind: 'custom', dueAt: monday },
+    monday,
+  );
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  const found = findSend('REMINDER');
+  expect(found?.message.flags).toBe(32768);
+  expect(found?.message.files?.map((f) => f.name)).toContain('saur-thumb.png');
+  expect(found?.message.allowedMentions).toEqual({ parse: [], roles: [MEMBER] });
+});
+it('groups digest tasks by due date and includes only tasks done in the last week', async () => {
+  const teamId = seedTeam({ memberRoleId: MEMBER });
+  seedTask(teamId, { title: 'Late task', dueAt: monday - 1 });
+  seedTask(teamId, { title: 'Due now', dueAt: monday });
+  seedTask(teamId, { title: 'Later task', dueAt: monday + 7 * 86_400_000 });
+  const recent = seedTask(teamId, { title: 'Recent done' });
+  const old = seedTask(teamId, { title: 'Old done' });
+  for (const [id, at] of [
+    [recent, monday - 7 * 86_400_000],
+    [old, monday - 7 * 86_400_000 - 1],
+  ] as const) {
+    expect(taskRepo.requestCompletion(scope, id, 1, MEMBER_ACTOR, at)).toBe(true);
+    expect(taskRepo.approveTask(scope, id, 2, ACTOR, at)).toBe(true);
+  }
+  planTaskNudges(scope, monday);
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  const found = findSend('WEEKLY DIGEST');
+  const text = cardText(found?.message ?? {});
+  expect(text).toContain('Overdue');
+  expect(text).toContain('Late task');
+  expect(text).toContain('Due this week');
+  expect(text).toContain('Due now');
+  expect(text).toContain('Later');
+  expect(text).toContain('Later task');
+  expect(text).toContain('Done this week');
+  expect(text).toContain('Recent done');
+  expect(text).not.toContain('Old done');
+  expect(found?.message.allowedMentions).toEqual({ parse: [] });
+});
+it('keeps an oversized escaped digest within budget with complete rows and accurate omitted counts', async () => {
+  const teamId = seedTeam({ name: '@everyone **Exec**', memberRoleId: MEMBER });
+  const total = 24;
+  const title = (group: string, i: number) =>
+    `${group}${String(i).padStart(2, '0')} @everyone <@&${MEMBER}> ${'*'.repeat(160)}`;
+  for (let i = 0; i < total; i++) {
+    for (const [group, dueAt] of [
+      ['Overdue', monday - 1 - i],
+      ['Due', monday + i],
+      ['Later', monday + 7 * 86_400_000 + i],
+    ] as const) {
+      seedTask(teamId, {
+        title: title(group, i),
+        dueAt,
+        assignmentKind: 'individual',
+        assigneeIds: [U1, U2],
+      });
+    }
+    const done = seedTask(teamId, { title: title('Done', i) });
+    expect(taskRepo.requestCompletion(scope, done, 1, MEMBER_ACTOR, monday - 1)).toBe(true);
+    expect(taskRepo.approveTask(scope, done, 2, ACTOR, monday - 1)).toBe(true);
+  }
+  planTaskNudges(scope, monday);
+  // Delivery processes at most forty slots per pass; drain preceding task announcements first.
+  for (let pass = 0; pass < 10 && !findSend('WEEKLY DIGEST'); pass++) {
+    await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  }
+  const found = findSend('WEEKLY DIGEST');
+  expect(found).toBeDefined();
+  const textDisplays = (value: unknown): string[] => {
+    if (Array.isArray(value)) return value.flatMap(textDisplays);
+    if (value && typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (obj['type'] === 10 && typeof obj['content'] === 'string') return [obj['content']];
+      return Object.values(obj).flatMap(textDisplays);
+    }
+    return [];
+  };
+  // Count the actual escaped Text Display strings, not JSON serialization or raw titles.
+  const displays = textDisplays(found!.message.components);
+  expect(displays.reduce((sum, content) => sum + content.length, 0)).toBeLessThanOrEqual(4000);
+  const text = displays.join('\n');
+  expect(text).toContain(`${total} done, ${total} due this week, ${total} overdue`);
+  expect(text).toContain('@\u200beveryone');
+  expect(text).toContain('<\u200b@\u200b&');
+  expect(text).toContain('\\*');
+  expect(text).not.toContain('@everyone');
+  expect(text).not.toContain(`<@&${MEMBER}>`);
+  expect(displays.at(-1)).toBe('-# Posted every Monday · Use /task list to see yours');
+  for (const heading of ['Overdue', 'Due this week', '**Later**']) {
+    const section = displays.find((content) => content.split('\n')[0]!.includes(heading));
+    expect(section).toBeDefined();
+    const rows = section!.split('\n').slice(1);
+    const omittedLine = rows.pop();
+    expect(omittedLine).toMatch(/^- and \d+ more$/);
+    const omitted = Number(/^- and (\d+) more$/.exec(omittedLine!)?.[1]);
+    expect(omitted).toBeGreaterThan(0);
+    expect(rows.length + omitted).toBe(total);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).toMatch(new RegExp(`^- .+ · <@${U1}> <@${U2}> · <t:\\d+:R>$`));
+    }
+  }
+  const doneSection = displays.find((content) => content.startsWith('**✅ Done this week**'));
+  expect(doneSection).toBeDefined();
+  const doneLine = doneSection!.split('\n')[1]!;
+  expect(doneLine).toMatch(/, and \d+ more$/);
+  const doneOmitted = Number(/, and (\d+) more$/.exec(doneLine)?.[1]);
+  const shownDone = doneLine.replace(/, and \d+ more$/, '').split(', ');
+  expect(shownDone.length).toBeGreaterThan(0);
+  expect(doneOmitted).toBeGreaterThan(0);
+  expect(shownDone.length + doneOmitted).toBe(total);
+  for (const item of shownDone) expect(item).toMatch(/^Done\d{2} /);
+  expect(found!.message.allowedMentions).toEqual({ parse: [] });
+});
+it('caps check-in user pings at fifty', async () => {
+  const teamId = seedTeam();
+  const users = Array.from({ length: 60 }, (_, i) => String(100000000000000100n + BigInt(i)));
+  for (let i = 0; i < 6; i++)
+    seedTask(teamId, {
+      assignmentKind: 'individual',
+      assigneeIds: users.slice(i * 10, i * 10 + 10),
+      dueAt: monday + 48 * 3_600_000 + i,
+    });
+  planTaskNudges(scope, monday);
+  await deliverTaskNudges(scope, client, discord, monday, { enabled: true });
+  expect(findSend('WEEKLY CHECK-IN')?.message.allowedMentions?.users).toEqual(users.slice(0, 50));
 });

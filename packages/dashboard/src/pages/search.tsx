@@ -1,5 +1,12 @@
+import { FormSection } from '../ui/FormSection.js';
+import { GroupErrors } from './messages-assistant/field-summary.js';
+import { useFieldErrors } from '../hooks/useFieldErrors.js';
+import { useEffect } from 'react';
+import { Empty } from '../ui/states.js';
+import { absoluteMoment } from './messages-assistant/time.js';
+import { relativeTime } from '../lib/relative-time.js';
 import { useCallback, useState } from 'react';
-import { Link } from 'wouter';
+import { Link } from '../ui/Link.js';
 import type { ArchiveSearchResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -53,9 +60,19 @@ export function SearchPage() {
   );
   const results = useResource('the search results', load);
 
+  const fields = useFieldErrors();
+  useEffect(() => {
+    if (results.resource.state === 'error') fields.capture(results.resource.error);
+  }, [results.resource]);
+  const clear = () => {
+    fields.clear();
+    setDraft({ q: '', channelId: '', authorId: '', limit: '50' });
+    setSubmitted(undefined);
+  };
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (draft.q.trim() === '') return;
+    fields.clear();
     setSubmitted({ ...draft, q: draft.q.trim() });
   };
 
@@ -64,33 +81,57 @@ export function SearchPage() {
   return (
     <>
       <PageHeader title="Search" purpose="Search messages Bananasaurs has saved for this server." />
-      <form onSubmit={submit} className="mb-4 grid max-w-2xl gap-3">
-        <Field label="Search for">
-          <Input
-            value={draft.q}
-            onChange={(e) => set({ q: e.target.value })}
-            placeholder="Words or a phrase"
+      <form
+        id="field-search"
+        tabIndex={-1}
+        aria-describedby="search-errors"
+        onSubmit={submit}
+        className="mb-4 grid max-w-2xl gap-3"
+      >
+        <FormSection title="Archive filters">
+          <GroupErrors
+            errors={fields.summary}
+            id="field-search"
+            direct={{
+              'field-q': 'field-q',
+              'field-authorId': 'field-authorId',
+              'field-limit': 'field-limit',
+              'field-channelId': 'field-channel-group',
+            }}
           />
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <ChannelPicker
-            label="Channel"
-            hint="Optional - search and choose a channel."
-            value={draft.channelId}
-            onChange={(channelId) => set({ channelId })}
-          />
-          <Field label="Author" hint="Optional">
-            <Input value={draft.authorId} onChange={(e) => set({ authorId: e.target.value })} />
+          <p className="sr-only" id="search-errors">
+            {fields.summary.map((e) => e.message).join(' ')}
+          </p>
+          <Field label="Search for" htmlFor="field-q">
+            <Input
+              value={draft.q}
+              onChange={(e) => set({ q: e.target.value })}
+              placeholder="Words or a phrase"
+            />
           </Field>
-          <Field label="Limit" hint="At most 500">
-            <Input value={draft.limit} onChange={(e) => set({ limit: e.target.value })} />
-          </Field>
-        </div>
-        <div>
-          <Button type="submit" variant="primary" disabled={draft.q.trim() === ''}>
-            Search
-          </Button>
-        </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div id="field-channel-group" tabIndex={-1}>
+              <ChannelPicker
+                label="Channel"
+                hint="Optional - search and choose a channel."
+                value={draft.channelId}
+                onChange={(channelId) => set({ channelId })}
+              />
+            </div>
+            <Field label="Author" htmlFor="field-authorId" optional>
+              <Input value={draft.authorId} onChange={(e) => set({ authorId: e.target.value })} />
+            </Field>
+            <Field label="Limit" htmlFor="field-limit" hint="At most 500">
+              <Input value={draft.limit} onChange={(e) => set({ limit: e.target.value })} />
+            </Field>
+          </div>
+          <div>
+            <Button type="submit" variant="primary" disabled={draft.q.trim() === ''}>
+              Search
+            </Button>
+            <Button onClick={clear}>Clear filters</Button>
+          </div>
+        </FormSection>
       </form>
       {submitted === undefined ? (
         <EmptyState
@@ -102,7 +143,8 @@ export function SearchPage() {
           resource={results.resource}
           isEmpty={(r) => r === undefined || r.hits.length === 0}
           empty={
-            <EmptyState
+            <Empty
+              action={<Button onClick={clear}>Clear filters</Button>}
               title="No archived messages matched"
               detail="Try fewer words, remove a channel or author filter, or check that the channel is enabled on the Archive page."
             />
@@ -134,7 +176,14 @@ export function SearchPage() {
                     {
                       key: 'when',
                       header: 'Sent',
-                      cell: (h) => new Date(h.createdAt).toLocaleString(),
+                      cell: (h) => (
+                        <time
+                          dateTime={new Date(h.createdAt).toISOString()}
+                          title={absoluteMoment(h.createdAt)}
+                        >
+                          {relativeTime(h.createdAt, Date.now())}
+                        </time>
+                      ),
                     },
                     { key: 'message', header: 'Message', cell: (h) => h.messageId },
                     {

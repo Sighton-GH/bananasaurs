@@ -137,6 +137,7 @@ export interface McpTaskDetail {
     readonly createdAt: number;
   }[];
   readonly reminders: readonly McpTaskReminderSlot[];
+  readonly links: readonly { readonly label: string; readonly url: string }[];
 }
 export interface McpTaskDetailPort {
   detail(guildId: GuildId, accountId: string, taskId: string): McpTaskDetail | undefined;
@@ -170,6 +171,7 @@ export const getTaskDetailsText = (
     reports: task.reports
       .slice(-5)
       .map((report) => ({ ...report, body: clean(report.body, 2000) })),
+    links: task.links.map((link) => ({ label: clean(link.label, 34), url: link.url })),
   });
   return {
     ok: true,

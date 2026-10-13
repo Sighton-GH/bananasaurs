@@ -1,8 +1,30 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch, type StubRoute } from '../test-support.js';
 import { AssistantResourcesPage } from './assistant-resources.js';
+
+// jsdom lacks these DOM APIs called by Radix Select.
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -132,7 +154,9 @@ describe('AssistantResourcesPage', () => {
 
   it('Update now posts a manual refresh for that resource only', async () => {
     const mock = renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Update now' }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Actions for Club handbook' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Update now' }));
     await screen.findByText('Update queued');
     const post = mock.mock.calls.find(
       (c) =>
@@ -233,7 +257,16 @@ describe('AssistantResourcesPage', () => {
     expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
     expect(notice.textContent).toContain('req-0a1b2c3d');
     expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
-    expect(screen.getByText('Too large.')).toBeTruthy();
+    const titleError = screen.getByRole('textbox', { name: 'Title' });
+    expect(titleError.getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getAllByText('Title must be 200 characters or fewer.')).toHaveLength(2);
+    expect(document.activeElement?.textContent).toContain("There's a problem");
+    expect((titleError as HTMLInputElement).value).toBe(
+      'An absurdly long title that the server refuses',
+    );
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'URL' }).value).toBe(
+      'https://example.com/too-big',
+    );
     // The code survives only inside the `code · HTTP n · request id` meta line.
     expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
   });
@@ -243,7 +276,9 @@ describe('AssistantResourcesPage', () => {
       ...FULL,
       resources: [{ ...FULL.resources[0]!, enabled: false }],
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Actions for Club handbook' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Enable' }));
     const put = mock.mock.calls.find(
       (c) =>
         (c[0] as string) === '/api/assistant/resources/handbook/enabled' && c[1]?.method === 'PUT',
@@ -260,10 +295,11 @@ describe('AssistantResourcesPage', () => {
   });
 
   it('renders the error state when the load fails', async () => {
-    stubFetch([]);
+    stubFetch([{ url: '/api/assistant', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AssistantResourcesPage />);
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText(/Could not load assistant resources/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't load assistant resources/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });
 
@@ -664,8 +700,9 @@ describe('Add from GitHub', () => {
         },
       ],
     );
-    const row = (await screen.findByText('acme/widget')).closest('li')!;
-    fireEvent.click(within(row).getByRole('button', { name: 'Disable' }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Actions for acme/widget' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Disable' }));
     const put = mock.mock.calls.find(
       (c) =>
         (c[0] as string) === '/api/assistant/resources/gh-acme-widget/enabled' &&
@@ -709,7 +746,12 @@ describe('Add from GitHub', () => {
     const folder = document.querySelector('details')!;
     expect(within(folder).queryByRole('button', { name: 'Edit' })).toBeNull();
     // The website row still offers Edit.
-    expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Actions for acme/widget' }));
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Actions for Club handbook' }));
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeTruthy();
   });
 });
 
@@ -789,5 +831,110 @@ describe('README-only warning', () => {
     await screen.findByText(README_ONLY_TITLE);
     const link = screen.getByRole('link', { name: 'AI setup page' });
     expect(link.getAttribute('href')?.endsWith('/assistant/setup')).toBe(true);
+  });
+});
+
+describe('Resources sweep', () => {
+  it('opens Add in a dialog without writing on open', async () => {
+    const mock = renderPage();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add resource' }))[0]!);
+    expect(screen.getByRole('dialog', { name: 'Add resource' })).toBeTruthy();
+    expect(mock.mock.calls.filter((call) => call[1]?.method === 'PUT')).toHaveLength(0);
+  });
+
+  it('shows a table and clears a source filter with no matches', async () => {
+    renderPage();
+    await screen.findByText('Club handbook');
+    expect(screen.getByRole('table', { name: 'Reviewed sources' })).toBeTruthy();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Source type' }));
+    await user.click(screen.getByRole('option', { name: 'Website' }));
+    expect(screen.getByText('No resources match these filters')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(screen.getByText('Club handbook')).toBeTruthy();
+  });
+
+  it('keeps sources visible when freshness fails without claiming Never updated or Ready', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { url: '/api/assistant/resources/freshness', status: 500, body: { error: 'unavailable' } },
+    ]);
+    renderWithSession(<AssistantResourcesPage />);
+    await screen.findByText(/Couldn't load resource cache freshness/);
+    expect(screen.getByText('Club handbook')).toBeTruthy();
+    expect(screen.getByText('Cache status unavailable')).toBeTruthy();
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.queryByText('Never updated')).toBeNull();
+  });
+
+  it('invalidates a GitHub preview when its URL changes and never imports on open', async () => {
+    const mock = renderGithub(REPO_PREVIEW);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add from GitHub' }));
+    expect(
+      mock.mock.calls.filter((call) => call[0] === '/api/assistant/github/import'),
+    ).toHaveLength(0);
+    fireEvent.change(screen.getByRole('textbox', { name: 'GitHub URL' }), {
+      target: { value: 'https://github.com/acme/widget' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    await screen.findByText('README.md');
+    fireEvent.change(screen.getByRole('textbox', { name: 'GitHub URL' }), {
+      target: { value: 'https://github.com/acme/other' },
+    });
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+  });
+});
+
+describe('Resources refusal and cache boundaries', () => {
+  it('retains edited fields after a 409 and sends the exact existing PUT body', async () => {
+    const mock = renderPage(
+      FULL,
+      [FRESH_ROW],
+      [
+        {
+          method: 'PUT',
+          url: '/api/assistant/resources/handbook',
+          status: 409,
+          body: {
+            error: 'conflict',
+            title: 'Resource changed',
+            message: 'Review the saved source and try again.',
+          },
+        },
+      ],
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Actions for Club handbook' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), {
+      target: { value: 'New handbook title' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save resource' }));
+    await screen.findByText('Resource changed');
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Title' }).value).toBe(
+      'New handbook title',
+    );
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'URL' }).value).toBe(
+      'https://example.com/handbook',
+    );
+    const put = mock.mock.calls.find(
+      (call) => call[0] === '/api/assistant/resources/handbook' && call[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({
+      id: 'handbook',
+      title: 'New handbook title',
+      url: 'https://example.com/handbook',
+      kind: 'document',
+      enabled: true,
+      reviewedAt: expect.any(String),
+    });
+    expect(put[1]?.headers).toEqual(expect.objectContaining({ 'x-bananasaurs-csrf': 'csrf-test' }));
+  });
+
+  it('never claims Ready for an enabled row without a fetch timestamp', async () => {
+    renderPage(FULL, [{ resourceId: 'handbook', chunks: 0, bytes: 0 }]);
+    await screen.findByText('Club handbook');
+    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.getByText('Needs attention')).toBeTruthy();
   });
 });

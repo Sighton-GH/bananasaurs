@@ -24,4 +24,10 @@ describe('CLI-to-web parity (owner acceptance standard, 2026-09-20)', () => {
       }
     }
   });
+
+  it('points the adoption exception at the Role panels page, not its old name', () => {
+    const entry = CLI_WEB_PARITY['adoption allow'];
+    expect(entry?.kind === 'exception' ? entry.reason : '').toContain('the Role panels page shows');
+    expect(JSON.stringify(CLI_WEB_PARITY)).not.toContain('Self-granted roles');
+  });
 });

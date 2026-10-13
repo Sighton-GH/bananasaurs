@@ -1,126 +1,76 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { renderWithSession, stubFetch, bodyOf } from '../test-support.js';
 import { AssistantMemoryPage } from './assistant-memory.js';
-
-const MEMORY = { members: [], serverCard: 'card', memories: [] };
-const tuningSettings = (values: Record<string, unknown>) => ({
-  url: '/api/assistant/tuning',
-  body: {
-    settings: Object.entries(values).map(([key, value]) => ({
-      key,
-      group: 'Assistant context',
-      label: key,
-      help: 'help',
-      display: 'count',
-      value,
-      defaultValue: value,
-      isDefault: true,
-    })),
-  },
-});
-const DIGEST_VALUES = {
-  'assistant.digestEnabled': 1,
-  'assistant.digestHour': 4,
-  'assistant.digestInputChars': 40000,
-  'assistant.digestMaxProposals': 10,
-};
-
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
-
-describe('AssistantMemoryPage digest controls (spec §4.7)', () => {
-  it('renders the digest controls with current values', async () => {
-    stubFetch([{ url: '/api/assistant', body: MEMORY }, tuningSettings(DIGEST_VALUES)]);
+const DATA = {
+  serverCard: 'Club facts',
+  memories: [{ id: 'm1', section: 'Goals', content: 'Old goal', subjectId: 'u1' }],
+  members: [],
+};
+describe('Memory recipe', () => {
+  it('labels the server card editor', async () => {
+    stubFetch([{ url: '/api/assistant', body: DATA }]);
     renderWithSession(<AssistantMemoryPage />);
-    expect(await screen.findByRole('heading', { name: 'Daily digest' })).toBeTruthy();
-    expect(
-      (await screen.findByLabelText<HTMLInputElement>('Digest on or off (1 or 0)')).value,
-    ).toBe('1');
+    expect(await screen.findByRole('textbox', { name: 'Server card' })).toBeTruthy();
   });
-  it('saves the digest hour', async () => {
+  it('keeps an edited memory open and does not claim success on a refused save', async () => {
     const mock = stubFetch([
-      { url: '/api/assistant', body: MEMORY },
-      tuningSettings(DIGEST_VALUES),
+      { url: '/api/assistant', body: DATA },
       {
         method: 'PUT',
-        url: '/api/assistant/tuning/assistant.digestHour',
-        body: { setting: { key: 'assistant.digestHour', value: 5 } },
+        url: '/api/assistant/memories/m1',
+        status: 500,
+        body: { error: 'unavailable' },
       },
     ]);
     renderWithSession(<AssistantMemoryPage />);
-    const input = await screen.findByLabelText<HTMLInputElement>('Digest hour (local time)');
-    await act(async () => {
-      fireEvent.change(input, { target: { value: '5' } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }));
-    });
-    const call = mock.mock.calls.find(
-      (c) =>
-        (c[0] as string) === '/api/assistant/tuning/assistant.digestHour' &&
-        (c[1] as RequestInit)?.method === 'PUT',
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Memory'), { target: { value: 'Keep my draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() =>
+      expect(mock.mock.calls.some((c) => (c[1] as RequestInit)?.method === 'PUT')).toBe(true),
     );
-    expect(call).toBeTruthy();
-    expect(bodyOf(call!)).toEqual({ value: 5 });
+    await screen.findByRole('alert');
+    expect(screen.getByLabelText<HTMLTextAreaElement>('Memory').value).toBe('Keep my draft');
+    expect(screen.queryByText('Memory saved')).toBeNull();
+    const call = mock.mock.calls.find((c) => (c[1] as RequestInit)?.method === 'PUT');
+    expect(bodyOf(call!)).toEqual({
+      id: 'm1',
+      section: 'Goals',
+      content: 'Keep my draft',
+      subjectId: 'u1',
+    });
+  });
+  it('keeps empty memory distinct from unavailable', async () => {
+    stubFetch([{ url: '/api/assistant', status: 500, body: { error: 'unavailable' } }]);
+    renderWithSession(<AssistantMemoryPage />);
+    expect(await screen.findByText(/Couldn't load assistant memory/)).toBeTruthy();
+    expect(screen.queryByText('No memory yet')).toBeNull();
   });
 });
 
-it('sends no writes for unchanged, blank or non-integer values', async () => {
-  const mock = stubFetch([{ url: '/api/assistant', body: MEMORY }, tuningSettings(DIGEST_VALUES)]);
-  renderWithSession(<AssistantMemoryPage />);
-  const hour = await screen.findByLabelText('Digest hour (local time)');
-  fireEvent.change(hour, { target: { value: '' } });
-  fireEvent.change(screen.getByLabelText('Digest max proposals'), { target: { value: '1.5' } });
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }));
-  });
-  expect(mock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT')).toHaveLength(0);
-});
-
-it('stops on a failed write without a success toast and reloads partial changes', async () => {
-  const mock = stubFetch([
-    { url: '/api/assistant', body: MEMORY },
-    tuningSettings(DIGEST_VALUES),
+it('maps schema errors to the edited memory and focuses a summary without losing input', async () => {
+  stubFetch([
+    { url: '/api/assistant', body: DATA },
     {
       method: 'PUT',
-      url: '/api/assistant/tuning/assistant.digestEnabled',
-      body: { setting: { key: 'assistant.digestEnabled', value: 0 } },
-    },
-    {
-      method: 'PUT',
-      url: '/api/assistant/tuning/assistant.digestHour',
-      status: 500,
-      body: { error: 'internal-error' },
+      url: '/api/assistant/memories/m1',
+      status: 400,
+      body: {
+        error: 'bad-request',
+        fields: [{ path: 'content', problem: 'Enter a shorter memory.' }],
+      },
     },
   ]);
-  const fallback = mock.getMockImplementation()!;
-  let enabledSaved = false;
-  mock.mockImplementation((input, init) => {
-    if (input === '/api/assistant/tuning/assistant.digestEnabled' && init?.method === 'PUT')
-      enabledSaved = true;
-    if (input === '/api/assistant/tuning' && enabledSaved)
-      return Promise.resolve(
-        new Response(
-          JSON.stringify(tuningSettings({ ...DIGEST_VALUES, 'assistant.digestEnabled': 0 }).body),
-        ),
-      );
-    return fallback(input, init);
-  });
   renderWithSession(<AssistantMemoryPage />);
-  fireEvent.change(await screen.findByLabelText('Digest on or off (1 or 0)'), {
-    target: { value: '0' },
-  });
-  fireEvent.change(screen.getByLabelText('Digest hour (local time)'), { target: { value: '5' } });
-  fireEvent.change(screen.getByLabelText('Digest max proposals'), { target: { value: '9' } });
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Save digest settings' }));
-  });
-  expect(screen.queryByText('Saved digest settings.')).toBeNull();
-  expect(mock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT')).toHaveLength(2);
-  expect((await screen.findByLabelText<HTMLInputElement>('Digest on or off (1 or 0)')).value).toBe(
-    '0',
-  );
-  expect(screen.getByLabelText<HTMLInputElement>('Digest hour (local time)').value).toBe('4');
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+  fireEvent.change(screen.getByLabelText('Memory'), { target: { value: 'Draft fact' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  const link = await screen.findByRole('link', { name: 'Enter a shorter memory.' });
+  expect(link.getAttribute('href')).toBe('#field-content');
+  expect(screen.getByLabelText<HTMLInputElement>('Memory').value).toBe('Draft fact');
+  await waitFor(() => expect(document.activeElement?.getAttribute('role')).toBe('alert'));
 });

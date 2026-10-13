@@ -1,15 +1,15 @@
-import { Link } from 'wouter';
 import { useHealth } from '../app/health.js';
 import { OperatorPulse } from './overview-pulse.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { HelpTip } from '../ui/HelpTip.js';
+import { Link } from '../ui/Link.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 function CardLink({ href, children }: { readonly href: string; readonly children: string }) {
   return (
-    <Link href={href} className="mt-2 inline-block text-sm text-ink-muted underline">
+    <Link href={href} className="mt-2 inline-block text-small">
       {children}
     </Link>
   );
@@ -27,14 +27,14 @@ export function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        purpose="How the bot is connected, what needs a decision right now, and what just happened — each card leads to the page that acts on it."
+        purpose="How the bot is connected, what needs a decision right now, and what just happened. Each card leads to the page that acts on it."
       />
       <DataState resource={health.resource}>
         {(h) => (
           <div className="grid max-w-4xl gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <Card title="Server">
-              <p className="text-sm font-medium">{h.guildName ?? '(name not yet known)'}</p>
-              <p className="text-sm text-ink-muted">
+              <p className="text-small font-medium">{h.guildName ?? '(name not yet known)'}</p>
+              <p className="text-small text-ink-muted">
                 ID {h.guildId}
                 <HelpTip label="the server ID">
                   Discord&apos;s numeric ID for this server; useful when talking to Discord support
@@ -43,7 +43,7 @@ export function OverviewPage() {
               </p>
             </Card>
             <Card title="Discord connection">
-              <p className="text-sm">
+              <p className="text-small">
                 {h.gateway.connected ? (
                   <Badge tone="ok">connected</Badge>
                 ) : (
@@ -57,14 +57,14 @@ export function OverviewPage() {
                   number is healthier.
                 </HelpTip>
               </p>
-              <p className="mt-1 text-sm text-ink-muted">
+              <p className="mt-1 text-small text-ink-muted">
                 in {String(h.gateway.guildCount)}{' '}
                 {h.gateway.guildCount === 1 ? 'server' : 'servers'}
               </p>
               <CardLink href="/doctor">Doctor checks this →</CardLink>
             </Card>
             <Card title="Safety">
-              <p className="flex flex-wrap items-center gap-1 text-sm">
+              <p className="flex flex-wrap items-center gap-1 text-small">
                 {h.safety?.dryRun === true && (
                   <>
                     <Badge tone="hold">dry run on</Badge>
@@ -101,7 +101,7 @@ export function OverviewPage() {
               <CardLink href="/safety">Open safety →</CardLink>
             </Card>
             <Card title="Jobs">
-              <p className="text-sm">
+              <p className="text-small">
                 {Object.entries(h.jobCounts)
                   .map(([k, v]) => `${String(v)} ${k}`)
                   .join(', ') || 'none'}
@@ -110,8 +110,8 @@ export function OverviewPage() {
                 </HelpTip>
               </p>
               {h.oldestDueJobAtMs !== undefined && (
-                <p className="mt-1 text-sm">
-                  <Badge tone="hold">
+                <p className="mt-1 text-small">
+                  <Badge wrap tone="hold">
                     running late since {new Date(h.oldestDueJobAtMs).toLocaleString()}
                   </Badge>
                 </p>
@@ -119,7 +119,7 @@ export function OverviewPage() {
               <CardLink href="/jobs">Open the queue →</CardLink>
             </Card>
             <Card title="Instance">
-              <p className="text-sm text-ink-muted">
+              <p className="text-small text-ink-muted">
                 Doctor, backups, configuration, accounts and the connector.
               </p>
               <span className="mt-2 flex flex-wrap gap-3">
@@ -129,7 +129,7 @@ export function OverviewPage() {
               </span>
             </Card>
             <Card title="Archive">
-              <p className="text-sm text-ink-muted">
+              <p className="text-small text-ink-muted">
                 Channel archiving, the search index and message tools.
               </p>
               <span className="mt-2 flex flex-wrap gap-3">

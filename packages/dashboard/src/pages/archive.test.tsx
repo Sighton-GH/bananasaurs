@@ -1,3 +1,5 @@
+import './messages-assistant/test-support.js';
+import userEvent from '@testing-library/user-event';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -138,7 +140,10 @@ describe('ArchivePage', () => {
     renderWithSession(<ArchivePage />);
     await screen.findByText('c-1');
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Do not archive threads' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Actions for c-1' }));
+      await userEvent.click(
+        await screen.findByRole('menuitem', { name: 'Do not archive threads' }),
+      );
     });
     const post = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/archive/channels/c-1/threads' && c[1]?.method === 'POST',
@@ -183,7 +188,8 @@ describe('ArchivePage', () => {
       },
     ]);
     renderWithSession(<ArchivePage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Browse' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Actions for c-1' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Browse' }));
     expect(await screen.findByText('the launch notes are pinned')).toBeTruthy();
     expect(screen.getByText('content purged')).toBeTruthy();
     expect(screen.getByText(/deleted from Discord/)).toBeTruthy();
@@ -219,7 +225,8 @@ describe('ArchivePage', () => {
       },
     ]);
     renderWithSession(<ArchivePage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Browse' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Actions for c-1' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Browse' }));
     await screen.findByText('message 25');
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Older' }));
@@ -271,4 +278,31 @@ describe('ArchivePage', () => {
     expect(await screen.findByText('Message m-1')).toBeTruthy();
     window.history.pushState({}, '', '/archive');
   });
+});
+
+it('keeps message-tool drafts when archive sections change', async () => {
+  stubFetch([{ url: '/api/archive/status', body: STATUS }]);
+  renderWithSession(<ArchivePage />);
+  (await screen.findByRole('tab', { name: 'All sections' })).focus();
+  await userEvent.keyboard('{End}');
+  expect(screen.getByRole('tab', { name: 'Message tools' }).getAttribute('aria-selected')).toBe(
+    'true',
+  );
+  fireEvent.change(screen.getByLabelText('Preserve a message'), {
+    target: { value: 'draft-message' },
+  });
+  screen.getByRole('tab', { name: 'Message tools' }).focus();
+  await userEvent.keyboard('{ArrowLeft}');
+  expect(screen.queryByRole('textbox', { name: 'Preserve a message' })).toBeNull();
+  await userEvent.keyboard('{ArrowRight}');
+  expect(screen.getByLabelText<HTMLInputElement>('Preserve a message').value).toBe('draft-message');
+});
+
+it('does not mistake unavailable archive status for an empty archive', async () => {
+  stubFetch([{ url: '/api/archive/status', status: 500, body: { error: 'unavailable' } }]);
+  renderWithSession(<ArchivePage />);
+  expect((await screen.findAllByText(/Couldn't load the archive status/)).length).toBeGreaterThan(
+    0,
+  );
+  expect(screen.queryByText(/No channels archiving yet/)).toBeNull();
 });

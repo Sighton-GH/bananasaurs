@@ -1,10 +1,16 @@
 import { ChannelType, type Client } from 'discord.js';
 import {
-  buildPickComponents,
-  buildReviewComponents,
   parseSnowflakeId,
+  renderTaskCard,
+  renderUpdateCard,
+  renderReviewRequestCard,
+  renderReminderCard,
+  renderCheckinCard,
+  renderDigestCard,
+  renderPickCard,
+  renderClarifyCard,
+  type TaskStatus,
   safeLogFields,
-  TASK_REPLY_NOTICE,
   type AccessDecision,
   type DiscordPort,
   type Logger,
@@ -15,6 +21,8 @@ import {
   taskBindingRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
+import { cardOut } from '../cards/art.js';
+import { audienceFor, taskCardView } from '../cards/task-view.js';
 import { channelAccessFor } from '../channels/access.js';
 import type { TaskUpdateEvaluator } from './task-evaluate.js';
 
@@ -84,8 +92,6 @@ export const weekKey = (now: number): string => {
   const weekday = new Date(utc).getUTCDay();
   return new Date(utc - ((weekday + 6) % 7) * 86_400_000).toISOString().slice(0, 10);
 };
-const safe = (s: string): string => s.replace(/@/g, '@\u200b').replace(/\s+/g, ' ').slice(0, 200);
-
 /** A bounded, restart-safe producer. Scheduled reminders are stored before any delivery. */
 export function planTaskNudges(scope: GuildScope, now: number, options?: TaskNudgeOptions): void {
   for (const task of repo.openTasks(scope)) {
@@ -195,22 +201,6 @@ async function destination(
   }
 }
 
-const dueLabel = (task: { dueAt: number; timezone: string }): string => {
-  try {
-    return new Intl.DateTimeFormat('en-US', {
-      timeZone: task.timezone,
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(task.dueAt);
-  } catch (err) {
-    if (err instanceof RangeError)
-      return `${new Date(task.dueAt).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-    throw err;
-  }
-};
-
 interface TaskMentions {
   readonly text: string;
   readonly users: readonly string[];
@@ -299,6 +289,7 @@ const parseFollowupPayload = (raw: string | null): FollowupPayload | undefined =
   return { channelId: parsed.channelId, messageId: parsed.messageId };
 };
 interface EvaluatePayload {
+  readonly reportId?: string;
   readonly taskId: string;
   readonly channelId: string;
   readonly messageId: string;
@@ -312,16 +303,24 @@ const parseEvaluatePayload = (raw: string | null): EvaluatePayload | undefined =
     typeof parsed.channelId !== 'string' ||
     parsed.channelId === '' ||
     typeof parsed.messageId !== 'string' ||
-    parsed.messageId === ''
+    parsed.messageId === '' ||
+    (parsed.reportId !== undefined &&
+      (typeof parsed.reportId !== 'string' || parsed.reportId === ''))
   )
     return undefined;
-  return { taskId: parsed.taskId, channelId: parsed.channelId, messageId: parsed.messageId };
+  return {
+    taskId: parsed.taskId,
+    channelId: parsed.channelId,
+    messageId: parsed.messageId,
+    ...(parsed.reportId === undefined ? {} : { reportId: parsed.reportId }),
+  };
 };
 
-const DIGEST_STATUS_LABEL: Record<string, string> = {
-  not_started: 'Not started',
-  in_progress: 'In progress',
-  awaiting_approval: 'Awaiting approval',
+const parseUpdatePayload = (raw: string | null): { reportId: string } | undefined => {
+  const parsed = parseJsonPayload(raw) as { reportId?: unknown } | undefined;
+  return parsed && typeof parsed.reportId === 'string' && parsed.reportId !== ''
+    ? { reportId: parsed.reportId }
+    : undefined;
 };
 
 export async function deliverTaskNudges(
@@ -493,17 +492,20 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
     }
-    const mentions = mentionsFor(scope, task, team);
-    const content = mentions.text
-      ? `New task: **${safe(task.title)}**\nDue ${dueLabel(task)}\nFor: ${mentions.text}\n${TASK_REPLY_NOTICE}`
-      : `New task: **${safe(task.title)}**\nDue ${dueLabel(task)}\n${TASK_REPLY_NOTICE}`;
+    const view = taskCardView(scope, task.taskId, now, 'announce');
+    if (view === undefined) {
+      repo.settle(scope, slot.slotId, 'superseded', now);
+      return;
+    }
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: content.slice(0, 2000),
-        allowedMentions: { parse: [], users: [...mentions.users], roles: [...mentions.roles] },
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(renderTaskCard(view)),
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
       taskRepo.recordTaskAnchor(scope, task.taskId, target, ref.messageId, now);
+      taskRepo.markCardRendered(scope, task.taskId, view.version, now);
     } catch {
       fail(target);
     }
@@ -536,21 +538,29 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
     }
-    // The requester is a member mention only when it is a Discord user id;
-    // a dashboard or owner actor reads as "the owner", never as a broken
-    // mention of a non-member id.
-    const requester = /^\d{17,20}$/.test(payload.requestedBy)
-      ? `<@${payload.requestedBy}>`
-      : 'the owner';
-    const content =
-      `Ready for review: **${safe(task.title)}** — marked complete by ${requester}.` +
-      (role ? ` <@&${role}> please review.` : '');
+    const latest = taskRepo
+      .listReports(scope, task.taskId)
+      .reduce<ReturnType<typeof taskRepo.listReports>[number] | undefined>(
+        (best, report) =>
+          best === undefined || report.createdAt >= best.createdAt ? report : best,
+        undefined,
+      );
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: content.slice(0, 2000),
-        allowedMentions: { parse: [], users: [], roles: role ? [role] : [] },
-        components: buildReviewComponents(task.taskId, payload.version),
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(
+          renderReviewRequestCard({
+            taskId: task.taskId,
+            version: payload.version,
+            taskTitle: task.title,
+            teamName: team.name,
+            requestedBy: payload.requestedBy,
+            ...(role ? { reviewerRoleId: role } : {}),
+            ...(latest === undefined ? {} : { latestUpdate: latest.body }),
+          }),
+        ),
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
     } catch {
       fail(target);
@@ -582,14 +592,24 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
     }
-    const mentions = mentionsFor(scope, task, team);
-    const label = slot.kind === 'pre_due' ? 'Upcoming deadline' : 'Task reminder';
-    const content = `${label}: **${safe(task.title)}** — due ${dueLabel(task)}\n${mentions.text}\n${TASK_REPLY_NOTICE}`;
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: content.slice(0, 2000),
-        allowedMentions: { parse: [], users: [...mentions.users], roles: [...mentions.roles] },
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(
+          renderReminderCard({
+            taskId: task.taskId,
+            version: task.version,
+            taskTitle: task.title,
+            teamName: team.name,
+            dueAt: task.dueAt,
+            now,
+            audience: audienceFor(scope, task, team),
+            kind: slot.kind,
+            status: task.status as TaskStatus,
+          }),
+        ),
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
     } catch {
       fail(target);
@@ -635,18 +655,25 @@ const deliverOneSlot = async (
     }
     const users: string[] = [];
     const roles: string[] = [];
-    const lines = listed.map((t) => {
+    const items = listed.map((t) => {
       const mentions = mentionsFor(scope, t, teamById.get(t.teamId));
       for (const u of mentions.users) if (!users.includes(u)) users.push(u);
       for (const r of mentions.roles) if (!roles.includes(r)) roles.push(r);
-      return `• **${safe(t.title)}** — due ${dueLabel(t)} — ${mentions.text || 'whole team'}`;
+      return { title: t.title, dueAt: t.dueAt, who: mentions.text || 'whole team' };
     });
-    const content = `Weekly check-in\n${lines.join('\n')}\n${TASK_REPLY_NOTICE}`;
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(resolved), {
-        content: content.slice(0, 2000),
-        allowedMentions: { parse: [], users: users.slice(0, 50), roles },
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(resolved),
+        cardOut(
+          renderCheckinCard({
+            teamName: firstTeam.name,
+            items,
+            pingUsers: users.slice(0, 50),
+            pingRoles: roles,
+          }),
+        ),
+      );
       repo.settleWithTasks(
         scope,
         slot.slotId,
@@ -673,23 +700,38 @@ const deliverOneSlot = async (
       repo.settle(scope, slot.slotId, 'planned', now, target);
       return;
     }
-    const listed = repo
+    const WEEK = 7 * 86_400_000;
+    const open = repo
       .openTasks(scope)
       .filter((t) => t.teamId === team.teamId && t.status !== 'done')
-      .sort((a, b) => a.dueAt - b.dueAt)
-      .slice(0, 20);
-    const body =
-      listed
-        .map(
-          (t) =>
-            `• **${safe(t.title)}** — ${DIGEST_STATUS_LABEL[t.status] ?? t.status} — due ${dueLabel(t)}`,
-        )
-        .join('\n') || 'No open tasks.';
+      .sort((a, b) => a.dueAt - b.dueAt);
+    const item = (t: (typeof open)[number]) => ({
+      title: t.title,
+      dueAt: t.dueAt,
+      who: mentionsFor(scope, t, team).text || 'whole team',
+    });
+    const overdue = open.filter((t) => t.dueAt < now).map(item);
+    const dueThisWeek = open.filter((t) => now <= t.dueAt && t.dueAt < now + WEEK).map(item);
+    const later = open.filter((t) => t.dueAt >= now + WEEK).map(item);
+    const doneThisWeek = taskRepo
+      .listTasks(scope, { teamId: team.teamId, includeDone: true, includeArchived: true })
+      .filter((t) => t.status === 'done' && t.updatedAt >= now - WEEK)
+      .map((t) => t.title);
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: `Weekly ${safe(team.name)} digest\n${body}`.slice(0, 2000),
-        allowedMentions: { parse: [] },
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(
+          renderDigestCard({
+            teamName: team.name,
+            weekOf: now,
+            overdue,
+            dueThisWeek,
+            later,
+            doneThisWeek,
+          }),
+        ),
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
     } catch {
       fail(target);
@@ -727,15 +769,16 @@ const deliverOneSlot = async (
       return;
     }
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: 'Which task is this update for?',
-        allowedMentions: { parse: [] },
-        components: buildPickComponents(
-          payload.replyMessageId,
-          shown.map((t) => ({ taskId: t.taskId, title: t.title })),
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(
+          renderPickCard({
+            choiceMessageId: payload.replyMessageId,
+            candidates: shown.map((t) => ({ taskId: t.taskId, title: t.title })),
+          }),
         ),
-        replyTo: payload.replyMessageId,
-      });
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
     } catch {
       fail(target);
@@ -780,7 +823,9 @@ const deliverOneSlot = async (
     const payload = parseEvaluatePayload(slot.payload);
     const task = payload ? repo.taskFor(scope, payload.taskId) : undefined;
     const report =
-      payload && task ? repo.getReport(scope, payload.taskId, payload.messageId) : undefined;
+      payload && task
+        ? repo.getReport(scope, payload.taskId, payload.reportId ?? payload.messageId)
+        : undefined;
     if (!payload || !task || task.archivedAt !== null || !report) {
       repo.settle(scope, slot.slotId, 'superseded', now);
       return;
@@ -821,12 +866,75 @@ const deliverOneSlot = async (
       return;
     }
     try {
-      const ref = await discord.sendMessage(scope.guildId, parseSnowflakeId(target), {
-        content: `${verdict.question}\n\n${TASK_REPLY_NOTICE}`.slice(0, 2000),
-        replyTo: payload.messageId,
-        allowedMentions: { parse: [] },
-      });
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(renderClarifyCard({ question: verdict.question, replyTo: payload.messageId })),
+      );
       repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
+    } catch {
+      fail(target);
+    }
+    return;
+  }
+
+  if (slot.kind === 'update') {
+    const payload = parseUpdatePayload(slot.payload);
+    const report =
+      payload && task ? repo.getReport(scope, task.taskId, payload.reportId) : undefined;
+    if (!payload || !task || task.archivedAt !== null || !report) {
+      repo.settle(scope, slot.slotId, 'superseded', now);
+      return;
+    }
+    const team = teamById.get(task.teamId);
+    if (!team) {
+      repo.settle(scope, slot.slotId, 'superseded', now);
+      return;
+    }
+    const target = await resolveTarget(task.destinationId, team.categoryId);
+    if (target === undefined) return;
+    if (!options.enabled) {
+      repo.settle(scope, slot.slotId, 'planned', now, target);
+      return;
+    }
+    const anchor = taskRepo.anchorFor(scope, task.taskId);
+    try {
+      const ref = await discord.sendMessage(
+        scope.guildId,
+        parseSnowflakeId(target),
+        cardOut(
+          renderUpdateCard({
+            taskTitle: task.title,
+            teamName: team.name,
+            authorId: report.authorId,
+            body: report.body,
+            ...(anchor !== undefined && anchor.channelId === target
+              ? { replyTo: anchor.messageId }
+              : {}),
+          }),
+        ),
+      );
+      repo.settle(scope, slot.slotId, 'sent', now, target, ref.messageId);
+      // ADR 0112: one evaluation per member update, asked against the posted
+      // card so a reply to the question lands on this task. Organiser (MCP)
+      // updates are not evaluated.
+      if (!payload.reportId.startsWith('mcp:'))
+        repo.schedule(
+          scope,
+          {
+            slotId: `evaluate:${ref.messageId}`,
+            kind: 'evaluate',
+            taskId: task.taskId,
+            dueAt: now,
+            payload: JSON.stringify({
+              taskId: task.taskId,
+              channelId: target,
+              messageId: ref.messageId,
+              reportId: payload.reportId,
+            }),
+          },
+          now,
+        );
     } catch {
       fail(target);
     }

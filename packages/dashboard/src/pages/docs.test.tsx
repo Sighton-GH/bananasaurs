@@ -3,6 +3,7 @@ import { GUIDE_TOPICS } from '@bananasaurs/core';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Router } from 'wouter';
+import { GROUPS, NAV } from '../app/routes.js';
 import { DocsPage } from './docs.js';
 
 afterEach(cleanup);
@@ -78,5 +79,64 @@ describe('docs guide page', () => {
     for (const link of screen.getAllByRole('link')) {
       expect(link.getAttribute('href')?.startsWith('http')).toBe(false);
     }
+  });
+});
+
+describe('guide page names (P4 Task 5)', () => {
+  const navLabel = new Map(NAV.map((entry) => [entry.path, entry.label]));
+
+  it("labels every see-also link to a rail page with that page's rail label", () => {
+    for (const topic of GUIDE_TOPICS) {
+      for (const link of topic.seeAlso ?? []) {
+        const label = navLabel.get(link.path);
+        if (label !== undefined) expect(link.label, `${topic.id} -> ${link.path}`).toBe(label);
+      }
+    }
+  });
+
+  it('describes the rail by its real groups, not the old sidebar groups', () => {
+    const topic = GUIDE_TOPICS.find((entry) => entry.id === 'dashboard-pages');
+    expect(topic?.body).toContain(
+      `The rail groups its pages as ${GROUPS.slice(0, -1).join(', ')} and ${GROUPS[GROUPS.length - 1]}.`,
+    );
+    expect(topic?.body).not.toContain('Advanced / System');
+    expect(topic?.summary).not.toContain('sidebar');
+  });
+
+  it('never calls the role panels page by its old name', () => {
+    const text = GUIDE_TOPICS.map((topic) => `${topic.title} ${topic.summary} ${topic.body}`).join(
+      '\n',
+    );
+    expect(text).not.toContain('Self-granted roles');
+    expect(GUIDE_TOPICS.find((entry) => entry.id === 'role-panels')?.body).toContain(
+      'the Role panels page',
+    );
+  });
+
+  it('bolds the Review queue and Audit log page names in the topics that list pages', () => {
+    const body = (id: string) => GUIDE_TOPICS.find((entry) => entry.id === id)?.body ?? '';
+    expect(body('moderation')).toContain('**Review queue**');
+    expect(body('moderation')).toContain('**Audit log**');
+    expect(body('system-pages')).toContain('**Audit log**');
+  });
+
+  it('names the Audit log page in the system pages summary', () => {
+    const summary = GUIDE_TOPICS.find((entry) => entry.id === 'system-pages')?.summary ?? '';
+    expect(summary).toContain('Audit log');
+    expect(summary).not.toContain('Audit page');
+  });
+
+  it('(7c) uses the token scale and kit links, and keeps the in-page anchors', () => {
+    renderDocs();
+    const root = document.body;
+    expect(root.querySelector('.rounded-md, .text-xs, .text-sm, .text-base')).toBeNull();
+    const seeAlso = screen.getAllByText('See also:')[0]!.parentElement!;
+    expect(seeAlso.querySelector('a')?.className).toContain('text-accent');
+    for (const topic of GUIDE_TOPICS)
+      expect(
+        screen
+          .getByRole('navigation', { name: 'Guide sections' })
+          .querySelector(`a[href="#${topic.id}"]`),
+      ).toBeTruthy();
   });
 });

@@ -441,3 +441,20 @@ describe('auditLogEntry fingerprints', () => {
     expect(isLevelTriggered(auditEntry())).toBe(false);
   });
 });
+
+it('identifies a modal submit by its interaction id', () => {
+  expect(
+    fingerprintOf({
+      kind: 'modalSubmit',
+      guildId: '111111111111111111',
+      receivedAtMs: 1,
+      interactionId: '777777777777777777',
+      token: 't',
+      channelId: '444444444444444444',
+      messageId: undefined,
+      userId: '333333333333333333',
+      customId: 'bs.task:update:x',
+      fields: { body: 'hi' },
+    }),
+  ).toBe('777777777777777777');
+});

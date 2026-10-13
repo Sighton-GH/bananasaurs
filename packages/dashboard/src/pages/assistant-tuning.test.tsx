@@ -1,3 +1,4 @@
+import userEvent from '@testing-library/user-event';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -416,4 +417,18 @@ describe('AssistantTuningPage', () => {
     renderPage();
     expect(await screen.findByText('Only the owner can do that')).toBeTruthy();
   });
+});
+
+it('keeps tuning drafts when query-backed sections change without saving', async () => {
+  const mock = stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
+  renderPage();
+  const control = await screen.findByLabelText('Provider request timeout');
+  fireEvent.change(control, { target: { value: '75' } });
+  screen.getByRole('tab', { name: 'All settings' }).focus();
+  await userEvent.keyboard('{ArrowRight}{ArrowRight}');
+  expect(screen.getByRole('tab', { name: 'Resources' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.queryByRole('spinbutton', { name: 'Provider request timeout' })).toBeNull();
+  await userEvent.keyboard('{ArrowLeft}');
+  expect(screen.getByLabelText<HTMLInputElement>('Provider request timeout').value).toBe('75');
+  expect(mock.mock.calls.some((call) => (call[1] as RequestInit)?.method === 'PUT')).toBe(false);
 });

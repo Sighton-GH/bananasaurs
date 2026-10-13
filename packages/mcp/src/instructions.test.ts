@@ -20,6 +20,12 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('2,000');
   });
 
+  it('pins task links and posted progress guidance (ADR 0140)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS.split('\n')).toContain(
+      '- Tasks carry up to 5 links (create_task / update_task edit); task_progress record posts an update card to the task channel when task posts are on.',
+    );
+  });
+
   it('stays a short static string', () => {
     // Slice 4 added the Roles section (seven lines for fourteen facts), so
     // the cap grew from 3000; slice 5's Schedules, events and polls section

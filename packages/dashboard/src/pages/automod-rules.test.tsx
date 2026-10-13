@@ -80,10 +80,13 @@ describe('AutomodRulesPage', () => {
       { url: '/api/automod/rules', body: { rules: [] } },
       { method: 'POST', url: '/api/automod/rules', body: { ok: true } },
     ]);
-    renderWithSession(<AutomodRulesPage />);
+    const { container } = renderWithSession(<AutomodRulesPage />);
     await screen.findByText('No rules yet. Create one below.');
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'No links' } });
-    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'regex' } });
+    // The kit Select renders Radix's form-bridge <select>; change it to pick the kind.
+    fireEvent.change(container.querySelector('select[aria-hidden="true"]')!, {
+      target: { value: 'regex' },
+    });
     fireEvent.change(screen.getByLabelText('Configuration data'), {
       target: { value: '{"pattern":"x"}' },
     });

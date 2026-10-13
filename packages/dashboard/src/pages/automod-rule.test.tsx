@@ -140,7 +140,7 @@ describe('AutomodRulePage', () => {
     expect(put).toBeTruthy();
     expect((put![1] as RequestInit).method).toBe('PUT');
     expect(bodyOf(put!)).toEqual({ config: { minLength: 20 } });
-    expect(screen.getByRole('status').textContent).toContain('Configuration saved');
+    expect(screen.getByText('Configuration saved').closest('[role="status"]')).toBeTruthy();
   });
 
   it('exemption remove calls DELETE with the right path', async () => {
@@ -167,9 +167,98 @@ describe('AutomodRulePage', () => {
     expect((call![1] as RequestInit).method).toBe('DELETE');
   });
 
-  it('renders the error state naming the rule when it does not exist', async () => {
+  it('renders NotFound naming the rule when it does not exist', async () => {
     stubFetch([]);
     renderRule();
-    expect(await screen.findByText(/Could not load rule kw-one/)).toBeTruthy();
+    expect(await screen.findByText(/rule kw-one doesn't exist or was deleted/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
+  it('renders the error state with retry when loading the rule fails', async () => {
+    stubFetch([{ url: '/api/automod/rules/kw-one', status: 500, body: { error: 'boom' } }]);
+    renderRule();
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText(/Couldn't load rule kw-one/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+});
+
+describe('generated rule configuration', () => {
+  it('keeps advanced JSON and fields in sync and sends the exact confirmed PUT body', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/automod/rules/kw-one',
+        body: detail({
+          kind: 'caps',
+          configObject: { minLength: 10, maxRatio: 0.8, hidden: ['keep'] },
+        }),
+      },
+      { method: 'PUT', url: '/api/automod/rules/kw-one/config', body: { ok: true } },
+    ]);
+    renderRule();
+    fireEvent.change(await screen.findByLabelText('Minimum message length'), {
+      target: { value: '20' },
+    });
+    expect(JSON.parse(screen.getByLabelText<HTMLTextAreaElement>('Configuration').value)).toEqual({
+      minLength: 20,
+      maxRatio: 0.8,
+      hidden: ['keep'],
+    });
+    fireEvent.change(screen.getByLabelText('Configuration'), {
+      target: { value: '{"minLength":30,"maxRatio":0.7,"hidden":["keep"]}' },
+    });
+    expect(screen.getByLabelText('Minimum message length')).toHaveProperty('value', '30');
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain("Replaces this rule's configuration.");
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save configuration' }));
+    });
+    const call = mock.mock.calls.find((c) => c[0] === '/api/automod/rules/kw-one/config');
+    expect((call![1] as RequestInit).method).toBe('PUT');
+    expect(bodyOf(call!)).toEqual({ config: { minLength: 30, maxRatio: 0.7, hidden: ['keep'] } });
+    expect((call![1] as RequestInit).headers).toMatchObject({ 'x-bananasaurs-csrf': 'csrf-test' });
+  });
+  it('retains invalid JSON and a server 400 without losing input', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/automod/rules/kw-one',
+        body: detail({ kind: 'caps', configObject: { minLength: 10, maxRatio: 0.8 } }),
+      },
+      {
+        method: 'PUT',
+        url: '/api/automod/rules/kw-one/config',
+        status: 400,
+        body: { error: 'invalid-config', detail: 'Use a supported threshold' },
+      },
+    ]);
+    renderRule();
+    const editor = await screen.findByLabelText('Configuration');
+    fireEvent.change(editor, { target: { value: '{bad' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    expect(await screen.findByText('Not valid JSON')).toBeTruthy();
+    expect(editor).toHaveProperty('value', '{bad');
+    expect(screen.queryByLabelText('Minimum message length')).toBeNull();
+    expect(screen.getByText('Advanced').closest('details')).toHaveProperty('open', true);
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: "There's a problem" }).closest('[role="alert"]'),
+    );
+    expect(mock.mock.calls.filter((c) => (c[0] as string).endsWith('/config'))).toHaveLength(0);
+    fireEvent.change(editor, { target: { value: '{"minLength":9999,"maxRatio":0.8}' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    const dialog = await screen.findByRole('dialog');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save configuration' }));
+    });
+    expect(await screen.findByText('Use a supported threshold', { selector: 'span' })).toBeTruthy();
+    expect(editor).toHaveProperty('value', '{"minLength":9999,"maxRatio":0.8}');
+  });
+  it.each(['regex', 'duplicate_message', 'attachment_type'] as const)(
+    'opens honest JSON fallback for %s',
+    async (kind) => {
+      stubFetch([{ url: '/api/automod/rules/kw-one', body: detail({ kind }) }]);
+      renderRule();
+      expect(await screen.findByText("This rule's settings are edited as JSON.")).toBeTruthy();
+      expect(screen.getByText('Advanced').closest('details')).toHaveProperty('open', true);
+    },
+  );
 });

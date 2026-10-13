@@ -319,6 +319,7 @@ describe('AuditPage', () => {
   it('renders the error state naming the request when the API fails', async () => {
     stubFetch([{ url: '/api/audit?limit=50', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AuditPage />);
-    expect(await screen.findByText(/Could not load the audit log/)).toBeTruthy();
+    expect(await screen.findByText(/Couldn't load the audit log/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });

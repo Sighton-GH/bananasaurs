@@ -41,9 +41,9 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     id: 'dashboard-pages',
     group: 'Start here',
     title: 'The dashboard',
-    summary: 'The dashboard pages, how the sidebar groups them, and what your account can see.',
+    summary: 'The dashboard pages, how the rail groups them, and what your account can see.',
     body: lines(
-      'The dashboard is the web interface for running the bot. The sidebar groups its pages as Start here, Moderation, Messages, Assistant and Advanced / System. Each page starts with a line that says what it is for.',
+      'The dashboard is the web interface for running the bot. The rail groups its pages as Club, Moderation, Assistant, Messages and System. Each page starts with a line that says what it is for.',
       '',
       '- AI tuning is for the owner only.',
       '- Tasks is shown to the owner, and to any account with Manage club tasks in this server.',
@@ -285,8 +285,9 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       '- `delete_task`: delete a task with its steps, updates and reminders, by hand. Nothing about tasks is deleted automatically.',
       '- `task_steps`: add, edit, complete or delete a dated step of an open task.',
       '- `task_reminders`: add a custom reminder at one exact time before the due date, or cancel a pending one.',
-      '- `task_progress`: record a progress report on an open task, without posting it, or delete a report by hand.',
+      '- `task_progress`: record a progress report on an open task, posted to the task channel as an update card when task posts are on, or delete a report by hand.',
       '- `task_settings`: set or clear the president role, or set the quiet hours.',
+      'Tasks can carry up to 5 links (`links` on `create_task` / `update_task edit`).',
     ),
   },
   {
@@ -455,7 +456,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     ),
     seeAlso: [
       { label: 'Automod', path: '/automod' },
-      { label: 'Review', path: '/review' },
+      { label: 'Review queue', path: '/review' },
     ],
   },
   {
@@ -466,8 +467,8 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     body: lines(
       '- **Cases**: open and recent moderation cases, newest first. Each case page shows what Bananasaurs did about it.',
       '- **Members**: everyone in the server, 25 at a time, with when they joined and their case history.',
-      '- **Review**: flag each automod match as correct or a false positive. The flags help you tune the rules.',
-      '- **Audit**: what the bot did or refused to do, and who asked.',
+      '- **Review queue**: flag each automod match as correct or a false positive. The flags help you tune the rules.',
+      '- **Audit log**: what the bot did or refused to do, and who asked.',
       '',
       'Moderate members is the permission for timeouts, kicks and bans.',
       "Asking for a member's data to be deleted does not remove moderation records. A warning or ban record has to stay.",
@@ -475,8 +476,8 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     seeAlso: [
       { label: 'Cases', path: '/cases' },
       { label: 'Members', path: '/members' },
-      { label: 'Review', path: '/review' },
-      { label: 'Audit', path: '/audit' },
+      { label: 'Review queue', path: '/review' },
+      { label: 'Audit log', path: '/audit' },
     ],
   },
   {
@@ -594,10 +595,10 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
   {
     id: 'role-panels',
     group: 'Server',
-    title: 'Self-granted roles',
+    title: 'Role panels',
     summary: 'Role panels let members pick roles with a reaction, a button or a dropdown.',
     body: lines(
-      'Members give themselves roles from a role panel, built on the Self-granted roles page. A panel can use:',
+      'Members give themselves roles from a role panel, built on the Role panels page. A panel can use:',
       '',
       '- a reaction with an emoji, on a message that already exists;',
       '- buttons or a dropdown, on a message the bot posts.',
@@ -606,7 +607,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
       'A single-choice panel, where one pick replaces the other, works only on panels the bot posts. The dashboard refuses that combination for panels built from existing reactions.',
       'Manage role panels is the permission for creating and editing panels. Change member roles adds and removes roles on members.',
     ),
-    seeAlso: [{ label: 'Self-granted roles', path: '/panels' }],
+    seeAlso: [{ label: 'Role panels', path: '/panels' }],
   },
   {
     id: 'assistant',
@@ -638,12 +639,12 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     group: 'System',
     title: 'Overview, health and background work',
     summary:
-      'What the Overview, Doctor, Background tasks, Audit, Backups, Configuration, Accounts and Connected apps pages are for.',
+      'What the Overview, Doctor, Background tasks, Audit log, Backups, Configuration, Accounts and Connected apps pages are for.',
     body: lines(
       '- **Overview**: how the bot is connected, what needs a decision now, and what just happened. Each card leads to the page that acts on it.',
       '- **Doctor**: checks the bot connection, Discord permissions, role assignments, the archive and public access. Run it again after changing setup.',
       '- **Background tasks**: work the bot has queued, is running, or could not finish. Failed work can be retried there.',
-      '- **Audit**: what the bot did or refused to do, and who asked.',
+      '- **Audit log**: what the bot did or refused to do, and who asked.',
       '- **Backups**: every backup on disk, oldest first, and a button that takes one now and applies retention.',
       '- **Configuration**: every setting, what controls it, and what changing it costs. Runtime settings change here, with a confirmation and an audit row.',
       '- **Accounts**: everyone who can sign in to the dashboard, and what each account may do on this server.',
@@ -651,7 +652,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
     ),
     seeAlso: [
       { label: 'Overview', path: '/' },
-      { label: 'Audit', path: '/audit' },
+      { label: 'Audit log', path: '/audit' },
     ],
   },
   {

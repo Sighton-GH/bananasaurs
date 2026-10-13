@@ -1,24 +1,27 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
-import { ThemeProvider } from './theme.js';
+import { ThemeProvider, useTheme } from './theme.js';
 
 describe('theme toggle', () => {
   beforeEach(() => {
     window.localStorage.clear();
     document.documentElement.removeAttribute('data-theme');
   });
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
-  it('follows the system until the operator picks, then pins the choice', () => {
+  it('a first visit is light, then the operator pins a choice', () => {
     render(
       <ThemeProvider>
         <ThemeToggle />
       </ThemeProvider>,
     );
-    // No choice yet: no attribute, the media query rules.
-    expect(document.documentElement.getAttribute('data-theme')).toBeNull();
+    // No saved choice: light (ADR 0142).
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
     const button = screen.getByRole('button', { name: /Switch to (light|dark) mode/ });
     const first = button.getAttribute('aria-label') ?? '';
     fireEvent.click(button);
@@ -33,14 +36,75 @@ describe('theme toggle', () => {
     );
   });
 
-  it('restores a persisted choice on load', () => {
-    window.localStorage.setItem('bananasaurs-theme', 'light');
+  it('a stored "system" still reports choice system and follows the OS', () => {
+    window.localStorage.setItem('bananasaurs-theme', 'system');
+    let seen = '';
+    function Probe() {
+      seen = useTheme().choice;
+      return null;
+    }
     render(
       <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(seen).toBe('system');
+    expect(document.documentElement.getAttribute('data-theme')).toBeNull();
+  });
+
+  it('an unknown saved choice falls back to light', () => {
+    window.localStorage.setItem('bananasaurs-theme', 'garbage');
+    let seen = '';
+    function Probe() {
+      seen = useTheme().choice;
+      return null;
+    }
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(seen).toBe('light');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
+  it('a storage read that throws still gives light', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied');
+    });
+    let seen = '';
+    function Probe() {
+      seen = useTheme().choice;
+      return null;
+    }
+    render(
+      <ThemeProvider>
+        <Probe />
+      </ThemeProvider>,
+    );
+    expect(seen).toBe('light');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
+  it.each(['light', 'dark'])('restores a persisted %s choice on load', (saved) => {
+    window.localStorage.setItem('bananasaurs-theme', saved);
+    let seen = '';
+    function Probe() {
+      seen = useTheme().choice;
+      return null;
+    }
+    render(
+      <ThemeProvider>
+        <Probe />
         <ThemeToggle />
       </ThemeProvider>,
     );
-    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-    expect(screen.getByRole('button', { name: 'Switch to dark mode' })).toBeDefined();
+    expect(seen).toBe(saved);
+    expect(document.documentElement.getAttribute('data-theme')).toBe(saved);
+    expect(
+      screen.getByRole('button', {
+        name: saved === 'light' ? 'Switch to dark mode' : 'Switch to light mode',
+      }),
+    ).toBeDefined();
   });
 });

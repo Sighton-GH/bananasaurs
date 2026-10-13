@@ -7,6 +7,7 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { Unavailable } from '../ui/states.js';
 import { useToast } from '../ui/Toast.js';
 
 /**
@@ -50,15 +51,40 @@ export function SafetyPage() {
       />
       <div className="grid max-w-4xl gap-3">
         <Card title="What is holding back right now">
-          {safety === undefined ? (
+          {health.resource.state === 'error' ? (
+            <>
+              <Unavailable
+                what="the health summary"
+                error={health.resource.error}
+                onRetry={health.resource.retry}
+              />
+              <p className="mt-2 text-sm text-ink-muted">
+                The safety state is unknown until this loads. The kill switch below still works.
+              </p>
+            </>
+          ) : safety === undefined ? (
             <p className="text-sm text-ink-muted">Loading the safety state…</p>
           ) : (
-            <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2 text-sm">
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-[10rem_1fr] sm:gap-y-2">
               <dt className="text-ink-muted">Kill switch</dt>
-              <dd>{safety.killswitch ? <Badge tone="hold">on — nothing is sent</Badge> : 'off'}</dd>
+              <dd className="min-w-0 [overflow-wrap:anywhere]">
+                {safety.killswitch ? (
+                  <Badge wrap tone="hold">
+                    on — nothing is sent
+                  </Badge>
+                ) : (
+                  'off'
+                )}
+              </dd>
               <dt className="text-ink-muted">Dry run</dt>
               <dd>
-                {safety.dryRun ? <Badge tone="hold">on — effects are rehearsed</Badge> : 'off'}
+                {safety.dryRun ? (
+                  <Badge wrap tone="hold">
+                    on — effects are rehearsed
+                  </Badge>
+                ) : (
+                  'off'
+                )}
               </dd>
               <dt className="text-ink-muted">Circuit breaker</dt>
               <dd>
@@ -84,7 +110,7 @@ export function SafetyPage() {
           </p>
         </Card>
         <Card title="Kill switch">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="danger" busy={busy} onClick={() => setConfirming(true)}>
               Turn kill switch on
             </Button>

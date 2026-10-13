@@ -26,11 +26,11 @@ export function TaskPostsBanner({
   }
   return (
     <div
-      className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-800"
+      className="mb-4 rounded-md border border-tone-hold bg-tone-hold-bg px-3 py-2 text-sm text-tone-hold-ink"
       role="status"
     >
       {posts.message}{' '}
-      <Link href="/tasks" className="text-blue-700 underline">
+      <Link href="/tasks" className="text-accent underline underline-offset-2">
         Open Tasks
       </Link>
     </div>

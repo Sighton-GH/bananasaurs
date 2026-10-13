@@ -36,6 +36,10 @@ export default defineConfig({
       'scripts/**/*.test.mjs',
     ],
     environment: 'node',
+    // Vitest blanks every CSS import by default, `?raw` included. The dashboard
+    // token test (theme.contrast.test.ts) reads styles.css as text, so let that
+    // one file through.
+    css: { include: [/dashboard[\\/]src[\\/]styles\.css(?:\?.*)?$/] },
     coverage: { provider: 'v8', include: ['packages/*/src/**', 'apps/*/src/**'] },
   },
 });

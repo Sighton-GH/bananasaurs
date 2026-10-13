@@ -387,16 +387,26 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     async sendMessage(_guildId, channelId, message) {
+      const files = restFiles(message);
       const posted = (await mapErrors(() =>
-        rest.post(Routes.channelMessages(channelId), { body: toRestMessage(message) }),
+        rest.post(Routes.channelMessages(channelId), {
+          body: toRestMessage(message),
+          ...(files === undefined ? {} : { files }),
+        }),
       )) as APIMessage;
       return { channelId, messageId: posted.id };
     },
 
     async editMessage(_guildId, ref, message) {
+      const files = restFiles(message);
+      const becomesCard = message.flags !== undefined && (message.flags & IS_COMPONENTS_V2) !== 0;
       await mapErrors(() =>
         rest.patch(Routes.channelMessage(ref.channelId, ref.messageId), {
-          body: toRestMessage(message),
+          body: {
+            ...toRestMessage(message),
+            ...(becomesCard ? { content: null, embeds: null } : {}),
+          },
+          ...(files === undefined ? {} : { files }),
         }),
       );
     },
@@ -909,6 +919,26 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
     },
 
     // --- interactions ----------------------------------------------------
+    async deferUpdate(_guildId, ref) {
+      await mapErrors(() =>
+        rest.post(Routes.interactionCallback(ref.interactionId, ref.token), {
+          body: { type: InteractionResponseType.DeferredMessageUpdate },
+          auth: false,
+        }),
+      );
+      // Follow-ups after a deferred update are private to the clicker (ADR 0140).
+      rememberDefer(ref.interactionId, true);
+    },
+
+    async showModal(_guildId, ref, modal) {
+      await mapErrors(() =>
+        rest.post(Routes.interactionCallback(ref.interactionId, ref.token), {
+          body: { type: InteractionResponseType.Modal, data: modal },
+          auth: false,
+        }),
+      );
+    },
+
     async deferInteraction(_guildId, ref, options) {
       await mapErrors(() =>
         rest.post(Routes.interactionCallback(ref.interactionId, ref.token), {
@@ -926,16 +956,16 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
 
     async respondToInteraction(_guildId, ref, message) {
       const ephemeral = deferred.get(ref.interactionId)?.ephemeral ?? false;
+      const flags = (message.flags ?? 0) | (ephemeral ? MessageFlags.Ephemeral : 0);
+      const files = restFiles(message);
       // The interaction follow-up route behaves as though `?wait=true` were
       // always set — Discord returns the created message, unlike a plain
       // webhook execute — so the ref comes straight from the response rather
       // than a second request.
       const posted = (await mapErrors(() =>
         rest.post(Routes.webhook(applicationId, ref.token), {
-          body: {
-            ...toRestMessage(message),
-            ...(ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
-          },
+          body: { ...toRestMessage(message), ...(flags === 0 ? {} : { flags }) },
+          ...(files === undefined ? {} : { files }),
           auth: false,
         }),
       )) as Partial<APIMessage> | undefined;
@@ -1057,6 +1087,16 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     ...(message.content === undefined ? {} : { content: message.content }),
     ...(message.embeds === undefined ? {} : { embeds: message.embeds }),
     ...(message.components === undefined ? {} : { components: message.components }),
+    ...(message.flags === undefined ? {} : { flags: message.flags }),
+    ...(message.files === undefined || message.files.length === 0
+      ? {}
+      : {
+          attachments: message.files.map((file, id) => ({
+            id,
+            filename: file.name,
+            ...(file.description === undefined ? {} : { description: file.description }),
+          })),
+        }),
     // camelCase on the port, snake_case on the wire: a spread of
     // `allowedMentions` would still be broken. Opt-in only — the MCP send path
     // is the sole caller that sets it, and a default here would change what
@@ -1097,5 +1137,19 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
         }),
   };
 }
+
+/** `@discordjs/rest` raw files for a message, keyed to match `attachments[].id`. */
+function restFiles(message: OutgoingMessage) {
+  return message.files === undefined || message.files.length === 0
+    ? undefined
+    : message.files.map((file, id) => ({
+        key: `files[${id}]`,
+        name: file.name,
+        data: file.data,
+        contentType: file.contentType,
+      }));
+}
+
+const IS_COMPONENTS_V2 = 1 << 15;
 
 export type { DiscordMessageRef, InteractionRef };

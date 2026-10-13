@@ -14,6 +14,7 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
+import { DescriptionList } from '../ui/DescriptionList.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { ErrorNotice } from '../ui/ErrorNotice.js';
@@ -137,8 +138,8 @@ export function PanelsPage() {
   return (
     <>
       <PageHeader
-        title="Self-granted roles"
-        purpose="Members give themselves roles here: by reacting with an emoji on a message that already exists, or by using buttons or a dropdown on one the bot posts. Build them here, then publish them to Discord."
+        title="Role panels"
+        purpose="Let members give themselves roles, by reacting with an emoji or by using buttons or a dropdown on a message the bot posts. Build panels here, then publish them to Discord."
         actions={
           building ? undefined : (
             <Button variant="primary" onClick={() => setBuilding(true)}>
@@ -172,7 +173,7 @@ export function PanelsPage() {
       >
         {(rows) => (
           <DataTable
-            caption="Self-granted role setups"
+            caption="Role panels"
             rows={rows}
             rowKey={(p) => p.panelId}
             columns={[
@@ -196,7 +197,11 @@ export function PanelsPage() {
                   return `${format} · ${behaviour}`;
                 },
               },
-              { key: 'status', header: 'Status', cell: (p) => p.status },
+              {
+                key: 'status',
+                header: 'Status',
+                cell: (p) => <Badge tone={p.status === 'posted' ? 'ok' : 'hold'}>{p.status}</Badge>,
+              },
               { key: 'options', header: 'Options', cell: (p) => p.optionCount, numeric: true },
               {
                 key: 'actions',
@@ -215,41 +220,64 @@ export function PanelsPage() {
       {selected !== undefined && (
         <div className="mt-4 grid max-w-4xl gap-3">
           <Card title={selected.panelId}>
-            <dl className="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-ink-muted">Channel</dt>
-              <dd>{selected.channelId}</dd>
-              <dt className="text-ink-muted">Status</dt>
-              <dd>{selected.status}</dd>
-              <dt className="text-ink-muted">Message</dt>
-              <dd>{selected.messageId ?? 'not posted'}</dd>
-              <dt className="text-ink-muted">Message text</dt>
-              <dd className="whitespace-pre-wrap">
-                {selected.content ?? 'Pick your roles. (the default)'}
-              </dd>
-              <dt className="text-ink-muted">Max roles per member</dt>
-              <dd>{selected.maxRoles !== undefined ? String(selected.maxRoles) : 'no limit'}</dd>
-              <dt className="text-ink-muted">Requires role first</dt>
-              <dd>
-                {selected.requiredRoleId === undefined ? 'none' : roleName(selected.requiredRoleId)}
-              </dd>
-              <dt className="text-ink-muted">Blocks roles</dt>
-              <dd>
-                {selected.blockedRoleIds.length === 0
-                  ? 'none'
-                  : selected.blockedRoleIds.map(roleName).join(', ')}
-              </dd>
-              {selected.kind === 'adopted' && (
-                <>
-                  <dt className="text-ink-muted">Adoption</dt>
-                  <dd>
-                    {selected.adoptionPassState}
-                    {selected.adoptionBlockedCount > 0 && (
-                      <Badge tone="hold">{String(selected.adoptionBlockedCount)} blocked</Badge>
-                    )}
-                  </dd>
-                </>
-              )}
-            </dl>
+            <DescriptionList
+              columns={2}
+              items={[
+                { term: 'Channel', value: selected.channelId },
+                {
+                  term: 'Status',
+                  value: (
+                    <Badge tone={selected.status === 'posted' ? 'ok' : 'hold'}>
+                      {selected.status}
+                    </Badge>
+                  ),
+                },
+                { term: 'Message', value: selected.messageId ?? 'not posted' },
+                {
+                  term: 'Message text',
+                  value: (
+                    <span className="whitespace-pre-wrap">
+                      {selected.content ?? 'Pick your roles. (the default)'}
+                    </span>
+                  ),
+                },
+                {
+                  term: 'Max roles per member',
+                  value: selected.maxRoles !== undefined ? String(selected.maxRoles) : 'no limit',
+                },
+                {
+                  term: 'Requires role first',
+                  value:
+                    selected.requiredRoleId === undefined
+                      ? 'none'
+                      : roleName(selected.requiredRoleId),
+                },
+                {
+                  term: 'Blocks roles',
+                  value:
+                    selected.blockedRoleIds.length === 0
+                      ? 'none'
+                      : selected.blockedRoleIds.map(roleName).join(', '),
+                },
+                ...(selected.kind === 'adopted'
+                  ? [
+                      {
+                        term: 'Adoption',
+                        value: (
+                          <>
+                            {selected.adoptionPassState}
+                            {selected.adoptionBlockedCount > 0 && (
+                              <Badge tone="hold">
+                                {String(selected.adoptionBlockedCount)} blocked
+                              </Badge>
+                            )}
+                          </>
+                        ),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
             <div className="mt-3 flex gap-2">
               <Button variant="primary" busy={busy} onClick={() => setPublishing(selected)}>
                 Publish to Discord
@@ -270,7 +298,7 @@ export function PanelsPage() {
           </Card>
           <Card title="Options">
             {selected.options.length === 0 ? (
-              <p className="text-sm text-ink-muted">No options configured.</p>
+              <p className="text-small text-ink-muted">No options configured.</p>
             ) : (
               <DataTable
                 caption={`Options of panel ${selected.panelId}`}

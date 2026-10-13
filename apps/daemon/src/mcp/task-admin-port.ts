@@ -10,6 +10,7 @@ import {
 import { taskPostsFor, type HttpDeps } from '@bananasaurs/http';
 import { effectRepo, taskBindingRepo, taskNudgeRepo, taskRepo } from '@bananasaurs/storage';
 import type { TaskAdminPort, TaskAdminName } from '@bananasaurs/mcp';
+import { scheduleUpdatePost } from '../jobs/task-update-slot.js';
 import { channelAccessFor } from '../channels/access.js';
 import { canManageTasks } from './task-access.js';
 
@@ -60,6 +61,7 @@ type Args = {
   assigneeId?: string;
   assigneeIds?: string[];
   extraReminderAt?: number[];
+  links?: { label: string; url: string }[];
   dueAt: number;
   timezone: string;
   destinationId: string;
@@ -283,6 +285,7 @@ export const taskAdminPortFor = (
                 destinationId: a.destinationId,
                 createdBy: accountId,
                 ...(a.extraReminderAt !== undefined ? { extraReminderAt: a.extraReminderAt } : {}),
+                ...(a.links !== undefined ? { links: a.links } : {}),
               },
               actor,
               now,
@@ -335,6 +338,7 @@ export const taskAdminPortFor = (
                 dueAt: a.dueAt,
                 timezone: a.timezone,
                 destinationId: a.destinationId,
+                ...(a.links !== undefined ? { links: a.links } : {}),
               },
               actor,
               now,
@@ -417,10 +421,11 @@ export const taskAdminPortFor = (
           );
         }
         case 'record_task_progress': {
+          const reportId = `mcp:${a.requestId}`;
           const outcome = taskRepo.recordReport(
             scope,
             a.taskId,
-            `mcp:${a.requestId}`,
+            reportId,
             accountId,
             a.body,
             actor,
@@ -428,8 +433,12 @@ export const taskAdminPortFor = (
           );
           if (outcome === 'not-open') return refused(NOT_AVAILABLE);
           if (outcome === 'duplicate') return success('Already recorded.');
-          return success(`Recorded progress on task ${a.taskId}. No message was sent.`);
+          scheduleUpdatePost(scope, a.taskId, reportId, now);
+          return success(
+            `Recorded progress on task ${a.taskId}. ${postsNote(deps, guildId, 'update')}`,
+          );
         }
+
         case 'request_task_completion': {
           const task = taskRepo.getTask(scope, a.taskId);
           if (!task || task.archivedAt || !(await verifyTaskTeam(a.taskId)))

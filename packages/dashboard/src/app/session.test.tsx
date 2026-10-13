@@ -87,7 +87,7 @@ describe('SessionProvider', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('write'));
     });
-    expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
+    expect(screen.getByRole('alert').textContent).toContain('BANANASAURS_READONLY is set');
   });
 
   it('a 401 reauth-required opens the re-auth dialog; confirming posts /api/reauth then retries once', async () => {
@@ -216,7 +216,7 @@ describe('SessionProvider', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     });
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch', '/api/reauth']);
-    expect(screen.getByRole('status').textContent).toContain('Password not accepted');
+    expect(screen.getByRole('alert').textContent).toContain('Password not accepted');
   });
 
   it("an expired session on a write shows 'Signed out' and calls onLoggedOut", async () => {
@@ -228,7 +228,7 @@ describe('SessionProvider', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('write'));
     });
-    expect(screen.getByRole('status').textContent).toContain('Signed out');
+    expect(screen.getByRole('alert').textContent).toContain('Signed out');
     expect(onLoggedOut).toHaveBeenCalledTimes(1);
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch']);
   });
@@ -298,9 +298,62 @@ describe('SessionProvider', () => {
     });
     expect(onSettled).toHaveBeenCalledTimes(1);
     expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
-    expect(screen.getByRole('status').textContent).toContain('Signed out');
+    expect(screen.getByRole('alert').textContent).toContain('Signed out');
     expect(onLoggedOut).toHaveBeenCalledTimes(1);
   });
+
+  it.each([401, 204])(
+    'N17 explicit401 opt-in preserves logout and distinguishes HTTP%s',
+    async (status) => {
+      const mock = vi.fn(() =>
+        Promise.resolve(
+          status === 204
+            ? new Response(null, { status: 204 })
+            : new Response(JSON.stringify({ error: 'unauthenticated' }), { status: 401 }),
+        ),
+      );
+      vi.stubGlobal('fetch', mock);
+      const onLoggedOut = vi.fn();
+      const onSettled = vi.fn();
+      function Explicit401Probe() {
+        const session = useSession();
+        return (
+          <button
+            onClick={() =>
+              void session.writeOrThrow('/api/example', undefined, 'DELETE', [401]).then(
+                (value) => {
+                  onSettled({ value, error: undefined });
+                },
+                (error: unknown) => {
+                  onSettled({ value: undefined, error });
+                },
+              )
+            }
+          >
+            explicit401
+          </button>
+        );
+      }
+      renderWithSession(<Explicit401Probe />, { onLoggedOut });
+      await act(async () => {
+        fireEvent.click(screen.getByText('explicit401'));
+      });
+      expect(mock).toHaveBeenCalledOnce();
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settled = onSettled.mock.calls[0]![0] as Settled;
+      expect(settled.value).toBeUndefined();
+      if (status === 401) {
+        expect(settled.error).toBeInstanceOf(ApiError);
+        expect(onLoggedOut).toHaveBeenCalledOnce();
+        expect(screen.getAllByRole('alert')).toHaveLength(1);
+        expect(screen.getByRole('alert').textContent).toContain('Signed out');
+      } else {
+        expect(settled.error).toBeUndefined();
+        expect(onLoggedOut).not.toHaveBeenCalled();
+        expect(screen.queryByRole('alert')).toBeNull();
+      }
+    },
+  );
 
   it('writeOrThrow rethrows a 409 so the caller can render it', async () => {
     stubFetch([{ method: 'POST', url: '/api/killswitch', status: 409, body: { error: 'exists' } }]);
@@ -345,7 +398,7 @@ describe('SessionProvider', () => {
     });
     expect(onSettled).toHaveBeenCalledTimes(1);
     expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
-    expect(screen.getByRole('status').textContent).not.toBe('');
+    expect(screen.getByRole('alert').textContent).not.toBe('');
   });
 
   it('writeOrThrow on a read-only 503 shows the hold toast and resolves undefined', async () => {
@@ -364,7 +417,7 @@ describe('SessionProvider', () => {
     });
     expect(onSettled).toHaveBeenCalledTimes(1);
     expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
-    expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
+    expect(screen.getByRole('alert').textContent).toContain('BANANASAURS_READONLY is set');
   });
 
   it('a 403 owner-protected refusal shows the server sentence, not the raw code', async () => {
@@ -384,7 +437,7 @@ describe('SessionProvider', () => {
     await act(async () => {
       fireEvent.click(screen.getByText('write'));
     });
-    expect(screen.getByRole('status').textContent).toContain("The owner account can't be changed.");
+    expect(screen.getByRole('alert').textContent).toContain("The owner account can't be changed.");
     expect(screen.getByText("The owner account can't be changed.").textContent).not.toContain(
       'owner-protected',
     );

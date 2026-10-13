@@ -21,7 +21,7 @@ export const taskPostsState = (input: {
 };
 
 /** What the post is called in the "on" sentence, e.g. `announcement`, `approval request`. */
-export type TaskPostKind = 'announcement' | 'approval request';
+export type TaskPostKind = 'announcement' | 'approval request' | 'update';
 
 const SKIPPED = 'Posts skipped while off are not sent later.';
 

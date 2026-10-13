@@ -204,6 +204,7 @@ export const registerTaskRoutes = (
       children: taskRepo.listChildren(session.scope, task.taskId),
       reports: taskRepo.listReports(session.scope, task.taskId),
       reminders: listReminders(session.scope, task.taskId),
+      links: taskRepo.listTaskLinks(session.scope, task.taskId),
       team: team ?? null,
     });
   });

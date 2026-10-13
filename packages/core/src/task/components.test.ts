@@ -1,15 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildCompleteSelect,
-  buildPickComponents,
-  buildReviewComponents,
-  buildTaskCustomId,
-  parseTaskCustomId,
-  TASK_CUSTOM_ID_PREFIX,
-} from './components.js';
+import * as components from './components.js';
+import { buildTaskCustomId, parseTaskCustomId, TASK_CUSTOM_ID_PREFIX } from './components.js';
 
 const TASK_ID = '123e4567-e89b-12d3-a456-426614174000';
-const OTHER_TASK_ID = '123e4567-e89b-12d3-a456-426614174001';
 const CHOICE_MESSAGE_ID = '777777777777777777';
 
 describe('task custom ids', () => {
@@ -56,99 +49,46 @@ describe('task custom ids', () => {
   });
 });
 
-describe('buildReviewComponents', () => {
-  it('renders Approve and Send back buttons whose ids parse back', () => {
-    const rows = buildReviewComponents(TASK_ID, 2) as {
-      type: number;
-      components: { type: number; style: number; custom_id: string; label: string }[];
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.type).toBe(1);
-    expect(rows[0]?.components.map((c) => [c.label, c.type, c.style])).toEqual([
-      ['Approve', 2, 3],
-      ['Send back', 2, 2],
-    ]);
-    const [approve, reject] = rows[0]?.components ?? [];
-    expect(parseTaskCustomId(approve?.custom_id ?? '')).toEqual({
-      action: 'approve',
-      taskId: TASK_ID,
-      version: 2,
-    });
-    expect(parseTaskCustomId(reject?.custom_id ?? '')).toEqual({
-      action: 'reject',
-      taskId: TASK_ID,
-      version: 2,
-    });
+describe('components module surface', () => {
+  it('does not export the retired buildCompleteSelect helper', () => {
+    expect(components).not.toHaveProperty('buildCompleteSelect');
   });
 });
 
-describe('buildPickComponents', () => {
-  it('caps at 5 primary buttons and trims long labels', () => {
-    const candidates = Array.from({ length: 7 }, (_, i) => ({
-      taskId: OTHER_TASK_ID,
-      title: `  Task ${i} ${'x'.repeat(100)}  `,
-    }));
-    const rows = buildPickComponents(CHOICE_MESSAGE_ID, candidates) as {
-      type: number;
-      components: { type: number; style: number; custom_id: string; label: string }[];
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.type).toBe(1);
-    expect(rows[0]?.components).toHaveLength(5);
-    for (const button of rows[0]?.components ?? []) {
-      expect(button.type).toBe(2);
-      expect(button.style).toBe(1);
-      expect(button.label.length).toBeLessThanOrEqual(80);
-      expect(button.label.startsWith('Task ')).toBe(true);
-      expect(parseTaskCustomId(button.custom_id)).toEqual({
-        action: 'pick',
-        choiceMessageId: CHOICE_MESSAGE_ID,
-        taskId: OTHER_TASK_ID,
+describe('start and update custom ids', () => {
+  it('round-trips the start and update custom ids', () => {
+    const taskId = '00000000-0000-4000-8000-000000000001';
+    const start = buildTaskCustomId({ action: 'start', taskId, version: 3 });
+    expect(start).toBe(`bs.task:start:${taskId}:3`);
+    expect(parseTaskCustomId(start)).toEqual({ action: 'start', taskId, version: 3 });
+    const update = buildTaskCustomId({ action: 'update', taskId });
+    expect(update).toBe(`bs.task:update:${taskId}`);
+    expect(parseTaskCustomId(update)).toEqual({ action: 'update', taskId });
+    expect(parseTaskCustomId(`bs.task:update:${taskId}:extra`)).toBeUndefined();
+    expect(parseTaskCustomId('bs.task:start:not-a-uuid:1')).toBeUndefined();
+  });
+});
+
+describe('start and update custom id validation', () => {
+  const taskId = '00000000-0000-4000-8000-000000000001';
+  it('accepts versions 1 through 1e9 only', () => {
+    for (const v of [1, 2, 1_000_000_000]) {
+      expect(parseTaskCustomId(`bs.task:start:${taskId}:${v}`)).toEqual({
+        action: 'start',
+        taskId,
+        version: v,
       });
     }
+    for (const v of ['0', '1000000001', '-1', '1.5', '1e3', 'x', '', ' 1', '01x']) {
+      expect(parseTaskCustomId(`bs.task:start:${taskId}:${v}`)).toBeUndefined();
+    }
   });
-  it('labels a blank title as Task', () => {
-    const rows = buildPickComponents(CHOICE_MESSAGE_ID, [{ taskId: TASK_ID, title: '   ' }]) as {
-      components: { label: string }[];
-    }[];
-    expect(rows[0]?.components[0]?.label).toBe('Task');
-  });
-});
-
-describe('buildCompleteSelect', () => {
-  it('renders one select with up to 25 options', () => {
-    const tasks = Array.from({ length: 30 }, (_, i) => ({
-      taskId: TASK_ID,
-      title: `Task ${i}`,
-      dueLabel: `Sep ${i}, 5:00 PM`,
-    }));
-    const rows = buildCompleteSelect(tasks) as {
-      type: number;
-      components: {
-        type: number;
-        custom_id: string;
-        placeholder: string;
-        options: { label: string; value: string; description: string }[];
-      }[];
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.type).toBe(1);
-    const select = rows[0]?.components[0];
-    expect(select?.type).toBe(3);
-    expect(select?.custom_id).toBe(buildTaskCustomId({ action: 'complete' }));
-    expect(select?.placeholder).toBe('Choose a task');
-    expect(select?.options).toHaveLength(25);
-    expect(select?.options[0]).toEqual({
-      label: 'Task 0',
-      value: TASK_ID,
-      description: 'Sep 0, 5:00 PM',
-    });
-  });
-  it('trims option labels and descriptions to 100 chars', () => {
-    const rows = buildCompleteSelect([
-      { taskId: TASK_ID, title: `  ${'y'.repeat(150)}  `, dueLabel: 'd'.repeat(150) },
-    ]) as { components: { options: { label: string; description: string }[] }[] }[];
-    expect(rows[0]?.components[0]?.options[0]?.label).toHaveLength(100);
-    expect(rows[0]?.components[0]?.options[0]?.description).toHaveLength(100);
+  it('rejects a missing or extra part and a bad task id', () => {
+    expect(parseTaskCustomId(`bs.task:start:${taskId}`)).toBeUndefined();
+    expect(parseTaskCustomId(`bs.task:start:${taskId}:1:2`)).toBeUndefined();
+    expect(parseTaskCustomId('bs.task:start')).toBeUndefined();
+    expect(parseTaskCustomId('bs.task:update')).toBeUndefined();
+    expect(parseTaskCustomId('bs.task:update:not-a-uuid')).toBeUndefined();
+    expect(parseTaskCustomId(`bs.task:update:${taskId.toUpperCase()}x`)).toBeUndefined();
   });
 });

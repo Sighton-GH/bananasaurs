@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { snowflakeIdSchema, timeZoneSchema, type GuildId } from '@bananasaurs/core';
+import {
+  snowflakeIdSchema,
+  taskLinksSchema,
+  timeZoneSchema,
+  type GuildId,
+} from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
@@ -32,6 +37,11 @@ const taskFields = {
   dueAt,
   timezone: timeZoneSchema,
   destinationId: snowflakeIdSchema,
+  links: taskLinksSchema
+    .optional()
+    .describe(
+      'Up to 5 links shown as buttons on the task card: { label (at most 34 characters), url (https only) }. On edit, omit to keep the current links; [] clears them.',
+    ),
 };
 const createTaskFields = { ...taskFields, extraReminderAt };
 const editTaskFields = taskFields;
@@ -126,7 +136,7 @@ export const taskAdminTools = {
   },
   record_task_progress: {
     description:
-      'Owner or Manage club tasks: record a progress report on an open task; does not post it. Retrying with the same requestId is a no-op.',
+      "Owner or Manage club tasks: record a progress report on an open task. When task posts are on, it is posted to the task's channel as an update card within a minute. Retrying with the same requestId is a no-op.",
     params: { ...withGuild, taskId, body: z.string().trim().min(1).max(5000), requestId },
   },
   delete_task_report: {

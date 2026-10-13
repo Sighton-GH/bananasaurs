@@ -79,4 +79,35 @@ describe('AccountsPage list', () => {
     expect(screen.queryByText('audit.read')).toBeNull();
     expect(screen.queryByText('accounts.manage')).toBeNull();
   });
+
+  it('an empty roster is an Empty state; failures are unavailable or forbidden, never "no accounts"', async () => {
+    stubFetch([{ url: '/api/accounts', body: { accounts: [], capabilities: {} } }]);
+    renderWithSession(<AccountsPage />);
+    expect(await screen.findByText('No accounts yet')).toBeTruthy();
+    cleanup();
+    stubFetch([{ url: '/api/accounts', status: 403, body: { error: 'forbidden' } }]);
+    renderWithSession(<AccountsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('No accounts yet')).toBeNull();
+    cleanup();
+    stubFetch([{ url: '/api/accounts', status: 500, body: { error: 'boom' } }]);
+    renderWithSession(<AccountsPage />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('No accounts yet')).toBeNull();
+  });
+
+  it('status is a badge with words, and created is relative with the date on hover', async () => {
+    stubFetch([
+      {
+        url: '/api/accounts',
+        body: {
+          ...ACCOUNTS,
+          accounts: [{ ...ACCOUNTS.accounts[1], createdAt: Date.now() - 3 * 86_400_000 }],
+        },
+      },
+    ]);
+    renderWithSession(<AccountsPage />);
+    expect((await screen.findByText('Enabled')).className).toContain('border-tone-ok');
+    expect(screen.getByText('3 days ago').getAttribute('title')).toMatch(/\d/);
+  });
 });

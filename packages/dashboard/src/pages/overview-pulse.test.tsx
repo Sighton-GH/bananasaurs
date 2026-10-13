@@ -208,4 +208,49 @@ describe('OperatorPulse', () => {
     expect(await screen.findByText(/Could not check provider eligibility: boom/)).toBeTruthy();
     expect(screen.getByText('Nothing has been audited yet.')).toBeTruthy();
   });
+
+  it('(7c) a denied or failed check is never read as clear', async () => {
+    stubFetch([
+      ...OK_SOURCES.filter((s) => s.url !== '/api/jobs?failedOnly=true&limit=100'),
+      { url: '/api/jobs?failedOnly=true&limit=100', status: 403, body: { error: 'forbidden' } },
+    ]);
+    renderWithSession(<OperatorPulse health={HEALTH} />);
+    expect(await screen.findByText(/You do not have permission to check failed jobs/)).toBeTruthy();
+    expect(screen.queryByText('Nothing needs attention right now.')).toBeNull();
+    expect(screen.queryByText('clear')).toBeNull();
+    expect(screen.getByText(/Some checks could not run/)).toBeTruthy();
+    cleanup();
+    stubFetch([
+      ...OK_SOURCES.filter((s) => s.url !== '/api/backups'),
+      { url: '/api/backups', status: 500, body: { error: 'boom' } },
+    ]);
+    renderWithSession(<OperatorPulse health={HEALTH} />);
+    expect(await screen.findByText(/Could not check the backups: boom/)).toBeTruthy();
+    expect(screen.queryByText('Nothing needs attention right now.')).toBeNull();
+  });
+
+  it('(7c) recent activity shows relative time with the absolute time on hover; links use the kit', async () => {
+    stubFetch([
+      ...OK_SOURCES.filter((s) => s.url !== '/api/audit?limit=8'),
+      {
+        url: '/api/audit?limit=8',
+        body: [
+          {
+            auditId: 3,
+            at: Date.now() - 2 * 3_600_000,
+            actorType: 'account',
+            actorId: 'bryan',
+            via: 'http',
+            action: 'account.capability.granted',
+            subjectType: 'account',
+          },
+        ],
+      },
+    ]);
+    renderWithSession(<OperatorPulse health={HEALTH} />);
+    const when = await screen.findByText('2 hours ago');
+    expect(when.getAttribute('title')).toMatch(/\d/);
+    expect(screen.getByText('Full audit log →').className).toContain('text-accent');
+    expect(document.querySelector('.text-sm')).toBeNull();
+  });
 });

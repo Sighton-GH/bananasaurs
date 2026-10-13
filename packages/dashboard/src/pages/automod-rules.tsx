@@ -20,6 +20,8 @@ import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { Field, Input } from '../ui/Field.js';
+import { Select } from '../ui/Select.js';
+import { Textarea } from '../ui/Textarea.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
@@ -186,21 +188,15 @@ export function AutomodRulesPage() {
               />
             </Field>
             <Field label="Kind">
-              <select
+              <Select
                 value={kind}
-                onChange={(e) => {
-                  const next = e.target.value as RuleKind;
+                onValueChange={(v) => {
+                  const next = v as RuleKind;
                   setKind(next);
                   setConfigText(RULE_CONFIG_EXAMPLE[next].json);
                 }}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                {RULE_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {RULE_KIND_LABEL[k]}
-                  </option>
-                ))}
-              </select>
+                options={RULE_KINDS.map((k) => ({ value: k, label: RULE_KIND_LABEL[k] }))}
+              />
             </Field>
             <p className="text-sm text-ink-muted">
               A safe starting configuration is filled in for this rule type. You can change it after
@@ -213,11 +209,11 @@ export function AutomodRulesPage() {
                 hint="For experienced operators only"
                 {...(configError !== undefined ? { error: configError } : {})}
               >
-                <textarea
+                <Textarea
                   value={configText}
                   onChange={(e) => setConfigText(e.target.value)}
                   rows={4}
-                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  className="block w-full rounded-control border border-line-strong bg-panel px-3 py-2 font-mono text-body text-ink"
                 />
               </Field>
               <RuleConfigExample

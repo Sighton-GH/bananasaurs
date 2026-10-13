@@ -1,4 +1,5 @@
-import { useCallback } from 'react';
+import { Field, Input } from '../ui/Field.js';
+import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { ASSISTANT_URL, type AssistantData } from '../api/assistant.js';
 import { useSession } from '../app/session.js';
@@ -102,6 +103,7 @@ function ToolsCard({ data }: { readonly data: AssistantData }) {
  */
 export function AssistantSkillsPage() {
   const session = useSession();
+  const [filter, setFilter] = useState('');
   const load = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
   const assistant = useResource('assistant skills', load);
   return (
@@ -115,6 +117,11 @@ export function AssistantSkillsPage() {
           </Link>
         }
       />
+      <div className="mb-3 max-w-2xl">
+        <Field label="Filter skills">
+          <Input value={filter} onChange={(event) => setFilter(event.target.value)} />
+        </Field>
+      </div>
       <DataState
         resource={assistant.resource}
         isEmpty={(data) => data.skills.length === 0}
@@ -126,6 +133,9 @@ export function AssistantSkillsPage() {
         }
       >
         {(data) => {
+          const rows = data.skills.filter((skill) =>
+            `${skill.name} ${skill.description}`.toLowerCase().includes(filter.toLowerCase()),
+          );
           return (
             <div className="space-y-5">
               <Card title="Skill catalogue">
@@ -133,8 +143,14 @@ export function AssistantSkillsPage() {
                   Every skill the assistant could use in this server. Open one to see who can use it
                   and its recent runs.
                 </p>
+                {rows.length === 0 && (
+                  <EmptyState
+                    title="No skills match these filters"
+                    action={<Button onClick={() => setFilter('')}>Clear filters</Button>}
+                  />
+                )}
                 <ul className="grid gap-3 md:grid-cols-2">
-                  {data.skills.map((skill) => {
+                  {rows.map((skill) => {
                     const scope = data.skillScopes?.[skill.id];
                     const activeCount = data.skillItemCounts?.[skill.id] ?? 0;
                     const roleName = (id: string) =>

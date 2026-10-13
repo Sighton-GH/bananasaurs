@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { snowflakeIdSchema, timeZoneSchema } from '@bananasaurs/core';
+import { snowflakeIdSchema, taskLinksSchema, timeZoneSchema } from '@bananasaurs/core';
 import { guildRepo, taskBindingRepo, taskRepo, taskNudgeRepo } from '@bananasaurs/storage';
 import { badRequest } from '../errors/reply.js';
 import { canManageTasks } from '../owner.js';
@@ -40,6 +40,7 @@ const taskSchema = z
     timezone: timeZoneSchema,
     destinationId: snowflakeIdSchema,
     extraReminderAt: z.array(z.number().int().positive()).max(20).optional(),
+    links: taskLinksSchema.optional(),
   })
   .strict();
 const taskEditSchema = taskSchema

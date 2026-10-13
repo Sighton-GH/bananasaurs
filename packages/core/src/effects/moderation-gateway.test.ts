@@ -47,6 +47,13 @@ interface FakeCall {
  * outside its documented surface.
  */
 class MinimalModerationDiscord implements DiscordPort {
+  async deferUpdate(): Promise<void> {
+    throw new Error('not used');
+  }
+  async showModal(): Promise<void> {
+    throw new Error('not used');
+  }
+
   calls: FakeCall[] = [];
   private roles: DiscordRole[];
   private botPosition: number;

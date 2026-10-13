@@ -54,6 +54,8 @@ import {
   type PurgePorts,
   type ReconcilePorts,
   type Subscriber,
+  TASK_UPDATE_BLOCKER_MAX,
+  TASK_UPDATE_BODY_MAX,
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
@@ -93,6 +95,8 @@ import { pruneJobsHandler, sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
+import { refreshOneTaskCard } from '../jobs/task-cards.js';
+import { taskPostsEnabledFor } from './task-posts-gate.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
@@ -108,6 +112,7 @@ import {
   reminderStoreFor,
 } from '../assistant/reminder-delivery.js';
 import { opsPortsFor } from '../ops/wiring.js';
+import { scheduleUpdatePost } from '../jobs/task-update-slot.js';
 import { channelAccessFor } from '../channels/access.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { resolveReplyPings } from '../assistant/reply-ping-policy.js';
@@ -696,6 +701,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+      showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
@@ -825,6 +832,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       },
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+        showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
@@ -834,6 +843,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     } satisfies HistoryDeps,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+      showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
@@ -1110,6 +1121,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       guildId,
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        deferUpdate: (ref) => discord.deferUpdate(guildId, ref),
+        showModal: (ref, modal) => discord.showModal(guildId, ref, modal),
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
@@ -1193,7 +1206,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           now(),
         );
         const found = taskRepo.getTask(scope, taskId);
-        return found?.title === undefined ? { outcome } : { outcome, title: found.title };
+        const teamName = taskRepo.listTeams(scope).find((t) => t.teamId === found?.teamId)?.name;
+        return {
+          outcome,
+          ...(found === undefined ? {} : { title: found.title }),
+          ...(teamName === undefined ? {} : { teamName }),
+        };
       },
       pickReplyTask: async (userId, choiceMessageId, taskId) => {
         const outcome = await resolveReplyChoice(
@@ -1208,6 +1226,94 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         const found = taskRepo.getTask(scope, taskId);
         return found?.title === undefined ? { outcome } : { outcome, title: found.title };
       },
+      startTask: async (userId, taskId, version) => {
+        // Preserve the helper's call-time timestamp across the live access check.
+        const startedAt = now();
+        const task = taskRepo.getTask(scope, taskId);
+        if (
+          !task ||
+          task.archivedAt ||
+          task.status === 'done' ||
+          task.status === 'awaiting_approval'
+        )
+          return 'not-open';
+        if (task.status === 'in_progress' || task.version !== version) return 'stale';
+        const access = await taskMemberAccess(scope, deps.client, discord, userId);
+        const allowed =
+          access.teams.some((team) => team.teamId === task.teamId) &&
+          (task.assignmentKind === 'individual'
+            ? taskRepo.isTaskAssignee(scope, taskId, userId) && access.onTeam(task.teamId)
+            : access.onTeam(task.teamId));
+        if (!allowed) return 'not-yours';
+        return taskRepo.setStatus(
+          scope,
+          taskId,
+          version,
+          'in_progress',
+          { actorType: 'member', actorId: userId, via: 'gateway' },
+          startedAt,
+        )
+          ? 'started'
+          : 'stale';
+      },
+      taskTitle: (taskId) => taskRepo.getTask(scope, taskId)?.title,
+      postUpdate: async (userId, taskId, interactionId, body, blocker) => {
+        const postsOn = taskPostsEnabledFor(scope, config.BANANASAURS_DRY_RUN);
+        // Server-side guard for hand-rolled interactions: the modal's client
+        // checks (min_length 3, max_length) do not stop a direct submit. An
+        // empty or oversized update must not be recorded or move the task to
+        // In progress (P1 phase review P3-1).
+        if (
+          body.trim() === '' ||
+          body.length > TASK_UPDATE_BODY_MAX ||
+          (blocker !== undefined && blocker.length > TASK_UPDATE_BLOCKER_MAX)
+        )
+          return { outcome: 'invalid', postsOn };
+        const task = taskRepo.getTask(scope, taskId);
+        if (
+          !task ||
+          task.archivedAt ||
+          (task.status !== 'not_started' && task.status !== 'in_progress')
+        )
+          return { outcome: 'not-open', postsOn };
+        const access = await taskMemberAccess(scope, deps.client, discord, userId);
+        // The membership fetch above awaited: re-read the task so status, team and
+        // assignment are judged as of now, not as of before the await.
+        const current = taskRepo.getTask(scope, taskId);
+        if (
+          !current ||
+          current.archivedAt ||
+          (current.status !== 'not_started' && current.status !== 'in_progress')
+        )
+          return { outcome: 'not-open', postsOn };
+        const onLiveTeam = access.teams.some((team) => team.teamId === current.teamId);
+        const allowed =
+          onLiveTeam &&
+          (current.assignmentKind === 'individual'
+            ? taskRepo.isTaskAssignee(scope, taskId, userId) && access.onTeam(current.teamId)
+            : access.onTeam(current.teamId));
+        if (!allowed) return { outcome: 'not-yours', postsOn };
+        const reportId = `modal:${interactionId}`;
+        const text = blocker === undefined ? body : `${body}\n\nBlocked: ${blocker}`;
+        const at = now();
+        const outcome = taskRepo.recordReport(
+          scope,
+          taskId,
+          reportId,
+          userId,
+          text,
+          { actorType: 'member', actorId: userId, via: 'gateway' },
+          at,
+        );
+        if (outcome === 'not-open') return { outcome: 'not-open', postsOn };
+        if (outcome === 'recorded') scheduleUpdatePost(scope, taskId, reportId, at);
+        return { outcome, postsOn };
+      },
+      refreshTaskCard: (taskId) =>
+        refreshOneTaskCard(scope, discord, taskId, now(), {
+          enabled: taskPostsEnabledFor(scope, config.BANANASAURS_DRY_RUN),
+          logger,
+        }),
       editBotMessage: async (channelId, messageId, message) => {
         await discord.editMessage(guildId, { channelId, messageId }, message);
       },

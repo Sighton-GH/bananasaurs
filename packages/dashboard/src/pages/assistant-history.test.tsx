@@ -1,3 +1,5 @@
+import './messages-assistant/test-support.js';
+import userEvent from '@testing-library/user-event';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -128,11 +130,13 @@ describe('AssistantHistoryPage', () => {
     ]);
     renderWithSession(<AssistantHistoryPage />);
     await screen.findByText('gemini-2.5-flash');
-    fireEvent.change(screen.getByLabelText('Outcome'), { target: { value: 'failed' } });
+    screen.getByLabelText('Outcome').focus();
+    await userEvent.keyboard('{Enter}');
+    await userEvent.click(screen.getByRole('option', { name: 'failed' }));
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
     });
-    expect(await screen.findByText('No assistant runs yet')).toBeTruthy();
+    expect(await screen.findByText('No assistant runs match these filters')).toBeTruthy();
     expect(
       mock.mock.calls.some((c) => c[0] === '/api/assistant/traces?limit=50&outcome=failed'),
     ).toBe(true);
@@ -148,8 +152,30 @@ describe('AssistantHistoryPage', () => {
   });
 
   it('renders the error state naming the request when the load fails', async () => {
-    stubFetch([]);
+    stubFetch([{ url: '/api/assistant/traces?limit=50', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AssistantHistoryPage />);
-    expect(await screen.findByText(/Could not load assistant history/)).toBeTruthy();
+    expect(await screen.findByText(/Couldn't load assistant history/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
+});
+
+it('shows denied history audit access as permission denied, not an outage', async () => {
+  stubFetch(
+    stubs({ traces: [] }).map((route) =>
+      route.url === '/api/assistant/traces?limit=50'
+        ? {
+            ...route,
+            status: 403,
+            body: {
+              error: 'no-grant',
+              title: 'Audit access needed',
+              message: 'This page needs audit.read.',
+            },
+          }
+        : route,
+    ),
+  );
+  renderWithSession(<AssistantHistoryPage />);
+  expect(await screen.findByText('Audit access needed')).toBeTruthy();
+  expect(screen.queryByText('No assistant runs yet')).toBeNull();
 });

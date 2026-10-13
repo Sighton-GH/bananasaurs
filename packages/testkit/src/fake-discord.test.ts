@@ -332,6 +332,66 @@ describe('interaction deadlines, which Discord enforces strictly', () => {
   });
 });
 
+describe('the follow-up window opens on any acknowledgement', () => {
+  const modal = { custom_id: 'm', title: 'T', components: [] };
+
+  it.each(['modal', 'reply', 'deferInteraction', 'deferUpdate'] as const)(
+    'allows a follow-up once the three-second window has closed, after %s',
+    async (first) => {
+      const fake = new FakeDiscord({ guildId: GUILD });
+      const iRef = { interactionId: '1', token: 't' };
+      fake.registerInteraction(iRef);
+      if (first === 'modal') await fake.showModal(GUILD, iRef, modal);
+      else if (first === 'reply')
+        await fake.respondToInteraction(GUILD, iRef, { content: 'initial' });
+      else if (first === 'deferInteraction')
+        await fake.deferInteraction(GUILD, iRef, { ephemeral: true });
+      else await fake.deferUpdate(GUILD, iRef);
+
+      fake.advance(3_001);
+      await expect(
+        fake.respondToInteraction(GUILD, iRef, { content: 'followup' }),
+      ).resolves.toBeUndefined();
+      expect(fake.interactionReplies('1').at(-1)).toEqual({ content: 'followup' });
+
+      fake.advance(15 * 60_000 - 3_001 + 1);
+      await expect(
+        fake.respondToInteraction(GUILD, iRef, { content: 'expired' }),
+      ).rejects.toMatchObject({ code: 10062 });
+    },
+  );
+
+  it('allows a follow-up at fifteen minutes exactly, and refuses one a millisecond later', async () => {
+    const fake = new FakeDiscord({ guildId: GUILD });
+    const iRef = { interactionId: '1', token: 't' };
+    fake.registerInteraction(iRef);
+    await fake.respondToInteraction(GUILD, iRef, { content: 'initial' });
+    fake.advance(15 * 60_000);
+    await expect(
+      fake.respondToInteraction(GUILD, iRef, { content: 'edge' }),
+    ).resolves.toBeUndefined();
+    fake.advance(1);
+    await expect(fake.respondToInteraction(GUILD, iRef, { content: 'late' })).rejects.toMatchObject(
+      { code: 10062 },
+    );
+  });
+
+  it('still applies the three-second limit to the initial response itself', async () => {
+    const fake = new FakeDiscord({ guildId: GUILD });
+    fake.registerInteraction({ interactionId: 'edge', token: 't' });
+    fake.advance(3_000);
+    await expect(
+      fake.respondToInteraction(GUILD, { interactionId: 'edge', token: 't' }, { content: 'x' }),
+    ).resolves.toBeUndefined();
+
+    fake.registerInteraction({ interactionId: 'late', token: 't' });
+    fake.advance(3_001);
+    await expect(
+      fake.respondToInteraction(GUILD, { interactionId: 'late', token: 't' }, { content: 'x' }),
+    ).rejects.toMatchObject({ code: 10062 });
+  });
+});
+
 describe('respondToInteraction returns a ref (ADR 0072)', () => {
   it('reports the channel it knows about from emitInteraction, and a fresh message id', async () => {
     const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
@@ -1137,4 +1197,162 @@ describe('thread info (ADR 0115 sweeper fallback)', () => {
     d.defineThread({ threadId: THREAD, parentId: PARENT, guildId: OTHER_GUILD });
     await expect(d.fetchThreadInfo(GUILD, THREAD)).resolves.toBeUndefined();
   });
+});
+
+it('refuses a modal after a defer, and records one shown first', async () => {
+  const fake = new FakeDiscord({ guildId: GUILD });
+  fake.registerInteraction({ interactionId: '1', token: 't1' });
+  await fake.showModal(
+    GUILD,
+    { interactionId: '1', token: 't1' },
+    {
+      custom_id: 'm',
+      title: 'T',
+      components: [],
+    },
+  );
+  expect(fake.modalsShown('1')).toHaveLength(1);
+
+  fake.registerInteraction({ interactionId: '2', token: 't2' });
+  await fake.deferUpdate(GUILD, { interactionId: '2', token: 't2' });
+  expect(fake.wasUpdateDeferred('2')).toBe(true);
+  expect(fake.wasEphemeral('2')).toBe(true);
+  await expect(
+    fake.showModal(
+      GUILD,
+      { interactionId: '2', token: 't2' },
+      { custom_id: 'm', title: 'T', components: [] },
+    ),
+  ).rejects.toThrow();
+});
+
+describe('Components V2 support', () => {
+  it('emits modal fields with a new interaction that can be answered', async () => {
+    const fields = { body: '@everyone **update**', duration: '60' };
+    const id = await d.emitModalSubmit({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      userId: USER,
+      customId: 'm',
+      fields,
+    });
+    expect(seen).toEqual([
+      {
+        kind: 'modalSubmit',
+        guildId: GUILD,
+        receivedAtMs: d.now(),
+        interactionId: id,
+        token: `tok-${id}`,
+        channelId: CHANNEL,
+        messageId: MESSAGE,
+        userId: USER,
+        customId: 'm',
+        fields,
+      },
+    ]);
+    await d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true });
+    expect(d.wasEphemeral(id)).toBe(true);
+  });
+
+  it('emits a slash-opened modal without a message id', async () => {
+    await d.emitModalSubmit({ channelId: CHANNEL, userId: USER, customId: 'm', fields: {} });
+    expect(seen[0]).toMatchObject({ kind: 'modalSubmit', messageId: undefined });
+  });
+
+  it('stores flags, components and files on sends and edits', async () => {
+    const files = [{ name: 'x.png', contentType: 'image/png', data: new Uint8Array([1]) }];
+    const initial = {
+      flags: 32768,
+      components: [{ type: 10, content: 'one' }],
+      files,
+      allowedMentions: { parse: [] as const },
+    };
+    const sent = await d.sendMessage(GUILD, CHANNEL, initial);
+    expect(d.sentCard(sent)).toEqual({
+      flags: initial.flags,
+      components: initial.components,
+      files,
+    });
+    const updated = { ...initial, components: [{ type: 10, content: 'two' }], files: [] };
+    await d.editMessage(GUILD, sent, updated);
+    expect(d.sentCard(sent)).toEqual({
+      flags: updated.flags,
+      components: updated.components,
+      files: [],
+    });
+    await expect(d.editMessage(GUILD, ref, initial)).rejects.toThrow();
+    expect(d.sentCard(ref)).toEqual({ flags: undefined, components: undefined, files: undefined });
+    expect(d.sentCard({ channelId: CHANNEL, messageId: 'missing' })).toBeUndefined();
+  });
+
+  it('rejects late modal and deferred-update acknowledgements', async () => {
+    d.registerInteraction({ interactionId: 'late', token: 't' });
+    d.advance(3001);
+    await expect(d.deferUpdate(GUILD, { interactionId: 'late', token: 't' })).rejects.toThrow();
+    await expect(
+      d.showModal(
+        GUILD,
+        { interactionId: 'late', token: 't' },
+        { custom_id: 'm', title: 'T', components: [] },
+      ),
+    ).rejects.toThrow();
+    expect(d.wasUpdateDeferred('late')).toBe(false);
+    expect(d.modalsShown('late')).toEqual([]);
+  });
+});
+
+it('refuses a second modal or a modal after an immediate reply', async () => {
+  const modal = { custom_id: 'm', title: 'T', components: [] };
+  d.registerInteraction({ interactionId: 'first', token: 't' });
+  await d.showModal(GUILD, { interactionId: 'first', token: 't' }, modal);
+  await expect(d.showModal(GUILD, { interactionId: 'first', token: 't' }, modal)).rejects.toThrow();
+  expect(d.modalsShown('first')).toEqual([modal]);
+  d.registerInteraction({ interactionId: 'replied', token: 't' });
+  await d.respondToInteraction(GUILD, { interactionId: 'replied', token: 't' }, { content: 'x' });
+  await expect(
+    d.showModal(GUILD, { interactionId: 'replied', token: 't' }, modal),
+  ).rejects.toThrow();
+});
+
+describe('an interaction has only one initial acknowledgement', () => {
+  const modal = { custom_id: 'm', title: 'T', components: [] };
+
+  describe.each(['modal', 'reply', 'deferInteraction', 'deferUpdate'] as const)(
+    'after %s',
+    (first) => {
+      it.each(['deferInteraction', 'deferUpdate'] as const)('rejects %s', async (second) => {
+        const fake = new FakeDiscord({ guildId: GUILD });
+        const ref = { interactionId: '1', token: 't' };
+        fake.registerInteraction(ref);
+        if (first === 'modal') await fake.showModal(GUILD, ref, modal);
+        else if (first === 'reply') await fake.respondToInteraction(GUILD, ref, { content: 'x' });
+        else if (first === 'deferInteraction')
+          await fake.deferInteraction(GUILD, ref, { ephemeral: true });
+        else await fake.deferUpdate(GUILD, ref);
+
+        if (second === 'deferInteraction')
+          await expect(fake.deferInteraction(GUILD, ref, { ephemeral: true })).rejects.toThrow();
+        else await expect(fake.deferUpdate(GUILD, ref)).rejects.toThrow();
+      });
+    },
+  );
+
+  it.each(['deferInteraction', 'deferUpdate'] as const)(
+    '%s rejects a later modal but still allows follow-up replies',
+    async (first) => {
+      const fake = new FakeDiscord({ guildId: GUILD });
+      const ref = { interactionId: '1', token: 't' };
+      fake.registerInteraction(ref);
+      if (first === 'deferInteraction')
+        await fake.deferInteraction(GUILD, ref, { ephemeral: true });
+      else await fake.deferUpdate(GUILD, ref);
+      await expect(fake.showModal(GUILD, ref, modal)).rejects.toThrow();
+      await expect(
+        fake.respondToInteraction(GUILD, ref, { content: 'x' }),
+      ).resolves.toBeUndefined();
+      await expect(
+        fake.respondToInteraction(GUILD, ref, { content: 'y' }),
+      ).resolves.toBeUndefined();
+    },
+  );
 });

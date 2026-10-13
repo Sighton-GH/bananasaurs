@@ -2880,6 +2880,10 @@ export const taskMessageAnchors = sqliteTable(
     channelId: snowflake('channel_id').notNull(),
     messageId: snowflake('message_id').notNull(),
     createdAt: integer('created_at').notNull(),
+    /** The task version this card last showed (ADR 0140). 0 = a pre-card text post. */
+    renderedVersion: integer('rendered_version').notNull().default(0),
+    /** When the card was last rendered; a newer task report makes it stale. */
+    renderedAt: integer('rendered_at').notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.taskId] }),
@@ -2891,6 +2895,29 @@ export const taskMessageAnchors = sqliteTable(
     check('task_anchor_guild_snowflake', snowflakeCheck(t.guildId)),
     check('task_anchor_channel_snowflake', snowflakeCheck(t.channelId)),
     check('task_anchor_message_snowflake', snowflakeCheck(t.messageId)),
+  ],
+);
+
+/** Up to five ordered links shown as buttons on a task's card (ADR 0140). */
+export const taskLinks = sqliteTable(
+  'task_links',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    taskId: text('task_id').notNull(),
+    position: integer('position').notNull(),
+    label: text('label').notNull(),
+    url: text('url').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.taskId, t.position] }),
+    foreignKey({
+      columns: [t.guildId, t.taskId],
+      foreignColumns: [clubTasks.guildId, clubTasks.taskId],
+    }).onDelete('cascade'),
+    check('task_links_guild_snowflake', snowflakeCheck(t.guildId)),
+    check('task_links_position', sql`${t.position} BETWEEN 0 AND 4`),
+    check('task_links_label', sql`length(${t.label}) BETWEEN 1 AND 34`),
+    check('task_links_url', sql`${t.url} LIKE 'https://%' AND length(${t.url}) <= 512`),
   ],
 );
 
@@ -3022,7 +3049,7 @@ export const taskNudgeSlots = sqliteTable(
     check('task_nudge_slot_message', nullableSnowflakeCheck(t.messageId)),
     check(
       'task_nudge_slot_kind',
-      sql`${t.kind} IN ('pre_due','custom','checkin','digest','followup','announce','review','clarify','evaluate')`,
+      sql`${t.kind} IN ('pre_due','custom','checkin','digest','followup','announce','review','clarify','evaluate','update')`,
     ),
     check(
       'task_nudge_slot_state',

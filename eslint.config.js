@@ -14,6 +14,19 @@ const REST_MESSAGE =
 
 const DB = ['better-sqlite3', 'drizzle-orm', 'drizzle-orm/*'];
 const DISCORD_JS = ['discord.js', 'discord.js/*'];
+const DASHBOARD_SERVER_BAN = [
+  ...REST_PORT,
+  ...DB,
+  ...DISCORD_JS,
+  '@bananasaurs/storage',
+  '@bananasaurs/http',
+  '@bananasaurs/discord',
+  '@bananasaurs/discord/*',
+  'fastify',
+  'node:*',
+];
+const DASHBOARD_SERVER_MESSAGE =
+  'The dashboard builds to static assets with Vite and must not import server code (docs/19 §1). Talk to the API over HTTP.';
 
 // The typescript-eslint rule id, deliberately, not the base one. The base
 // `no-restricted-imports` is already set globally for the ADR 0013
@@ -89,20 +102,18 @@ const boundaryRules = [
   },
   {
     files: ['packages/dashboard/**/*.ts', 'packages/dashboard/**/*.tsx'],
-    rules: ban([
+    ignores: ['packages/dashboard/src/ui/icons.ts'],
+    rules: ban(
+      [DASHBOARD_SERVER_BAN, DASHBOARD_SERVER_MESSAGE],
       [
-        ...REST_PORT,
-        ...DB,
-        ...DISCORD_JS,
-        '@bananasaurs/storage',
-        '@bananasaurs/http',
-        '@bananasaurs/discord',
-        '@bananasaurs/discord/*',
-        'fastify',
-        'node:*',
+        ['lucide-react', 'lucide-react/*'],
+        'Import icons from src/ui/icons.ts so the set stays small and reviewable (ADR 0142 decision 4).',
       ],
-      'The dashboard builds to static assets with Vite and must not import server code (docs/19 §1). Talk to the API over HTTP.',
-    ]),
+    ),
+  },
+  {
+    files: ['packages/dashboard/src/ui/icons.ts'],
+    rules: ban([DASHBOARD_SERVER_BAN, DASHBOARD_SERVER_MESSAGE]),
   },
   {
     // packages/discord owns the REST port; it reaches it by relative path, not

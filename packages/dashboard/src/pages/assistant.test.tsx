@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { Route } from 'wouter';
 import { AssistantPage } from './assistant.js';
+import { AssistantBehaviourDetailPage } from './behaviours/detail.js';
 
 afterEach(cleanup);
+beforeEach(() => window.history.pushState({}, '', '/'));
 afterEach(() => vi.unstubAllGlobals());
 
 const BEHAVIOURS = [
@@ -144,13 +147,26 @@ const FULL = {
   ],
 };
 
-function renderPage(body: unknown = FULL) {
-  const mock = stubFetch([
-    { url: '/api/assistant', body },
-    { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
-    { method: 'PUT', url: '/api/assistant/behaviours/it', body: { ok: true } },
-  ]);
+const WRITES = [
+  { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
+  { method: 'PUT', url: '/api/assistant/behaviours/it', body: { ok: true } },
+];
+
+/** The list page (`/assistant`), optionally on a named tab. */
+function renderPage(body: unknown = FULL, tab?: string) {
+  window.history.pushState({}, '', tab === undefined ? '/assistant' : `/assistant?tab=${tab}`);
+  const mock = stubFetch([{ url: '/api/assistant', body }, ...WRITES]);
   renderWithSession(<AssistantPage />);
+  return mock;
+}
+
+/** One behaviour's page (`/assistant/behaviours/:id`) on a tab. */
+function renderDetail(id = 'club', tab = 'prompt', body: unknown = FULL) {
+  window.history.pushState({}, '', `/assistant/behaviours/${id}?tab=${tab}`);
+  const mock = stubFetch([{ url: '/api/assistant', body }, ...WRITES]);
+  renderWithSession(
+    <Route path="/assistant/behaviours/:id" component={AssistantBehaviourDetailPage} />,
+  );
   return mock;
 }
 
@@ -163,17 +179,38 @@ describe('AssistantPage', () => {
     ).toBeTruthy();
   });
 
-  it('renders behaviours with their tag mapping, prompt editor and records', async () => {
+  it('lists behaviours in a table with tag mapping, who can use them, skills and status', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
-    const club = screen.getByRole('button', { name: /Club assistant/ });
-    expect(club.getAttribute('aria-pressed')).toBe('true');
-    expect(within(club).getByText('Members mention @Club Assistant')).toBeTruthy();
-    expect(screen.getByDisplayValue('Answer with reviewed club knowledge only.')).toBeTruthy();
-    expect(screen.getByText('Buy two spare batteries')).toBeTruthy();
+    const table = await screen.findByRole('table', { name: 'Assistant behaviours' });
+    const club = within(table).getByRole<HTMLAnchorElement>('link', { name: 'Club assistant' });
+    expect(club.pathname).toBe('/assistant/behaviours/club');
+    const row = club.closest('tr')!;
+    expect(within(row).getByText('Members mention @Club Assistant')).toBeTruthy();
+    expect(within(row).getByText('Club Member')).toBeTruthy();
+    expect(within(row).getByText('Search club knowledge, Set a reminder')).toBeTruthy();
+    expect(within(row).getByText('On')).toBeTruthy();
+    // IT services has an empty allowlist: it fails closed and says nobody.
+    const itRow = within(table).getByRole('link', { name: 'IT services' }).closest('tr')!;
+    expect(within(itRow).getByText('Nobody yet')).toBeTruthy();
+    expect(within(itRow).getByText('Off')).toBeTruthy();
+    // The editors live on the behaviour page, not on the list.
+    expect(
+      screen.queryByRole('textbox', { name: 'Instructions the assistant follows' }),
+    ).toBeNull();
   });
 
-  it('labels a direct command without repeating the words and badges On and Off', async () => {
+  it('says plainly when a server build does not expose the allowlist', async () => {
+    renderPage({
+      ...FULL,
+      behaviours: FULL.behaviours.map(({ callerRoleIds: _drop, ...b }) => b),
+    });
+    const table = await screen.findByRole('table', { name: 'Assistant behaviours' });
+    expect(within(table).getAllByText('Not shown by this server')).toHaveLength(2);
+    expect(within(table).queryByText(/everyone|anyone/i)).toBeNull();
+  });
+
+  it('labels a direct command and badges On and Off', async () => {
     const direct = {
       id: 'ask',
       guildId: '1540816150026518620',
@@ -187,12 +224,11 @@ describe('AssistantPage', () => {
       callerRoleIds: [],
     };
     renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
-    const card = await screen.findByRole('button', { name: /Club Q and A/ });
-    expect(within(card).getByText('Direct command')).toBeTruthy();
-    expect(within(card).getByText('Members tag @Bananasaurs')).toBeTruthy();
-    expect(within(card).getByText('On')).toBeTruthy();
-    const itCard = screen.getByRole('button', { name: /IT services/ });
-    expect(within(itCard).getByText('Off')).toBeTruthy();
+    const row = (await screen.findByRole('link', { name: 'Club Q and A' })).closest('tr')!;
+    expect(within(row).getByText('Direct command: members tag @Bananasaurs')).toBeTruthy();
+    expect(within(row).getByText('On')).toBeTruthy();
+    const itRow = screen.getByRole('link', { name: 'IT services' }).closest('tr')!;
+    expect(within(itRow).getByText('Off')).toBeTruthy();
     expect(screen.queryByText('enabled')).toBeNull();
     expect(screen.queryByText('disabled')).toBeNull();
   });
@@ -217,7 +253,7 @@ describe('AssistantPage', () => {
   });
 
   it('saves the caller-role allowlist through the behaviour endpoint, whole object', async () => {
-    const mock = renderPage();
+    const mock = renderDetail('club', 'access');
     const region = await screen.findByRole('region', { name: 'Caller roles' });
     const onboarding = within(region).getByRole('checkbox', { name: 'Onboarding' });
     expect(onboarding).toBeTruthy();
@@ -242,7 +278,7 @@ describe('AssistantPage', () => {
   });
 
   it('fails closed when the server build does not expose role allowlists', async () => {
-    renderPage({
+    renderDetail('club', 'access', {
       ...FULL,
       behaviours: FULL.behaviours.map(({ callerRoleIds: _drop, ...b }) => b),
     });
@@ -256,7 +292,7 @@ describe('AssistantPage', () => {
   it('fails closed when the role directory does not load', async () => {
     const body = { ...FULL } as Record<string, unknown>;
     delete body['roles'];
-    renderPage(body);
+    renderDetail('club', 'access', body);
     const region = await screen.findByRole('region', { name: 'Caller roles' });
     expect(
       within(region).getByText(/The role directory did not load, so this list cannot be edited/),
@@ -265,7 +301,7 @@ describe('AssistantPage', () => {
   });
 
   it('toggles behaviour enablement through the same whole-object write', async () => {
-    const mock = renderPage();
+    const mock = renderDetail('club');
     fireEvent.click(
       await screen.findByRole('button', { name: 'Turn off - members will get no answer' }),
     );
@@ -277,12 +313,14 @@ describe('AssistantPage', () => {
   });
 
   it("never carries one behaviour's edited prompt onto another (B3)", async () => {
-    const mock = renderPage();
+    const mock = renderDetail('club');
     const editor = await screen.findByRole<HTMLTextAreaElement>('textbox', {
       name: 'Instructions the assistant follows',
     });
     fireEvent.change(editor, { target: { value: 'Unsaved rewrite of the club prompt.' } });
-    fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
+    window.history.pushState({}, '', '/assistant/behaviours/it?tab=prompt');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await screen.findByRole('heading', { name: 'IT services' });
     const switched = await screen.findByRole<HTMLTextAreaElement>('textbox', {
       name: 'Instructions the assistant follows',
     });
@@ -303,8 +341,7 @@ describe('AssistantPage', () => {
   });
 
   it('configures ticket routing for it-services with a fail-closed empty channel', async () => {
-    const mock = renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
+    const mock = renderDetail('it', 'access');
     expect(await screen.findByText(/ticket creation fails closed/)).toBeTruthy();
     fireEvent.change(screen.getByRole('combobox', { name: 'Ticket channel' }), {
       target: { value: 'chan-it' },
@@ -323,8 +360,7 @@ describe('AssistantPage', () => {
   });
 
   it('shows ticket status for the selected behaviour', async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
+    renderDetail('it', 'access');
     const table = await screen.findByRole('table', { name: 'Escalation tickets' });
     expect(within(table).getByText('Wi-Fi certificate install')).toBeTruthy();
     expect(within(table).getByText('Aston')).toBeTruthy();
@@ -333,7 +369,7 @@ describe('AssistantPage', () => {
   });
 
   it('shows decision records as drafts, never as policy', async () => {
-    renderPage();
+    renderPage(FULL, 'settings');
     expect(await screen.findByText('Buy two spare batteries')).toBeTruthy();
     expect(screen.getByText('draft')).toBeTruthy();
     expect(screen.getByText(/A draft is analysis, not club policy/)).toBeTruthy();
@@ -348,8 +384,9 @@ describe('AssistantPage', () => {
       { url: '/api/assistant', body: FULL },
       { method: 'PUT', url: `/api/assistant/behaviours/${id}`, body: { ok: true } },
     ]);
+    window.history.pushState({}, '', '/assistant');
     renderWithSession(<AssistantPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
     // Submit stays disabled until the mention role is chosen from the live directory.
     const submit = screen.getAllByRole('button', { name: 'Create behaviour' })[0]!;
     expect(submit.hasAttribute('disabled')).toBe(true);
@@ -394,7 +431,7 @@ describe('AssistantPage', () => {
 
   it('states the fail-closed rule inside the create form in plain words', async () => {
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
     const form = (await screen.findByRole('heading', { name: 'Create a behaviour' })).closest(
       'section',
     )!;
@@ -406,7 +443,7 @@ describe('AssistantPage', () => {
   });
 
   it('describes the prompt card without system internals', async () => {
-    renderPage();
+    renderDetail('club');
     expect(
       await screen.findByText(
         /These are the instructions this behaviour follows\. Bananasaurs adds its own safety rules/,
@@ -417,7 +454,7 @@ describe('AssistantPage', () => {
 
   it('offers no owner-only skill in the create form and labels effects plainly', async () => {
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
     const picker = await screen.findByRole('region', {
       name: 'Skills the new behaviour may use',
     });
@@ -447,11 +484,13 @@ describe('AssistantPage', () => {
       callerRoleIds: [],
       ticket: { reviewerRoleIds: [] },
     };
-    renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
-    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
+    const body = { ...FULL, behaviours: [direct, BEHAVIOURS[1]!] };
+    renderDetail('ask', 'access', body);
+    expect(await screen.findByRole('region', { name: 'Caller roles' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Ticket routing' })).toBeNull();
     expect(screen.queryByText(/Ticket routing is not exposed/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /IT services/ }));
+    cleanup();
+    renderDetail('it', 'access', body);
     expect(await screen.findByRole('region', { name: 'Ticket routing' })).toBeTruthy();
   });
 
@@ -475,8 +514,9 @@ describe('AssistantPage', () => {
         },
       },
     ]);
+    window.history.pushState({}, '', '/assistant');
     renderWithSession(<AssistantPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
       target: { value: 'Welcome' },
     });
@@ -495,12 +535,38 @@ describe('AssistantPage', () => {
     const body = { ...FULL } as Record<string, unknown>;
     delete body['roles'];
     renderPage(body);
-    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
     expect(
       await screen.findByText(/no mention role can be chosen and the behaviour cannot be created/),
     ).toBeTruthy();
     const submit = screen.getAllByRole('button', { name: 'Create behaviour' })[0]!;
     expect(submit.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('keeps other query fields and the hash when switching list tabs, and keeps a Settings draft', async () => {
+    window.history.pushState({}, '', '/assistant?x=1#top');
+    stubFetch([{ url: '/api/assistant', body: FULL }]);
+    renderWithSession(<AssistantPage />);
+    await screen.findByRole('table', { name: 'Assistant behaviours' });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
+    const select = await screen.findByLabelText<HTMLSelectElement>(
+      'When someone tags @Bananasaurs, answer with',
+    );
+    const params = new URLSearchParams(window.location.search);
+    expect([params.get('x'), params.get('tab'), window.location.hash]).toEqual([
+      '1',
+      'settings',
+      '#top',
+    ]);
+    fireEvent.change(select, { target: { value: 'club' } });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Behaviours' }));
+    await screen.findByRole('table', { name: 'Assistant behaviours' });
+    expect(window.location.search).toBe('?x=1');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
+    await screen.findByRole('tab', { name: 'Settings', selected: true });
+    expect(
+      screen.getByLabelText<HTMLSelectElement>('When someone tags @Bananasaurs, answer with').value,
+    ).toBe('club');
   });
 
   it('empty state shows the tracker and the no-behaviours guidance', async () => {
@@ -541,13 +607,13 @@ describe('AssistantPage', () => {
   it('with zero behaviours, the header Create a behaviour button shows the create form', async () => {
     renderPage({ ...FULL, behaviours: [] });
     expect(await screen.findByText('No behaviours yet')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New behaviour' }));
     expect(await screen.findByRole('heading', { name: 'Create a behaviour' })).toBeTruthy();
   });
 
   it('offers no control without a backing endpoint', async () => {
-    renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
+    renderDetail('club');
+    await screen.findByRole('heading', { name: 'Club assistant' });
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
@@ -557,10 +623,10 @@ describe('AssistantPage', () => {
   });
 
   it('renders the error state when the load fails', async () => {
-    stubFetch([]);
+    stubFetch([{ url: '/api/assistant', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AssistantPage />);
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText(/Could not load assistant settings/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't load assistant settings/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });
@@ -572,7 +638,10 @@ describe('AssistantPage: Try it (Task 20)', () => {
       { url: '/api/assistant', body: FULL },
       { method: 'POST', url: '/api/assistant/behaviours/club/try', ...tryRoute },
     ]);
-    renderWithSession(<AssistantPage />);
+    window.history.pushState({}, '', '/assistant/behaviours/club?tab=try');
+    renderWithSession(
+      <Route path="/assistant/behaviours/:id" component={AssistantBehaviourDetailPage} />,
+    );
     return mock;
   };
   const tryCalls = (mock: ReturnType<typeof stubFetch>) =>
@@ -666,6 +735,7 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
       { url: '/api/assistant', body },
       { method: 'PUT', url: '/api/assistant/bot-tag', ...put },
     ]);
+    window.history.pushState({}, '', '/assistant?tab=settings');
     renderWithSession(<AssistantPage />);
     return mock;
   };
@@ -708,10 +778,10 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
   it('saves the chosen behaviour, then Nobody, through PUT /api/assistant/bot-tag', async () => {
     const mock = render(withFlag(undefined));
     const select = await screen.findByLabelText(LABEL);
-    const save = screen.getByRole('button', { name: 'Save' });
-    expect((save as HTMLButtonElement).disabled).toBe(true);
+    // Nothing to save until a field changes: no save bar at all.
+    expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull();
     fireEvent.change(select, { target: { value: 'club' } });
-    fireEvent.click(save);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(
       await screen.findByText('Tag @Bananasaurs now answers with Club assistant'),
     ).toBeTruthy();
@@ -756,10 +826,12 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
   });
 
   it('badges only the behaviour that answers the bot tag', async () => {
-    render(withFlag('club'));
-    const club = await screen.findByRole('button', { name: /Club assistant/ });
+    window.history.pushState({}, '', '/assistant');
+    stubFetch([{ url: '/api/assistant', body: withFlag('club') }]);
+    renderWithSession(<AssistantPage />);
+    const club = (await screen.findByRole('link', { name: 'Club assistant' })).closest('tr')!;
     expect(within(club).getByText('Tag @Bananasaurs')).toBeTruthy();
-    const it = screen.getByRole('button', { name: /IT services/ });
+    const it = screen.getByRole('link', { name: 'IT services' }).closest('tr')!;
     expect(within(it).queryByText('Tag @Bananasaurs')).toBeNull();
   });
 });
@@ -774,6 +846,7 @@ describe('AssistantPage: AI log channel (ADR 0065)', () => {
       { url: '/api/assistant', body: { ...FULL, settings } },
       { method: 'PUT', url: '/api/assistant/log-channel', ...put },
     ]);
+    window.history.pushState({}, '', '/assistant?tab=settings');
     renderWithSession(<AssistantPage />);
     return mock;
   };
@@ -797,28 +870,234 @@ describe('AssistantPage: AI log channel (ADR 0065)', () => {
   it('saves a channel and turns logging off with null', async () => {
     const mock = render({});
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'chan-general' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save log channel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Assistant requests now log to #general')).toBeTruthy();
     expect(bodyOf(putCall(mock)!)).toEqual({ channelId: 'chan-general' });
     cleanup();
     const mock2 = render({ logChannelId: 'chan-general' });
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save log channel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Assistant logging is off')).toBeTruthy();
     expect(bodyOf(putCall(mock2)!)).toEqual({ channelId: null });
   });
 });
 
+describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
+  const TAG = 'When someone tags @Bananasaurs, answer with';
+  const LOG = 'Post every assistant request to';
+  const open = (
+    routes: Parameters<typeof stubFetch>[0] = [],
+    body: unknown = { ...FULL, settings: {} },
+  ) => {
+    window.history.pushState({}, '', '/assistant?tab=settings');
+    const mock = stubFetch([{ url: '/api/assistant', body }, ...routes]);
+    renderWithSession(<AssistantPage />);
+    return mock;
+  };
+  const puts = (mock: ReturnType<typeof stubFetch>) =>
+    mock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+  const bar = () => screen.queryByRole('region', { name: 'Unsaved changes' });
+
+  it('counts changed fields, discards them, and sends nothing for a clean page', async () => {
+    const mock = open();
+    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
+    expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    expect(within(bar()!).getByText('2 unsaved changes')).toBeTruthy();
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Discard' }));
+    expect(bar()).toBeNull();
+    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('');
+    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('');
+    expect(puts(mock)).toHaveLength(0);
+  });
+
+  it('saves only the changed field, as its own unchanged request', async () => {
+    const mock = open([{ method: 'PUT', url: '/api/assistant/log-channel', body: { ok: true } }]);
+    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
+    await screen.findByText('Assistant requests now log to #it-services');
+    expect(puts(mock).map((c) => [c[0], bodyOf(c)])).toEqual([
+      ['/api/assistant/log-channel', { channelId: 'chan-it' }],
+    ]);
+  });
+
+  it('sends two separate requests in order, and a failure keeps its draft while the other saves', async () => {
+    const mock = open([
+      {
+        method: 'PUT',
+        url: '/api/assistant/bot-tag',
+        status: 409,
+        body: {
+          error: 'behaviour-disabled',
+          title: 'That behaviour is off',
+          message: 'The behaviour this needs is disabled.',
+          requestId: 'req-1',
+        },
+      },
+      { method: 'PUT', url: '/api/assistant/log-channel', body: { ok: true } },
+    ]);
+    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
+    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-general' } });
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
+    await screen.findByText('Assistant requests now log to #general');
+    expect(puts(mock).map((c) => [c[0], bodyOf(c)])).toEqual([
+      ['/api/assistant/bot-tag', { behaviourId: 'club' }],
+      ['/api/assistant/log-channel', { channelId: 'chan-general' }],
+    ]);
+    expect(await screen.findByText('That behaviour is off')).toBeTruthy();
+    // The refused choice is still the draft; the saved one is no longer dirty.
+    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('club');
+  });
+
+  it('shows busy while saving and blocks a second press', async () => {
+    window.history.pushState({}, '', '/assistant?tab=settings');
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (init?.method === 'PUT') {
+          calls.push(url);
+          await gate;
+        }
+        return new Response(JSON.stringify(init?.method === 'PUT' ? { ok: true } : FULL), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    renderWithSession(<AssistantPage />);
+    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
+    release();
+    await screen.findByText('Assistant requests now log to #it-services');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps the draft and the input when a save fails outside 400/409', async () => {
+    const mock = open([
+      { method: 'PUT', url: '/api/assistant/log-channel', status: 500, body: { error: 'boom' } },
+    ]);
+    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/Not saved\. Your choice is kept here/)).toBeTruthy();
+    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
+    expect(puts(mock)).toHaveLength(1);
+  });
+
+  it('keeps an unsaved Settings draft, and the bar, when flipping to the Behaviours tab and back', async () => {
+    open();
+    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Behaviours' }));
+    await screen.findByRole('table', { name: 'Assistant behaviours' });
+    expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
+    await screen.findByRole('tab', { name: 'Settings', selected: true });
+    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+  });
+
+  it('guards a same-origin link while dirty: Stay keeps the page, Leave goes', async () => {
+    open();
+    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    fireEvent.click(screen.getByRole('link', { name: 'Assistant history' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Leave without saving?')).toBeTruthy();
+    expect(window.location.pathname).toBe('/assistant');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stay' }));
+    expect(window.location.pathname).toBe('/assistant');
+    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    fireEvent.click(screen.getByRole('link', { name: 'Assistant history' }));
+    fireEvent.click(
+      within(await screen.findByRole('dialog')).getByRole('button', { name: 'Leave' }),
+    );
+    await waitFor(() => expect(window.location.pathname).toBe('/assistant/history'));
+  });
+
+  it('arms the real unload guard only while dirty', async () => {
+    open();
+    await screen.findByLabelText(LOG);
+    const clean = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(clean);
+    expect(clean.defaultPrevented).toBe(false);
+    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    const dirty = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(dirty);
+    expect(dirty.defaultPrevented).toBe(true);
+  });
+});
+
+describe('AssistantPage: real navigation to a behaviour page', () => {
+  const both = () =>
+    renderWithSession(
+      <>
+        <Route path="/assistant" component={AssistantPage} />
+        <Route path="/assistant/behaviours/:id" component={AssistantBehaviourDetailPage} />
+      </>,
+    );
+
+  it('opens the behaviour page from its row and saves access with the unchanged body', async () => {
+    window.history.pushState({}, '', '/assistant');
+    const mock = stubFetch([{ url: '/api/assistant', body: FULL }, ...WRITES]);
+    both();
+    fireEvent.click(await screen.findByRole('link', { name: 'Club assistant' }));
+    expect(await screen.findByRole('heading', { name: 'Club assistant' })).toBeTruthy();
+    expect(window.location.pathname).toBe('/assistant/behaviours/club');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Access' }));
+    const region = await screen.findByRole('region', { name: 'Caller roles' });
+    fireEvent.click(within(region).getByRole('checkbox', { name: 'Onboarding' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save access' }));
+    await screen.findByText('Club assistant access saved');
+    const put = mock.mock.calls.find((c) => c[1]?.method === 'PUT')!;
+    expect(put[0]).toBe('/api/assistant/behaviours/club');
+    expect((bodyOf(put) as { callerRoleIds: string[] }).callerRoleIds).toEqual([
+      'role-club-member',
+      'role-onboarding',
+    ]);
+  });
+
+  it('after creating a behaviour, lands on its new page URL', async () => {
+    const NOW = 1750000000000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const id = `welcome-${NOW.toString(36)}`;
+    window.history.pushState({}, '', '/assistant');
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { method: 'PUT', url: `/api/assistant/behaviours/${id}`, body: { ok: true } },
+    ]);
+    both();
+    fireEvent.click(await screen.findByRole('button', { name: 'New behaviour' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
+      target: { value: 'Welcome' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
+      target: { value: 'role-onboarding' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
+      target: { value: 'Welcome new members.' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
+    await waitFor(() => expect(window.location.pathname).toBe(`/assistant/behaviours/${id}`));
+  });
+});
+
 describe('AssistantPage: shared resources (ADR 0067)', () => {
   it('labels preferred resources with the check-first helper', async () => {
-    renderPage();
+    renderDetail('club', 'access');
     const section = await screen.findByRole('region', { name: 'Preferred resources' });
     expect(within(section).getByText('Preferred resources')).toBeTruthy();
     expect(within(section).getByText('Resources this assistant should check first.')).toBeTruthy();
   });
 
   it('edits preferred skills beside preferred resources and saves them whole-object', async () => {
-    const mock = renderPage();
+    const mock = renderDetail('club', 'access');
     const section = await screen.findByRole('region', { name: 'Preferred skills' });
     expect(within(section).getByText('Preferred skills')).toBeTruthy();
     expect(
@@ -862,18 +1141,19 @@ describe('AssistantPage: prompt wizard and full-prompt preview (Task 18)', () =>
     totalEstTokens: 31,
   };
 
-  it('is titled Behaviours and links each behaviour card to its wizard', async () => {
+  it('is titled Behaviours and each behaviour page links to its wizard', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     expect(screen.queryByRole('heading', { level: 1, name: 'Assistant' })).toBeNull();
-    const links = screen.getAllByRole('link', { name: 'Build with the wizard' });
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(
-      expect.arrayContaining([
-        '/assistant/behaviours/club/wizard',
-        '/assistant/behaviours/it/wizard',
-      ]),
-    );
-    expect(links).toHaveLength(2);
+    cleanup();
+    renderDetail('club');
+    const link = await screen.findByRole('link', { name: 'Build with the wizard' });
+    expect(link.getAttribute('href')).toBe('/assistant/behaviours/club/wizard');
+    cleanup();
+    renderDetail('it');
+    expect(
+      (await screen.findByRole('link', { name: 'Build with the wizard' })).getAttribute('href'),
+    ).toBe('/assistant/behaviours/it/wizard');
   });
 
   it('previews the full prompt with plain-words labels, sizes and expandable text', async () => {
@@ -881,9 +1161,12 @@ describe('AssistantPage: prompt wizard and full-prompt preview (Task 18)', () =>
       { url: '/api/assistant', body: FULL },
       { url: '/api/assistant/behaviours/club/preview', body: PREVIEW },
     ]);
-    renderWithSession(<AssistantPage />);
-    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Preview the full prompt' })[0]!);
+    window.history.pushState({}, '', '/assistant/behaviours/club?tab=prompt');
+    renderWithSession(
+      <Route path="/assistant/behaviours/:id" component={AssistantBehaviourDetailPage} />,
+    );
+    await screen.findByRole('heading', { name: 'Club assistant' });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview the full prompt' }));
     expect(await screen.findByText('How members reach it')).toBeTruthy();
     expect(screen.getByText('Your prompt')).toBeTruthy();
     expect(screen.getByText('Bananasaurs safety rules (locked)')).toBeTruthy();
@@ -896,4 +1179,16 @@ describe('AssistantPage: prompt wizard and full-prompt preview (Task 18)', () =>
     expect(screen.getByText('prompt text')).toBeTruthy();
     expect(screen.getByText('Your prompt').closest('details')).toBeTruthy();
   });
+});
+
+it('behaviour toggle labels inherit bounded Button wrapping in both states', async () => {
+  renderDetail('club');
+  const off = await screen.findByRole('button', { name: 'Turn off - members will get no answer' });
+  expect(off.classList.contains('whitespace-nowrap')).toBe(false);
+  expect(off.classList.contains('whitespace-normal')).toBe(true);
+  cleanup();
+  renderDetail('it');
+  const on = await screen.findByRole('button', { name: 'Turn on assistant' });
+  expect(on.classList.contains('whitespace-nowrap')).toBe(false);
+  expect(on.classList.contains('whitespace-normal')).toBe(true);
 });

@@ -19,8 +19,8 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `config get <key>` | Configuration page (secrets stay `<redacted>`) | `GET /api/config` |
 | `panel list` / `panel show` | Role panels page with per-panel detail (options, limits) | `GET /api/panels`, `GET /api/panels/:id` |
 | `log routing list` | Logging page (routes + excluded channels) | `GET /api/log-routes` |
-| `audit tail` | Audit page | `GET /api/audit` |
-| `jobs list` | Jobs page | `GET /api/jobs` |
+| `audit tail` | Audit log page | `GET /api/audit` |
+| `jobs list` | Background tasks page | `GET /api/jobs` |
 | `backup list` | Backups page | `GET /api/backups` |
 | `automod dryrun <rule>` | Automod rule page: replay over the fixture corpus, with the attachment-awareness and windowed-corpus caveats | `POST /api/automod/rules/:ruleId/dry-run` |
 | `automod review` | Review queue page (matches, native hits, evidence) | `GET /api/automod/review` |
@@ -44,7 +44,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `automod domain-add` / `domain-rm` | Automod rule page | `POST/DELETE /api/automod/rules/:ruleId/link-domains[/:domain]` |
 | `log routing set` / `off` | Logging page | `POST /api/log-routes/:eventKind/enabled` |
 | `log routing exclude` / `unexclude` | Logging page | `POST/DELETE /api/log-exclusions[/:channelId]` |
-| `jobs retry` | Jobs page | `POST /api/jobs/:id/retry` |
+| `jobs retry` | Background tasks page | `POST /api/jobs/:id/retry` |
 | `backup now` | Backups page | `POST /api/backup-now` |
 | `archive enable-channel` | Archive page (backfill state visible) | `POST /api/archive/channels` |
 | `archive delete-channel` | Archive page (confirmed deletion) | `DELETE /api/archive/channels/:channelId` |
@@ -64,7 +64,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `mcp role-policy` / `mcp allow-role` / `mcp disallow-role` | Connector page (Role policy card: mode selectors, role picker with live names, per-row remove; server refusals render inline) | `POST /api/role-policy`, `POST /api/role-allowlist`, `DELETE /api/role-allowlist/:roleId` |
 | `panel sync` | Role panels page (publish + reconcile, dry-run preview) | `POST /api/panels/:id/publish`, `…/reconcile` |
 | `adoption allow` | Cutover page | `POST /api/adoption-allowance` |
-| `undo` | Audit page (reverse one batch) | `POST /api/undo` |
+| `undo` | Audit log page (reverse one batch) | `POST /api/undo` |
 | `killswitch` | Safety page | killswitch toggle (write routes) |
 | `account disable` / `enable` | Accounts page | `POST /api/accounts/:username/disabled` |
 | `account delete` | Accounts page (danger confirm, cascade stated) | `DELETE /api/accounts/:username` |

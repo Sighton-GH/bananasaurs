@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import type { BackupListing, BackupRunOutcome } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { relativeTime } from '../lib/relative-time.js';
+import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
@@ -96,12 +98,21 @@ export function BackupsPage() {
                 {
                   key: 'created',
                   header: 'Created',
-                  cell: (b) => new Date(b.createdAtMs).toLocaleString(),
+                  cell: (b) => (
+                    <span title={new Date(b.createdAtMs).toLocaleString()}>
+                      {relativeTime(b.createdAtMs, Date.now())}
+                    </span>
+                  ),
                 },
                 {
                   key: 'checksum',
                   header: 'Checksum',
-                  cell: (b) => (b.hasChecksum ? 'recorded' : 'missing'),
+                  cell: (b) =>
+                    b.hasChecksum ? (
+                      <Badge tone="ok">recorded</Badge>
+                    ) : (
+                      <Badge tone="hold">missing</Badge>
+                    ),
                 },
               ]}
             />
@@ -110,7 +121,7 @@ export function BackupsPage() {
       </DataState>
       <div className="mt-4 max-w-4xl">
         <Card title="Restore">
-          <p className="text-sm">
+          <p className="text-small">
             Restore is deliberately not here: it needs the daemon stopped, which a running daemon
             can never guarantee about itself. On the host, with the daemon stopped:{' '}
             <code className="text-xs">npm run restore -- &lt;backup-file&gt; --confirm</code>. The

@@ -78,13 +78,17 @@ afterEach(() => vi.unstubAllGlobals());
 describe('AssistantConversationPage', () => {
   it('renders the transcript oldest first with who, time and text', async () => {
     renderDetail();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Conversation' })).toBeTruthy();
-    expect(screen.getByText('Where is the handbook')).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Where is the handbook' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 2, name: 'Where is the handbook' })).toBeTruthy();
+    const crumb = document.querySelector('nav[aria-label="Breadcrumb"] [aria-current="page"]')!;
+    expect(crumb.textContent).toBe('Where is the handbook');
     expect(screen.getByText('where is the handbook?')).toBeTruthy();
     expect(screen.getByText('In the resources.')).toBeTruthy();
     expect(screen.getByText('Bryan')).toBeTruthy();
     expect(screen.getByText('Bananasaurs')).toBeTruthy();
-    const times = Array.from(document.querySelectorAll('time')).map((t) =>
+    const times = Array.from(document.querySelectorAll('li time')).map((t) =>
       t.getAttribute('dateTime'),
     );
     expect(times).toEqual([
@@ -215,8 +219,22 @@ describe('AssistantConversationPage', () => {
         <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
       </Router>,
     );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('no conversation with this id is stored for this server');
+    expect(await screen.findByText(/doesn't exist or was deleted/)).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Conversation' })).toBeTruthy();
+    expect(
+      document.querySelector('nav[aria-label="Breadcrumb"] [aria-current="page"]')!.textContent,
+    ).toBe('Conversation');
+  });
+
+  it('keeps the generic Conversation title while the record is loading', () => {
+    stubFetch([]);
+    const { hook } = memoryLocation({ path: '/assistant/conversations/conv-1' });
+    renderWithSession(
+      <Router hook={hook}>
+        <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
+      </Router>,
+    );
+    expect(screen.getByRole('heading', { level: 1, name: 'Conversation' })).toBeTruthy();
   });
 
   it('notes how a user turn joined on continue rules only', async () => {
@@ -332,7 +350,10 @@ describe('AssistantConversationPage', () => {
     });
     expect(await screen.findByText('Summary so far')).toBeTruthy();
     expect(screen.getByText('Topic: Friday social planning')).toBeTruthy();
-    const time = screen.getByText(new Date(1_790_000_005_000).toLocaleString('en-CA'));
+    const time = document.querySelector(
+      `time[datetime="${new Date(1_790_000_005_000).toISOString()}"]`,
+    )!;
+    expect(time.getAttribute('title')).toBeTruthy();
     expect(time.getAttribute('dateTime')).toBe(new Date(1_790_000_005_000).toISOString());
     expect(screen.getByText(/version 2/)).toBeTruthy();
   });
@@ -373,4 +394,25 @@ describe('AssistantConversationPage', () => {
     expect(screen.getByText('In the same channel at the same time')).toBeTruthy();
     expect(screen.getByText('Looked back at')).toBeTruthy();
   });
+});
+
+it('preserves audit denial for the transcript DataState', async () => {
+  const { hook } = memoryLocation({ path: '/assistant/conversations/nope' });
+  stubFetch([
+    {
+      url: '/api/assistant/conversations/nope',
+      status: 403,
+      body: {
+        error: 'no-grant',
+        title: 'Audit access needed',
+        message: 'This page needs audit.read.',
+      },
+    },
+  ]);
+  renderWithSession(
+    <Router hook={hook}>
+      <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
+    </Router>,
+  );
+  expect(await screen.findByText('Audit access needed')).toBeTruthy();
 });

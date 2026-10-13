@@ -4,6 +4,8 @@ import type { GuildMemberPage } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Button } from '../ui/Button.js';
+import { Field, Input } from '../ui/Field.js';
+import { Empty } from '../ui/states.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -20,6 +22,7 @@ export function MembersPage() {
   // The cursor for the current page, and the stack of cursors that got here
   // so "previous" can walk back without Discord supporting backwards paging.
   const [after, setAfter] = useState<string | undefined>(undefined);
+  const [query, setQuery] = useState('');
   const [trail, setTrail] = useState<readonly (string | undefined)[]>([]);
 
   const load = useCallback(
@@ -46,71 +49,97 @@ export function MembersPage() {
           </p>
         }
       >
-        {(page) => (
-          <>
-            <DataTable
-              caption="Guild members"
-              rows={page.members}
-              rowKey={(m) => m.memberId}
-              columns={[
-                {
-                  key: 'member',
-                  header: 'Member',
-                  cell: (m) => (
-                    <span>
-                      {m.displayName} <span className="text-xs text-ink-muted">@{m.username}</span>
-                    </span>
-                  ),
-                },
-                { key: 'id', header: 'ID', cell: (m) => m.memberId },
-                {
-                  key: 'joined',
-                  header: 'Joined',
-                  cell: (m) =>
-                    m.joinedAt === null ? (
-                      <span className="text-ink-muted">unknown</span>
-                    ) : (
-                      new Date(m.joinedAt).toISOString().slice(0, 10)
-                    ),
-                },
-                {
-                  key: 'roles',
-                  header: 'Roles',
-                  cell: (m) => m.roleIds.length,
-                  numeric: true,
-                },
-                {
-                  key: 'actions',
-                  header: '',
-                  cell: (m) => <Link href={`/members/${m.memberId}`}>Case history</Link>,
-                },
-              ]}
-            />
-            {(page.nextAfter !== undefined || trail.length > 0) && (
-              <div className="mt-3 flex gap-2">
-                <Button
-                  disabled={trail.length === 0}
-                  onClick={() => {
-                    const previous = trail[trail.length - 1];
-                    setTrail((t) => t.slice(0, -1));
-                    setAfter(previous);
-                  }}
+        {(page) => {
+          const needle = query.trim().toLowerCase();
+          const shown =
+            needle === ''
+              ? page.members
+              : page.members.filter((m) =>
+                  `${m.displayName} ${m.username} ${m.memberId}`.toLowerCase().includes(needle),
+                );
+          return (
+            <>
+              <div className="mb-3 max-w-sm">
+                <Field
+                  label="Find on this page"
+                  hint="Filters the members loaded here, not the whole server."
                 >
-                  Previous page
-                </Button>
-                <Button
-                  disabled={page.nextAfter === undefined}
-                  onClick={() => {
-                    setTrail((t) => [...t, after]);
-                    setAfter(page.nextAfter);
-                  }}
-                >
-                  Next page
-                </Button>
+                  <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
+                </Field>
               </div>
-            )}
-          </>
-        )}
+              {shown.length === 0 ? (
+                <Empty
+                  art={false}
+                  title="No members on this page match"
+                  action={<Button onClick={() => setQuery('')}>Clear filters</Button>}
+                />
+              ) : (
+                <DataTable
+                  caption="Guild members"
+                  rows={shown}
+                  rowKey={(m) => m.memberId}
+                  columns={[
+                    {
+                      key: 'member',
+                      header: 'Member',
+                      cell: (m) => (
+                        <span>
+                          {m.displayName}{' '}
+                          <span className="text-xs text-ink-muted">@{m.username}</span>
+                        </span>
+                      ),
+                    },
+                    { key: 'id', header: 'ID', cell: (m) => m.memberId },
+                    {
+                      key: 'joined',
+                      header: 'Joined',
+                      cell: (m) =>
+                        m.joinedAt === null ? (
+                          <span className="text-ink-muted">unknown</span>
+                        ) : (
+                          new Date(m.joinedAt).toISOString().slice(0, 10)
+                        ),
+                    },
+                    {
+                      key: 'roles',
+                      header: 'Roles',
+                      cell: (m) => m.roleIds.length,
+                      numeric: true,
+                    },
+                    {
+                      key: 'actions',
+                      header: '',
+                      cell: (m) => <Link href={`/members/${m.memberId}`}>Case history</Link>,
+                    },
+                  ]}
+                />
+              )}
+              {(page.nextAfter !== undefined || trail.length > 0) && (
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    disabled={trail.length === 0}
+                    onClick={() => {
+                      const previous = trail[trail.length - 1];
+                      setTrail((t) => t.slice(0, -1));
+                      setAfter(previous);
+                    }}
+                  >
+                    Previous page
+                  </Button>
+                  <Button
+                    disabled={page.nextAfter === undefined}
+                    onClick={() => {
+                      setTrail((t) => [...t, after]);
+                      setAfter(page.nextAfter);
+                    }}
+                  >
+                    Next page
+                  </Button>
+                </div>
+              )}
+            </>
+          );
+        }}
       </DataState>
     </>
   );

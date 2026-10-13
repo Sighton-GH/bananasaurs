@@ -180,7 +180,7 @@ term.
 1. **Off to start.** `bananasaurs doctor` over SSH shows
    `automod           off`.
 2. **Off records nothing.** Post the term in the dev guild. Confirm the
-   Review page shows no new match and the message is untouched.
+   Review queue page shows no new match and the message is untouched.
 3. **Watch.** On the dashboard's Automod tab, choose Watch and confirm. The
    password is asked for. Post the term again: one match appears on Review
    and the message is untouched. Choose “Should be allowed” on it.
@@ -192,7 +192,7 @@ term.
    the message is deleted.
 5. **Off, without a password.** Choose Off. Confirm no password prompt
    appears. Post the term: nothing is recorded.
-6. **The audit trail.** The Audit page shows three `automod.state_set`
+6. **The audit trail.** The Audit log page shows three `automod.state_set`
    rows — off → watch, watch → on, on → off — each with its before and
    after state.
 
@@ -414,3 +414,19 @@ release1-smoke-tests-live-run.md` has the full account, including two real
 dashboard bugs found and fixed live and a confirmed anti-nuke safety
 property). `docs/08_ROADMAP.md`'s Release 1 gate paragraph is true without
 qualification.
+
+## Card gallery (ADR 0140)
+
+Run after any change to a card. Owner-run; posts about 19 messages to a test channel.
+
+    npm run build && npm run smoke:cards -- --channel <test channel id>
+
+Check, and note anything wrong:
+
+- [ ] Desktop, dark theme: every card has its colour bar; thumbnails and the digest banner load; no text is cut off.
+- [ ] Desktop, light theme: the same.
+- [ ] iOS and Android: cards render; buttons wrap without truncating labels; the banner is not cropped badly.
+- [ ] The gallery pings nobody, including replies. Keep every sample free of real user and role IDs.
+- [ ] Owner only: create a real task assigned to yourself in the test channel and check that your mention in its task card renders as your name, not a raw ID. This real-task check may ping you; do not add real IDs to the gallery samples.
+- [ ] Post a real task to yourself and check the push notification's preview text.
+- [ ] Press **I'm on it** on a sample card: the private reply says the task is closed.

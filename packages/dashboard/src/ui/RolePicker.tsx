@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { GuildRoleInfo } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -32,6 +32,7 @@ export function RolePicker({
   );
   const { resource } = useResource('the role list', load);
   const [focused, setFocused] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
 
   const roles = resource.state === 'ready' ? resource.data.roles : undefined;
   const query = value.trim().toLowerCase();
@@ -44,17 +45,24 @@ export function RolePicker({
   const selected = roles?.find((r) => r.roleId === value.trim());
 
   return (
-    <div className="text-sm">
+    <div
+      ref={root}
+      className="text-sm"
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        // A Tab or touch move into a choice must not remove it before click.
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+      }}
+    >
       <Field
         label={label}
         hint={hint ?? 'Search by role name and choose a result.'}
         {...(error !== undefined ? { error } : {})}
       >
         <Input
+          onClick={() => setFocused(true)}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           placeholder="Search role names"
           autoComplete="off"
         />
@@ -84,11 +92,14 @@ export function RolePicker({
             <li key={r.roleId}>
               <button
                 type="button"
-                // onMouseDown runs before the input's blur, so a click still
-                // lands when the list is about to hide.
-                onMouseDown={(e) => {
-                  e.preventDefault();
+                // Keep pointer focus on the input, but let the native click
+                // handle mouse, touch, Enter and Space exactly once.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
                   onChange(r.roleId);
+                  root.current?.querySelector('input')?.focus();
+                  // Close after focus returns so the next Tab reaches the form
+                  // action instead of reopening the in-flow choice list.
                   setFocused(false);
                 }}
                 className="flex w-full items-baseline justify-between gap-2 px-2 py-1.5 text-left text-ink hover:bg-canvas"

@@ -116,6 +116,24 @@ export interface SlashCommandEvent extends Base {
 }
 
 /**
+ * A submitted modal (ADR 0140). Addressed by its own interaction id and
+ * token, like a button click. `fields` holds every text input and every
+ * radio group with a choice, keyed by custom id — the member's own words, so
+ * never logged (it is not in `LOGGABLE_FIELDS`).
+ */
+export interface ModalSubmitEvent extends Base {
+  kind: 'modalSubmit';
+  interactionId: Snowflake;
+  token: string;
+  channelId: Snowflake;
+  /** The message whose button opened the modal; absent for a slash-opened modal. */
+  messageId: Snowflake | undefined;
+  userId: Snowflake;
+  customId: string;
+  fields: Readonly<Record<string, string>>;
+}
+
+/**
  * One file attached to a message, as Discord declared it.
  *
  * `contentType` is Discord's `content_type`, which is **the uploader's
@@ -301,6 +319,7 @@ export interface ConnectionEvent extends Base {
 }
 
 export type DomainEvent =
+  | ModalSubmitEvent
   | ReactionEvent
   | InteractionEvent
   | SlashCommandEvent

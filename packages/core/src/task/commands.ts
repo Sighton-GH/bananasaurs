@@ -1,7 +1,23 @@
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import type { InteractionRef, OutgoingMessage } from '../discord/port.js';
-import { buildCompleteSelect, parseTaskCustomId } from './components.js';
+import {
+  errorCard,
+  resultCard,
+  toOutgoingMessage,
+  truncate,
+  type CardMessage,
+} from '../ui/discord/index.js';
+import {
+  buildUpdateModal,
+  renderReviewDecisionCard,
+  renderCompletePickerCard,
+  renderTaskListCard,
+  TASK_UPDATE_BLOCKER_MAX,
+  TASK_UPDATE_BODY_MAX,
+  type TaskStatus,
+} from './cards.js';
+import { parseTaskCustomId } from './components.js';
 
 export interface TaskCommandRow {
   readonly taskId: string;
@@ -29,12 +45,37 @@ export interface TaskCommandDeps {
     taskId: string,
     version: number,
     decision: 'approve' | 'reject',
-  ) => Promise<{ outcome: 'done' | 'sent-back' | 'not-authorised' | 'conflict'; title?: string }>;
+  ) => Promise<{
+    outcome: 'done' | 'sent-back' | 'not-authorised' | 'conflict';
+    title?: string;
+    teamName?: string;
+  }>;
   readonly pickReplyTask: (
     userId: string,
     choiceMessageId: string,
     taskId: string,
   ) => Promise<{ outcome: 'recorded' | 'not-yours' | 'gone'; title?: string }>;
+  /** Move a not-started task to In progress for this member, compare-and-swap on version. */
+  readonly startTask: (
+    userId: string,
+    taskId: string,
+    version: number,
+  ) => Promise<'started' | 'not-yours' | 'stale' | 'not-open'>;
+  /** Re-render the task's anchored card now. */
+  readonly refreshTaskCard: (taskId: string) => Promise<void>;
+  /** Synchronous so opening the modal never waits for live access checks. */
+  readonly taskTitle: (taskId: string) => string | undefined;
+  /** Authority is checked on submit, not on modal open (ADR 0140). */
+  readonly postUpdate: (
+    userId: string,
+    taskId: string,
+    interactionId: string,
+    body: string,
+    blocker: string | undefined,
+  ) => Promise<{
+    outcome: 'recorded' | 'duplicate' | 'not-yours' | 'not-open' | 'invalid';
+    postsOn: boolean;
+  }>;
   readonly editBotMessage: (
     channelId: string,
     messageId: string,
@@ -57,16 +98,6 @@ export const formatDueLabel: (dueAt: number, timeZone: string) => string = (dueA
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const clean = (text: string, max: number): string =>
-  text.replaceAll(/[\r\n`@]/g, ' ').slice(0, max);
-
-const statusLabel = (status: string): string => {
-  if (status === 'not_started') return 'Not started';
-  if (status === 'in_progress') return 'In progress';
-  if (status === 'awaiting_approval') return 'Awaiting approval';
-  return status;
-};
-
 /** Completion requests review; it never approves a task or posts to Discord. */
 export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber => ({
   name: 'task-commands',
@@ -82,10 +113,7 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
             event.subcommandPath.length !== 1 ||
             !['list', 'complete'].includes(event.subcommandPath[0] ?? '')
           ) {
-            await deps.responder.respond(ref, {
-              content: 'Unknown task command.',
-              allowedMentions: { parse: [] },
-            });
+            await deps.responder.respond(ref, toOutgoingMessage(errorCard('command.unknown')));
             return;
           }
           if (event.subcommandPath[0] === 'complete') {
@@ -93,10 +121,17 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
               (a, b) => a.dueAt - b.dueAt,
             );
             if (items.length === 0) {
-              await deps.responder.respond(ref, {
-                content: 'Nothing to complete right now.',
-                allowedMentions: { parse: [] },
-              });
+              await deps.responder.respond(
+                ref,
+                toOutgoingMessage(
+                  resultCard({
+                    icon: 'task',
+                    title: 'Nothing is ready to complete',
+                    detail: 'You have no open tasks that can go to review.',
+                    tone: 'neutral',
+                  }),
+                ),
+              );
               return;
             }
             const first = items.slice(0, 25).map((t) => ({
@@ -104,53 +139,48 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
               title: t.title,
               dueLabel: `due ${formatDueLabel(t.dueAt, t.timezone)}`,
             }));
-            await deps.responder.respond(ref, {
-              content: 'Which task is ready for review?',
-              components: buildCompleteSelect(first),
-              allowedMentions: { parse: [] },
-            });
+            await deps.responder.respond(
+              ref,
+              toOutgoingMessage(renderCompletePickerCard({ tasks: first })),
+            );
             return;
           }
           const rows = [...(await deps.listForMember(event.userId))].sort(
             (a, b) => a.dueAt - b.dueAt,
           );
           if (rows.length === 0) {
-            await deps.responder.respond(ref, {
-              content: 'You have no open tasks.',
-              allowedMentions: { parse: [] },
-            });
+            await deps.responder.respond(
+              ref,
+              toOutgoingMessage(
+                resultCard({ icon: 'task', title: 'You have no open tasks', tone: 'neutral' }),
+              ),
+            );
             return;
           }
-          const nowMs = deps.now();
-          const lines = rows.slice(0, 15).map((row) => {
-            const title = clean(row.title, 100);
-            const team = clean(row.teamName, 50);
-            const label = statusLabel(row.status);
-            const due = formatDueLabel(row.dueAt, row.timezone);
-            const overdue = row.dueAt < nowMs ? ' (overdue)' : '';
-            return `**${team}**: ${title} — ${label}, due ${due}${overdue}`;
-          });
-          const content =
-            rows.length > 15
-              ? `${lines.join('\n')}\nShowing 15 of ${rows.length}.`
-              : lines.join('\n');
-          await deps.responder.respond(ref, { content, allowedMentions: { parse: [] } });
+          await deps.responder.respond(
+            ref,
+            toOutgoingMessage(
+              renderTaskListCard({
+                rows: rows.map((r) => ({
+                  teamName: r.teamName,
+                  title: r.title,
+                  status: r.status as TaskStatus,
+                  dueAt: r.dueAt,
+                })),
+                now: deps.now(),
+              }),
+            ),
+          );
         } catch {
           try {
-            await deps.responder.respond(ref, {
-              content: 'Could not update tasks right now. Try again later.',
-              allowedMentions: { parse: [] },
-            });
+            await deps.responder.respond(ref, toOutgoingMessage(errorCard('task.unavailable')));
           } catch {
             // The interaction token may have expired or the first defer may have failed.
           }
         }
       } catch {
         try {
-          await deps.responder.respond(ref, {
-            content: 'Could not update tasks right now. Try again later.',
-            allowedMentions: { parse: [] },
-          });
+          await deps.responder.respond(ref, toOutgoingMessage(errorCard('task.unavailable')));
         } catch {
           // The interaction token may have expired or the first defer may have failed.
         }
@@ -161,6 +191,54 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
       const parsed = parseTaskCustomId(event.customId);
       if (parsed === undefined) return;
       const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
+      if (parsed.action === 'start') {
+        const reply = async (message: CardMessage): Promise<void> => {
+          try {
+            await deps.responder.respond(ref, toOutgoingMessage(message));
+          } catch {
+            // The token may have expired; nothing more can be said to the member.
+          }
+        };
+        const refreshCard = async (taskId: string): Promise<void> => {
+          try {
+            await deps.refreshTaskCard(taskId);
+          } catch {
+            // The 60-second refresh pass will catch up.
+          }
+        };
+        try {
+          await deps.responder.deferUpdate(ref);
+        } catch {
+          return;
+        }
+        try {
+          const outcome = await deps.startTask(event.userId, parsed.taskId, parsed.version);
+          if (outcome === 'started') {
+            await refreshCard(parsed.taskId);
+            return;
+          }
+          if (outcome === 'stale') {
+            await refreshCard(parsed.taskId);
+            await reply(errorCard('task.stale'));
+            return;
+          }
+          await reply(errorCard(outcome === 'not-yours' ? 'task.not-yours' : 'task.not-open'));
+        } catch {
+          await reply(errorCard('task.unavailable'));
+        }
+        return;
+      }
+      if (parsed.action === 'update') {
+        try {
+          await deps.responder.showModal(
+            ref,
+            buildUpdateModal(parsed.taskId, deps.taskTitle(parsed.taskId)),
+          );
+        } catch {
+          // Expired or already answered; the member can press the button again.
+        }
+        return;
+      }
       try {
         await deps.responder.defer(ref, { ephemeral: true });
         // Refresh the bot post after a successful review or pick. An edit
@@ -173,26 +251,42 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
             // The success reply already stands.
           }
         };
+        const reply = async (message: CardMessage): Promise<void> => {
+          try {
+            await deps.responder.respond(ref, toOutgoingMessage(message));
+          } catch {
+            // The token may have expired; do not retry a reply after the write.
+          }
+        };
         try {
           if (parsed.action === 'complete') {
             const selected = event.values?.[0];
             if (typeof selected !== 'string' || !UUID_RE.test(selected)) {
-              await deps.responder.respond(ref, {
-                content: 'Choose a task from the list.',
-                allowedMentions: { parse: [] },
-              });
+              await deps.responder.respond(
+                ref,
+                toOutgoingMessage(errorCard('task.pick-from-list')),
+              );
               return;
             }
             const outcome = await deps.completeForMember(event.userId, selected);
-            const content =
+            const reply =
               outcome === 'awaiting_approval'
-                ? 'Marked ready for review. A lead (or the president for exec tasks) can approve it.'
+                ? resultCard({
+                    icon: 'review',
+                    title: 'Sent for review',
+                    detail: 'A lead (or the president for exec tasks) can approve it.',
+                    tone: 'hold',
+                  })
                 : outcome === 'already-awaiting'
-                  ? 'That task is already waiting for review.'
+                  ? resultCard({
+                      icon: 'review',
+                      title: 'Already waiting for review',
+                      tone: 'hold',
+                    })
                   : outcome === 'not-found'
-                    ? 'That task is not available to you.'
-                    : 'That task changed. Run /task complete again.';
-            await deps.responder.respond(ref, { content, allowedMentions: { parse: [] } });
+                    ? errorCard('task.not-open')
+                    : errorCard('task.changed');
+            await deps.responder.respond(ref, toOutgoingMessage(reply));
             return;
           }
           if (parsed.action === 'approve' || parsed.action === 'reject') {
@@ -203,41 +297,36 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
               parsed.version,
               decision,
             );
-            if (result.outcome === 'done') {
-              await deps.responder.respond(ref, {
-                content: 'Approved.',
-                allowedMentions: { parse: [] },
-              });
-              await refreshPost({
-                content: `✅ Approved by <@${event.userId}>: **${result.title ?? ''}**`,
-                components: [],
-                allowedMentions: { parse: [] },
-              });
+            if (result.outcome === 'done' || result.outcome === 'sent-back') {
+              const approved = result.outcome === 'done';
+              await reply(
+                approved
+                  ? resultCard({ icon: 'done', title: 'Approved', tone: 'ok' })
+                  : resultCard({
+                      icon: 'sentBack',
+                      title: 'Sent back',
+                      detail: 'The task is back in progress.',
+                      tone: 'progress',
+                    }),
+              );
+              await refreshPost(
+                toOutgoingMessage(
+                  renderReviewDecisionCard({
+                    taskTitle: result.title ?? 'Task',
+                    teamName: result.teamName ?? 'Team',
+                    decision: approved ? 'approved' : 'sent-back',
+                    deciderId: event.userId,
+                    at: deps.now(),
+                  }),
+                ),
+              );
               return;
             }
-            if (result.outcome === 'sent-back') {
-              await deps.responder.respond(ref, {
-                content: 'Sent back.',
-                allowedMentions: { parse: [] },
-              });
-              await refreshPost({
-                content: `↩️ Sent back by <@${event.userId}>: **${result.title ?? ''}**`,
-                components: [],
-                allowedMentions: { parse: [] },
-              });
-              return;
-            }
-            if (result.outcome === 'not-authorised') {
-              await deps.responder.respond(ref, {
-                content: "Only this team's lead or the president can review this task.",
-                allowedMentions: { parse: [] },
-              });
-              return;
-            }
-            await deps.responder.respond(ref, {
-              content: 'This task changed since this post. Check /task list.',
-              allowedMentions: { parse: [] },
-            });
+            await reply(
+              errorCard(
+                result.outcome === 'not-authorised' ? 'task.review-not-yours' : 'task.review-stale',
+              ),
+            );
             return;
           }
           if (parsed.action !== 'pick') return;
@@ -247,48 +336,94 @@ export const createTaskCommandSubscriber = (deps: TaskCommandDeps): Subscriber =
             parsed.taskId,
           );
           if (result.outcome === 'recorded') {
-            await deps.responder.respond(ref, {
-              content: 'Update recorded.',
-              allowedMentions: { parse: [] },
+            // resultCard escapes the detail; pass raw text so it is escaped once.
+            const done = resultCard({
+              icon: 'update',
+              title: 'Update recorded',
+              detail: `On ${truncate(result.title ?? 'the task', 120)}.`,
+              tone: 'ok',
             });
-            await refreshPost({
-              content: `Update recorded on **${result.title ?? ''}**.`,
-              components: [],
-              allowedMentions: { parse: [] },
-            });
+            await reply(done);
+            await refreshPost(toOutgoingMessage(done));
             return;
           }
-          if (result.outcome === 'not-yours') {
-            await deps.responder.respond(ref, {
-              content: 'Only the person who posted the update can choose.',
-              allowedMentions: { parse: [] },
-            });
-            return;
-          }
-          await deps.responder.respond(ref, {
-            content: 'This choice is no longer available.',
-            allowedMentions: { parse: [] },
-          });
+          await reply(
+            errorCard(
+              result.outcome === 'not-yours' ? 'task.choice-not-yours' : 'task.choice-gone',
+            ),
+          );
         } catch {
           try {
-            await deps.responder.respond(ref, {
-              content: 'Could not update tasks right now. Try again later.',
-              allowedMentions: { parse: [] },
-            });
+            await deps.responder.respond(ref, toOutgoingMessage(errorCard('task.unavailable')));
           } catch {
             // The interaction token may have expired or the first defer may have failed.
           }
         }
       } catch {
         try {
-          await deps.responder.respond(ref, {
-            content: 'Could not update tasks right now. Try again later.',
-            allowedMentions: { parse: [] },
-          });
+          await deps.responder.respond(ref, toOutgoingMessage(errorCard('task.unavailable')));
         } catch {
           // The interaction token may have expired or the first defer may have failed.
         }
       }
+    }
+    if (event.kind === 'modalSubmit') {
+      const parsed = parseTaskCustomId(event.customId);
+      if (parsed === undefined || parsed.action !== 'update') return;
+      const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
+      const body = (event.fields['body'] ?? '').trim();
+      const blockerRaw = (event.fields['blocker'] ?? '').trim();
+      const blocker = blockerRaw === '' ? undefined : blockerRaw;
+      const typed = blocker === undefined ? body : `${body}\n\nBlocked: ${blocker}`;
+      const reply = async (message: CardMessage): Promise<void> => {
+        try {
+          await deps.responder.respond(ref, toOutgoingMessage(message));
+        } catch {
+          // The token may have expired.
+        }
+      };
+      try {
+        await deps.responder.defer(ref, { ephemeral: true });
+      } catch {
+        return;
+      }
+      // Discord enforces min_length/max_length on the client; a hand-rolled
+      // interaction does not. Reject an empty or oversized update here rather
+      // than recording it (P1 phase review P3-1).
+      if (
+        body === '' ||
+        body.length > TASK_UPDATE_BODY_MAX ||
+        (blocker !== undefined && blocker.length > TASK_UPDATE_BLOCKER_MAX)
+      ) {
+        await reply(errorCard('task.update-not-saved', { quote: typed }));
+        return;
+      }
+      try {
+        const result = await deps.postUpdate(
+          event.userId,
+          parsed.taskId,
+          event.interactionId,
+          body,
+          blocker,
+        );
+        if (result.outcome === 'recorded' || result.outcome === 'duplicate') {
+          await reply(
+            resultCard({
+              icon: 'update',
+              title: 'Update saved',
+              detail: result.postsOn
+                ? 'It shows on the task card and is posted in the channel.'
+                : 'It is saved on the task. Task posts are turned off, so nothing was posted.',
+              tone: 'ok',
+            }),
+          );
+          return;
+        }
+        await reply(errorCard('task.update-not-saved', { quote: typed }));
+      } catch {
+        await reply(errorCard('task.unavailable', { quote: typed }));
+      }
+      return;
     }
   },
 });

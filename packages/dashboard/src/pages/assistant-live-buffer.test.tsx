@@ -147,7 +147,7 @@ describe('LiveText finish and failure handling', () => {
     );
     renderWithSession(<LiveText runId="run-1" />);
     await act(async () => {});
-    expect(screen.getByText(/Could not load live text/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't load live text/)).toBeTruthy();
     await act(async () => {
       vi.advanceTimersByTime(15000);
     });
@@ -229,7 +229,7 @@ describe('LiveText failure then finish', () => {
     });
     expect(screen.getByText('finished')).toBeDefined();
     expect(screen.queryByText('Live answer')).toBeNull();
-    expect(screen.queryByText(/Could not load live text/)).toBeNull();
+    expect(screen.queryByText(/Couldn't load live text/)).toBeNull();
     await act(async () => {
       vi.advanceTimersByTime(60000);
     });

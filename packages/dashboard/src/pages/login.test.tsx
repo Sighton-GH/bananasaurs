@@ -1,9 +1,21 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, stubFetch } from '../test-support.js';
 import { ThemeProvider } from '../app/theme.js';
 import { BootstrapForm, LoginForm } from './login.js';
+
+// jsdom lacks these DOM APIs called by Radix Select (same shim as ui/Select.test.tsx).
+const dom = globalThis as unknown as { Element: { prototype: Record<string, unknown> } };
+dom.Element.prototype.hasPointerCapture ??= () => false;
+dom.Element.prototype.releasePointerCapture ??= () => undefined;
+dom.Element.prototype.scrollIntoView ??= () => undefined;
+(globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 
 const renderForm = (node: React.ReactElement) => render(<ThemeProvider>{node}</ThemeProvider>);
 
@@ -72,12 +84,12 @@ describe('LoginForm', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     });
-    const select = screen.getByLabelText('Server');
-    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
-      'Dev',
-      'Club',
-    ]);
-    fireEvent.change(select, { target: { value: '222222222222222222' } });
+    const select = screen.getByRole('combobox', { name: 'Server' });
+    expect(document.querySelector('select:not([aria-hidden="true"])')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(select);
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['Dev', 'Club']);
+    await user.click(screen.getByRole('option', { name: 'Club' }));
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     });
@@ -88,6 +100,21 @@ describe('LoginForm', () => {
       guildId: '222222222222222222',
     });
     expect(onSignedIn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('login chrome (7c)', () => {
+  it('keeps brand, theme toggle and attribution; the heading uses title tokens, no legacy classes', () => {
+    renderForm(<LoginForm onSignedIn={vi.fn()} />);
+    const h1 = screen.getByRole('heading', { level: 1, name: 'Bananasaurs' });
+    expect(h1.className).toContain('text-title');
+    expect(document.querySelector('.login-backdrop')).toBeTruthy();
+    expect(
+      h1.parentElement?.querySelector('.text-xl, .text-xs, .rounded-md, .rounded-sm'),
+    ).toBeNull();
+    expect(document.querySelector('input[type="password"]')?.getAttribute('autocomplete')).toBe(
+      'current-password',
+    );
   });
 });
 

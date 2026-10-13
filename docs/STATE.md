@@ -67,6 +67,23 @@
 - **Helpful wizard:** the default boundary helps with any reasonable request; FOCUS replaces WHAT YOU HELP WITH; sources are club first, then the web. Prompts saved by the old wizard are rewritten when compiled.
 - **AI setup page:** chain models OpenRouter no longer lists are flagged, and each OpenRouter model shows chips (reads images, reads PDFs, uses tools, thinks) from OpenRouter's public model list, refreshed hourly.
 - **Fixtures:** capability fixtures from the live transcripts check that each failing conversation now gets a prompt that makes the right answer possible.
+**Dashboard shell (P4), 2026-10-12.** Rail regrouped (Club, Moderation, Assistant, Messages, System) with
+icons and parent highlighting; page headers with breadcrumbs; one system banner per live cause (offline,
+kill switch, breaker, gateway, read-only, preview, safety status unknown, failing models); Ctrl/⌘-K palette
+over pages, actions, tasks, cases, automod rules and members by ID. The Guide and the CLI-parity note now use the new
+page names. P4 audit repair: system hold causes use polite status; danger causes stay alert. Shared
+Banner defaults remain unchanged when no live override is set. Palette fuzzy subsequences now match
+astral code points as well as BMP characters. No new dependencies. Built on a local branch; not merged, deployed or verified live.
+
+**Dashboard foundations (ADR 0142), 2026-10-11.** Light-first tokens checked for AA in both themes, Inter
+(bundled), Lucide icons via src/ui/icons.ts, new primitives (Select, Textarea, RadioGroup, Link, Tabs,
+DropdownMenu, Tooltip, DescriptionList, KeyValueTable, CodeBlock, Pagination, alerts, banner, error
+summary, skeleton, progress), states kit (Forbidden/NotFound/Unavailable/Stale/timed Loading), crash
+boundaries, skip link and page titles. Owner check: /kit in both themes. Pages are swept in P5.
+
+**Task cards (ADR 0140), 2026-10-11.** Every task post is a Components V2 card with description, links (≤5), art, and I'm on it / Post update buttons; cards refresh within a minute of any edit; links editable in the dashboard and MCP. Migration ui_task_cards. Owner check: npm run smoke:cards. Built on a local branch; not merged, deployed or verified live.
+
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-12 (assistant harness v2 branch, ADRs 0069–0077).
 
 ---
 

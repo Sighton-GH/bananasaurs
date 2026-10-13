@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { Route, Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import { renderWithSession, stubFetch } from '../test-support.js';
@@ -87,7 +88,7 @@ describe('AssistantHistoryDetailPage', () => {
     // Summary: the question, the answer as posted, and both links.
     expect(screen.getByText('When is the next club meeting?')).toBeTruthy();
     expect(screen.getByText('Thursday at 6 pm.')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Open in Discord' }).getAttribute('href')).toBe(
+    expect(screen.getByRole('link', { name: /Open in Discord/ }).getAttribute('href')).toBe(
       'https://discord.com/channels/1540816150026518620/333333333333333333/900000000000000002',
     );
     expect(screen.getByRole('link', { name: 'Open the conversation' }).getAttribute('href')).toBe(
@@ -98,19 +99,26 @@ describe('AssistantHistoryDetailPage', () => {
     expect(screen.getByText('second-model')).toBeTruthy();
     expect(screen.getAllByText('overloaded').length).toBeGreaterThan(0);
     expect(screen.getByText(/100 prompt/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'Prompt' }));
     // Prompt: each section expandable with its size.
     expect(screen.getByText('system · 12 characters · about 3 tokens')).toBeTruthy();
     expect(screen.getByText('Be helpful.')).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'Tool calls' }));
     // Tool calls: round, tool, arguments, preview, ok/refused with reason.
     expect(screen.getByText('search_sources, set_reminder')).toBeTruthy();
     expect(screen.getByText('search_sources')).toBeTruthy();
+    expect(screen.getByRole('rowheader', { name: 'Query' })).toBeTruthy();
+    expect(screen.getByText('meeting')).toBeTruthy();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Show raw' })[0]!);
     expect(screen.getByText(/"query": "meeting"/)).toBeTruthy();
     expect(screen.getByText('unknown handle')).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'Timeline' }));
     // Timeline, errors and flags.
     expect(screen.getByText('queued')).toBeTruthy();
     expect(screen.getByText('provider-timeout')).toBeTruthy();
     expect(screen.getByText('feedback:up')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Meetings' }).getAttribute('href')).toBe(
+    await userEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+    expect(screen.getByRole('link', { name: /Meetings/ }).getAttribute('href')).toBe(
       'https://example.com/meetings',
     );
   });
@@ -126,6 +134,8 @@ describe('AssistantHistoryDetailPage', () => {
       },
     ]);
     renderDetail();
+    await screen.findByRole('tab', { name: 'Tool calls' });
+    await userEvent.click(screen.getByRole('tab', { name: 'Tool calls' }));
     expect(await screen.findByText('not recorded')).toBeTruthy();
   });
 
@@ -169,6 +179,8 @@ describe('AssistantHistoryDetailPage', () => {
       },
     ]);
     renderDetail();
+    await screen.findByRole('tab', { name: 'Prompt' });
+    await userEvent.click(screen.getByRole('tab', { name: 'Prompt' }));
     expect(await screen.findByText(/Prompt text is withheld/)).toBeTruthy();
   });
 
@@ -177,8 +189,11 @@ describe('AssistantHistoryDetailPage', () => {
       { url: '/api/assistant/traces/trace-1', status: 404, body: { error: 'not-found' } },
     ]);
     renderDetail();
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('no run with this id is stored for this server');
+    expect(await screen.findByText("This run doesn't exist or was deleted")).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Back to History' }).getAttribute('href')).toBe(
+      '/assistant/history',
+    );
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
   it('Task 10 (g): renders the Why title and hint for an explained attempt', async () => {

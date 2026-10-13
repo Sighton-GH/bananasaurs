@@ -54,7 +54,7 @@ What follows is the full engine, for the rules that survive that filter.
 
 - Rule model and predicates: keyword, wildcard, regex, invite, link/domain, mention spam, duplicate message, rapid spam, caps, emoji, attachment type, account age, join age.
 - Role, channel, and user exemptions. Sliding-window counters, violation expiry, progressive escalation, per-rule rate limits.
-- Human-readable match traces, false-positive flags that narrow a rule from the Review page, rule versioning and rollback.
+- Human-readable match traces, false-positive flags that narrow a rule from the Review queue page, rule versioning and rollback.
 - **One guild-wide automod switch: Off, Watch, or On** (ADR 0121, replacing per-rule modes and observe windows). Off checks nothing. Watch records matches for review and touches no one. On deletes and escalates. Each rule can be enabled or disabled on its own. Every change is confirmed on the dashboard's Automod tab; turning automod up asks for the password again, turning it down never does. The kill switch, dry run and the breaker stay as separate emergency controls.
 - **No overlapping enforcement.** The On confirmation says to turn off the matching Carl-bot or Dyno automod first, so two bots never act on the same message.
 - Native Discord AutoMod integration where it blocks content earlier; supplement rather than duplicate.

@@ -1,24 +1,37 @@
-/**
- * The bordered section card the operator pages group their content into:
- * an uppercase small-caps title over arbitrary body. Introduced on Overview
- * (W4), promoted to a shared component for the moderation pages (W4b).
- */
+import type { ReactNode } from 'react';
+
+/** A bordered panel with an optional title, description and header actions. */
 export function Card({
   title,
+  description,
+  actions,
   action,
+  padding = 'md',
   children,
 }: {
-  readonly title: string;
-  /** An optional control on the right of the header, e.g. a "Clean up" button. */
-  readonly action?: React.ReactNode;
-  readonly children: React.ReactNode;
+  readonly title?: string;
+  readonly description?: string;
+  readonly actions?: ReactNode;
+  /** Legacy alias retained for existing pages; actions takes precedence. */
+  readonly action?: ReactNode;
+  readonly padding?: 'md' | 'none';
+  readonly children: ReactNode;
 }) {
   return (
-    <section className="rounded-md border border-line bg-panel p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold tracking-wider text-ink-muted uppercase">{title}</h2>
-        {action}
-      </div>
+    <section
+      className={`rounded-panel border border-line bg-panel ${padding === 'md' ? 'p-3' : ''}`}
+    >
+      {title !== undefined && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-section font-semibold">{title}</h2>
+            {description !== undefined && (
+              <p className="text-small text-ink-muted">{description}</p>
+            )}
+          </div>
+          {actions ?? action}
+        </div>
+      )}
       {children}
     </section>
   );

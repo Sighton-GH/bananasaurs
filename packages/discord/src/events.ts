@@ -1,6 +1,7 @@
 import {
   ApplicationCommandOptionType,
   ChannelType,
+  ComponentType,
   Events,
   type AutoModerationActionExecution,
   type ChatInputCommandInteraction,
@@ -117,10 +118,37 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
     translate('interaction', () => {
       if (interaction.isChatInputCommand()) return toSlashCommandEvent(interaction, now());
 
-      // Only message components drive panels. Anything else — an autocomplete, a
-      // modal submit, a context-menu command — is not this adapter's business
-      // and is dropped rather than translated into a shape that cannot describe
-      // it. Note this is a *silent* drop by design: the dispatch is real and
+      // Modal submits (ADR 0140): the task update modal. Text inputs always
+      // carry a value; a radio group reports the chosen value or `null` when
+      // left unanswered, and an unanswered one is not a field at all.
+      if (interaction.isModalSubmit()) {
+        const guildId = interaction.guildId;
+        const channelId = interaction.channelId;
+        if (!guildId || !channelId) return undefined;
+        const fields: Record<string, string> = {};
+        for (const data of interaction.fields.fields.values()) {
+          if (data.type === ComponentType.TextInput) fields[data.customId] = data.value;
+          else if (data.type === ComponentType.RadioGroup && data.value !== null)
+            fields[data.customId] = data.value;
+        }
+        return {
+          kind: 'modalSubmit',
+          guildId,
+          receivedAtMs: now(),
+          interactionId: interaction.id,
+          token: interaction.token,
+          channelId,
+          messageId: interaction.message?.id,
+          userId: interaction.user.id,
+          customId: interaction.customId,
+          fields,
+        };
+      }
+
+      // Only message components drive panels. Anything else — an autocomplete
+      // or a context-menu command — is not this adapter's business and is
+      // dropped rather than translated into a shape that cannot describe it.
+      // Note this is a *silent* drop by design: the dispatch is real and
       // well-formed, it simply belongs to a surface Release 1 does not have.
       if (!interaction.isButton() && !interaction.isStringSelectMenu()) return undefined;
       const guildId = interaction.guildId;

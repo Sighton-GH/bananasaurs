@@ -140,6 +140,7 @@ describe('WhatTheAiSaw', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'What the AI saw' }));
     });
-    expect(await screen.findByText(/Could not load assistant run/)).toBeTruthy();
+    expect(await screen.findByText(/Couldn't load assistant run/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });

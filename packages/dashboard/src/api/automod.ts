@@ -272,3 +272,12 @@ export interface AutomodStateView {
   readonly killswitch: boolean;
   readonly enabledRules: readonly { readonly ruleId: string; readonly name: string }[];
 }
+
+/** Labels describe the existing schema keys; units and request values are unchanged. */
+export const RULE_CONFIG_LABELS: Partial<Record<RuleKind, Readonly<Record<string, string>>>> = {
+  caps: { minLength: 'Minimum message length', maxRatio: 'Maximum capital letter ratio' },
+  rapid_spam: { maxMessages: 'Maximum messages', windowMs: 'Window (milliseconds)' },
+  mention_spam: { maxMentions: 'Maximum mentions', countEveryoneAs: 'Everyone mention weight' },
+  emoji: { maxCount: 'Maximum emoji' },
+  link_domain: { mode: 'Mode' },
+};

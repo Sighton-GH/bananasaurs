@@ -92,9 +92,24 @@ describe('AssistantSchedulesPage', () => {
   });
 
   it('renders the error state when the load fails', async () => {
-    stubFetch([]);
+    stubFetch([{ url: '/api/assistant', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AssistantSchedulesPage />);
     expect(await screen.findByRole('alert')).toBeTruthy();
-    expect(screen.getByText(/Could not load assistant schedules/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't load assistant schedules/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
+});
+
+it('filters schedules locally without starting or cancelling a reminder', async () => {
+  const mock = renderPage();
+  await screen.findByRole('table', { name: 'Assistant reminders' });
+  fireEvent.change(screen.getByLabelText('Filter loaded reminders'), {
+    target: { value: 'nothing matches' },
+  });
+  expect(screen.getByText('No reminders match these filters')).toBeTruthy();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0]!);
+  expect(screen.getByRole('table', { name: 'Assistant reminders' })).toBeTruthy();
+  expect(
+    mock.mock.calls.every((call) => ((call[1] as RequestInit)?.method ?? 'GET') === 'GET'),
+  ).toBe(true);
 });

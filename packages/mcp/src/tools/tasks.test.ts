@@ -112,6 +112,7 @@ describe('get_task details with assignees, reminders and archived flag', () => {
     archived: false,
     children: [],
     reports: [],
+    links: [],
     reminders: [
       {
         slotId: 'custom:task:1699999999999',
@@ -138,6 +139,14 @@ describe('get_task details with assignees, reminders and archived flag', () => {
     ]);
     expect(parsed['archived']).toBe(false);
     expect(port.detail).toHaveBeenCalledWith(GUILD, principal.accountId, UUID());
+  });
+  it('returns links, neutralising mentions in their labels', () => {
+    const links = [{ label: '@everyone docs', url: 'https://example.com' }];
+    const port = { detail: vi.fn().mockReturnValue({ ...detail, links }), reminders: vi.fn() };
+    const result = getTaskDetailsText(principal, port, { guildId: GUILD, taskId: UUID() });
+    if (!result.ok) throw new Error('expected ok');
+    const parsed = JSON.parse(result.text) as { links: { label: string; url: string }[] };
+    expect(parsed.links).toEqual([{ label: ' everyone docs', url: 'https://example.com' }]);
   });
   it('returns archived tasks flagged rather than refusing', () => {
     const port = {

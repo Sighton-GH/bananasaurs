@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { eq, isNull, asc, and, sql } from 'drizzle-orm';
+import { eq, isNull, asc, desc, and, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write, type WriteTx } from '../write.js';
 import {
   auditEvents,
   clubTasks,
   taskAssignees,
+  taskLinks,
   taskChildren,
   taskMessageAnchors,
   taskNudgeSlots,
@@ -58,7 +59,13 @@ export interface NewTeam {
   readonly leadRoleId?: string | undefined;
   readonly memberRoleId?: string | undefined;
 }
+export interface TaskLink {
+  readonly label: string;
+  readonly url: string;
+}
+
 export interface NewTask {
+  readonly links?: readonly TaskLink[] | undefined;
   readonly teamId: string;
   readonly title: string;
   readonly description?: string | undefined;
@@ -257,6 +264,30 @@ export const normalizeAssignees = (
   return [...ids];
 };
 
+/** Replace a task's links inside the caller's transaction. */
+const writeLinks = (
+  db: WriteTx['db'],
+  scope: GuildScope,
+  taskId: string,
+  links: readonly TaskLink[],
+): void => {
+  db.delete(taskLinks)
+    .where(scope.only(taskLinks, eq(taskLinks.taskId, taskId)))
+    .run();
+  if (links.length > 0)
+    db.insert(taskLinks)
+      .values(
+        links.map((link, position) => ({
+          guildId: scope.guildId,
+          taskId,
+          position,
+          label: link.label,
+          url: link.url,
+        })),
+      )
+      .run();
+};
+
 export const createTask = (
   scope: GuildScope,
   input: NewTask,
@@ -320,6 +351,8 @@ export const createTask = (
           })),
         )
         .run();
+    if (input.links !== undefined && input.links.length > 0)
+      writeLinks(db, scope, taskId, input.links);
     db.insert(taskNudgeSlots)
       .values({
         guildId: scope.guildId,
@@ -344,6 +377,7 @@ export const createTask = (
         .run();
     }
     audit(db, scope, actor, now, 'task.created', 'club_task', taskId, undefined, {
+      links: input.links?.length ?? 0,
       teamId: input.teamId,
       priority: input.priority ?? 'normal',
       assignmentKind: input.assignmentKind,
@@ -644,6 +678,34 @@ export const deleteReport = (
         scope.only(taskReports, eq(taskReports.taskId, taskId), eq(taskReports.reportId, reportId)),
       )
       .run();
+    // The anchored card may still show the deleted update. Most tasks bump the
+    // version so `staleTaskCards` sees rendered_version < version and the card
+    // is refreshed. An awaiting_approval task instead keeps its version: a
+    // bump would strand the already-posted review card, whose Approve and
+    // Send back buttons carry the version the review was issued at
+    // (decideTaskReview rejects a mismatch, and no new review slot is
+    // created). Marking the anchor dirty refreshes the card without
+    // invalidating the review.
+    const status = db
+      .select({ status: clubTasks.status })
+      .from(clubTasks)
+      .where(scope.only(clubTasks, eq(clubTasks.taskId, taskId)))
+      .get()?.status;
+    if (status === 'awaiting_approval') {
+      db.update(clubTasks)
+        .set({ updatedAt: now })
+        .where(scope.only(clubTasks, eq(clubTasks.taskId, taskId)))
+        .run();
+      db.update(taskMessageAnchors)
+        .set({ renderedVersion: -1 })
+        .where(scope.only(taskMessageAnchors, eq(taskMessageAnchors.taskId, taskId)))
+        .run();
+    } else {
+      db.update(clubTasks)
+        .set({ updatedAt: now, version: sql`${clubTasks.version} + 1` })
+        .where(scope.only(clubTasks, eq(clubTasks.taskId, taskId)))
+        .run();
+    }
     audit(db, scope, actor, now, 'task.report_deleted', 'club_task', taskId, undefined, {
       reportId,
       authorId: before.authorId,
@@ -663,6 +725,7 @@ export type TaskEdit = Pick<
   | 'dueAt'
   | 'timezone'
   | 'destinationId'
+  | 'links'
 >;
 
 /** Compare-and-swap, scoped to one guild and an unarchived task. */
@@ -745,6 +808,7 @@ export const updateTask = (
           })),
         )
         .run();
+    if (input.links !== undefined) writeLinks(db, scope, taskId, input.links);
     // An edit to an awaiting task re-opens review: approvers decide on the new
     // content, so the review post is re-issued for the bumped version.
     if (before.status === 'awaiting_approval') {
@@ -781,6 +845,7 @@ export const updateTask = (
         version: expectedVersion,
       },
       {
+        links: input.links === undefined ? 'unchanged' : input.links.length,
         priority: input.priority ?? 'normal',
         assignmentKind: input.assignmentKind,
         assigneeIds: assignees,
@@ -1329,3 +1394,132 @@ export const setQuietHours = (
 
 export const getQuietHours = (scope: GuildScope) =>
   read(scope, (db) => db.select().from(taskQuietHours).where(scope.only(taskQuietHours)).get());
+
+export const listTaskLinks = (scope: GuildScope, taskId: string): TaskLink[] =>
+  read(scope, (db) =>
+    db
+      .select({ label: taskLinks.label, url: taskLinks.url })
+      .from(taskLinks)
+      .where(scope.only(taskLinks, eq(taskLinks.taskId, taskId)))
+      .orderBy(taskLinks.position)
+      .all(),
+  );
+
+/** The task's own posted card, if it has one. */
+export const anchorFor = (
+  scope: GuildScope,
+  taskId: string,
+): { channelId: string; messageId: string } | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ channelId: taskMessageAnchors.channelId, messageId: taskMessageAnchors.messageId })
+      .from(taskMessageAnchors)
+      .where(scope.only(taskMessageAnchors, eq(taskMessageAnchors.taskId, taskId)))
+      .get(),
+  );
+
+/**
+ * Anchored cards that no longer show their task (ADR 0140 decision 5): the
+ * task's version moved past `rendered_version`, or a report arrived after
+ * `rendered_at`. Archived tasks are skipped, and so are done tasks whose post
+ * was never a card (decision 6 converts open tasks only). Oldest change first.
+ */
+export const staleTaskCards = (
+  scope: GuildScope,
+  limit: number,
+): { taskId: string; channelId: string; messageId: string; version: number; updatedAt: number }[] =>
+  read(scope, (db) =>
+    db
+      .select({
+        taskId: taskMessageAnchors.taskId,
+        channelId: taskMessageAnchors.channelId,
+        messageId: taskMessageAnchors.messageId,
+        version: clubTasks.version,
+        updatedAt: clubTasks.updatedAt,
+      })
+      .from(taskMessageAnchors)
+      .innerJoin(
+        clubTasks,
+        and(
+          eq(clubTasks.guildId, taskMessageAnchors.guildId),
+          eq(clubTasks.taskId, taskMessageAnchors.taskId),
+        ),
+      )
+      .where(
+        scope.only(
+          taskMessageAnchors,
+          isNull(clubTasks.archivedAt),
+          sql`(${clubTasks.status} <> 'done' OR ${taskMessageAnchors.renderedVersion} > 0)`,
+          sql`(${taskMessageAnchors.renderedVersion} < ${clubTasks.version} OR ${taskMessageAnchors.renderedAt} < COALESCE((SELECT MAX(r.created_at) FROM task_reports r WHERE r.guild_id = ${taskMessageAnchors.guildId} AND r.task_id = ${taskMessageAnchors.taskId}), 0))`,
+        ),
+      )
+      .orderBy(clubTasks.updatedAt)
+      .limit(limit)
+      .all(),
+  );
+
+/**
+ * Record that the card now shows `version`. A completion for a lower version
+ * than the one already recorded is rejected wholly, including its timestamp,
+ * so a late obsolete render cannot hide a newer unseen report.
+ *
+ * `now` must be the rendered view's snapshot watermark (when the data the card
+ * was built from was read), not the time the edit completed. Task 8's renderer
+ * must pass it that way.
+ */
+export const markCardRendered = (
+  scope: GuildScope,
+  taskId: string,
+  version: number,
+  now: number,
+  fenceUpdatedAt?: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.update(taskMessageAnchors)
+      .set({
+        renderedVersion: version,
+        renderedAt: sql`MAX(${taskMessageAnchors.renderedAt}, ${now})`,
+      })
+      .where(
+        scope.only(
+          taskMessageAnchors,
+          eq(taskMessageAnchors.taskId, taskId),
+          sql`${taskMessageAnchors.renderedVersion} <= ${version}`,
+          // A render is built from a snapshot and the Discord edit is awaited,
+          // so a mutation (for example a report delete, which keeps the version
+          // stable while awaiting approval) can land in between. The fence is
+          // the task's updated_at as of the snapshot: if it moved, this
+          // completion is obsolete and must not clear a newer dirty marker.
+          ...(fenceUpdatedAt === undefined
+            ? []
+            : [
+                sql`(SELECT t.updated_at FROM club_tasks t WHERE t.guild_id = ${scope.guildId} AND t.task_id = ${taskId}) = ${fenceUpdatedAt}`,
+              ]),
+        ),
+      )
+      .run();
+  });
+
+/** Who last moved the task to In progress by hand, and when (from the audit trail). */
+export const lastPickup = (
+  scope: GuildScope,
+  taskId: string,
+): { actorId: string; at: number } | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select({ actorId: auditEvents.actorId, at: auditEvents.at })
+      .from(auditEvents)
+      .where(
+        scope.only(
+          auditEvents,
+          eq(auditEvents.subjectType, 'club_task'),
+          eq(auditEvents.subjectId, taskId),
+          eq(auditEvents.action, 'task.status_set'),
+          sql`json_extract(${auditEvents.after}, '$.status') = 'in_progress'`,
+        ),
+      )
+      .orderBy(desc(auditEvents.at), desc(auditEvents.auditId))
+      .limit(1)
+      .get();
+    return row?.actorId == null ? undefined : { actorId: row.actorId, at: row.at };
+  });
