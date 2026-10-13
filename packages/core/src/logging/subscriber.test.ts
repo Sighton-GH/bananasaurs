@@ -5,10 +5,12 @@ import type { LogRoute } from './routing.js';
 import type { MemberSnapshotLike } from './member-changes.js';
 import type {
   AuditLogEntryEvent,
+  AutoModerationEvent,
   MemberEvent,
   MessageBulkDeleteEvent,
   MessageEvent,
 } from '../discord/events.js';
+import type { OutgoingMessage } from '../discord/port.js';
 
 const GUILD = '111111111111111111';
 const SOURCE = '222222222222222222';
@@ -16,11 +18,33 @@ const DEST_A = '333333333333333333';
 const DEST_B = '444444444444444444';
 const logger = pino({ level: 'silent' });
 
-interface SentLine {
+interface SentCard {
   channelId: string;
-  content: string;
-  allowedMentions: { parse: readonly [] };
+  message: OutgoingMessage;
 }
+
+/** Every Text Display joined: the card's headline, quote, changes and footer. */
+const textOf = (message: OutgoingMessage): string => {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
+    walk(o['components']);
+  };
+  walk(message.components);
+  return out.join('\n');
+};
+
+const customIdsOf = (message: OutgoingMessage): string[] =>
+  JSON.stringify(message.components).match(/bs\.mod:[^"]+/g) ?? [];
+
+const sentMessage = (sent: SentCard[], index: number): OutgoingMessage => {
+  const card = sent[index];
+  if (card === undefined) throw new Error(`expected a sent card at index ${index}`);
+  return card.message;
+};
 
 const makeRoute = (over: Partial<LogRoute> & { routeId: string }): LogRoute => ({
   channelId: DEST_A,
@@ -32,7 +56,7 @@ const makeRoute = (over: Partial<LogRoute> & { routeId: string }): LogRoute => (
 
 function makeFake() {
   const claims = new Set<string>();
-  const sent: SentLine[] = [];
+  const sent: SentCard[] = [];
   const failing = new Set<string>();
   const excluded = new Set<string>();
   const enqueued: { dedupeKey: string; payload: string; runAfter: number }[] = [];
@@ -61,11 +85,7 @@ function makeFake() {
       claims.delete(`${eventKind}:${fingerprint}`);
     },
     sendMessage: async (channelId, message) => {
-      sent.push({
-        channelId,
-        content: message.content,
-        allowedMentions: message.allowedMentions,
-      });
+      sent.push({ channelId, message });
       if (failing.has(channelId)) throw new Error(`send failed: ${channelId}`);
       return undefined;
     },
@@ -100,6 +120,9 @@ function makeFake() {
   };
 }
 
+const AUTHOR = '555555555555555555';
+const MESSAGE = '444444444444444444';
+
 const editEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   kind: 'messageUpdate',
   guildId: GUILD,
@@ -108,8 +131,8 @@ const editEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   parentChannelId: undefined,
   categoryId: undefined,
   isPrivateThread: false,
-  messageId: '444444444444444444',
-  authorId: '555555555555555555',
+  messageId: MESSAGE,
+  authorId: AUTHOR,
   authorDisplayName: undefined,
   authorIsBot: false,
   content: 'edited text',
@@ -149,9 +172,29 @@ describe('logging subscriber fan-out', () => {
       editEvent({ content: 'hello @everyone <@&123> <@456>' }),
     );
     expect(fake.sent.length).toBeGreaterThan(0);
-    for (const line of fake.sent) {
-      expect(line.allowedMentions).toEqual({ parse: [] });
+    for (const card of fake.sent) {
+      expect(card.message.allowedMentions).toEqual({ parse: [] });
     }
+  });
+
+  it('posts a Components V2 card with the eyebrow, the headline and a jump link', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    await createLoggingSubscriber(fake.ports).handle(editEvent());
+    expect(fake.sent).toHaveLength(1);
+    const message = sentMessage(fake.sent, 0);
+    expect(message.flags).toBe(32768);
+    expect(message.allowedMentions).toEqual({ parse: [] });
+    const text = textOf(message);
+    expect(text).toContain('-# ✏️ MESSAGE EDITED');
+    expect(text).toContain(`<@${AUTHOR}> edited a message in <#${SOURCE}>`);
+    expect(text).toContain('edited text');
+    expect(text).toContain(`https://discord.com/channels/${GUILD}/${SOURCE}/${MESSAGE}`);
+    expect(customIdsOf(message)).toEqual([
+      `bs.mod:delete:${SOURCE}:${MESSAGE}:${AUTHOR}`,
+      `bs.mod:warn:${AUTHOR}`,
+      `bs.mod:timeout:${AUTHOR}`,
+    ]);
   });
 
   it('skips a disabled route', async () => {
@@ -204,7 +247,7 @@ describe('logging subscriber fan-out', () => {
       makeRoute({ routeId: 'b', channelId: DEST_B, includeContent: true }),
     ]);
     await createLoggingSubscriber(fake.ports).handle(editEvent({ content: 'secret words' }));
-    const byChannel = new Map(fake.sent.map((s) => [s.channelId, s.content]));
+    const byChannel = new Map(fake.sent.map((s) => [s.channelId, textOf(s.message)]));
     expect(byChannel.get(DEST_A)).not.toContain('secret words');
     expect(byChannel.get(DEST_B)).toContain('secret words');
   });
@@ -396,7 +439,7 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
 
-  it('a later update with a new nickname posts one line and updates the snapshot', async () => {
+  it('a later update with a new nickname posts one card and updates the snapshot', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
     fake.setRouteKinds('n', ['member_nickname_changed']);
@@ -404,11 +447,12 @@ describe('member snapshots and change lines', () => {
     await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }));
     await subscriber.handle(memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') }));
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.content).toContain('Nickname changed');
-    expect(fake.sent[0]?.content).toContain(`<@${MEMBER}>`);
-    expect(fake.sent[0]?.content).toContain('"Old"');
-    expect(fake.sent[0]?.content).toContain('"New"');
-    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+    const text = textOf(sentMessage(fake.sent, 0));
+    expect(text).toContain('changed nickname');
+    expect(text).toContain(`<@${MEMBER}>`);
+    expect(text).toContain('Old → New');
+    expect(sentMessage(fake.sent, 0).allowedMentions).toEqual({ parse: [] });
+    expect(sentMessage(fake.sent, 0).flags).toBe(32768);
     expect(fake.snapshots.get(MEMBER)?.nickname).toBe('New');
   });
 
@@ -451,7 +495,7 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.get(MEMBER)?.nickname).toBe('New');
   });
 
-  it('an A→B→A→B nickname sequence posts four lines', async () => {
+  it('an A→B→A→B nickname sequence posts four cards', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'n', channelId: DEST_A })]);
     fake.setRouteKinds('n', ['member_nickname_changed']);
@@ -465,15 +509,15 @@ describe('member snapshots and change lines', () => {
       at += 1_000;
     }
     expect(fake.sent).toHaveLength(4);
-    expect(fake.sent.map((s) => s.content)).toEqual([
-      expect.stringContaining('"Zero" → "A"'),
-      expect.stringContaining('"A" → "B"'),
-      expect.stringContaining('"B" → "A"'),
-      expect.stringContaining('"A" → "B"'),
+    expect(fake.sent.map((s) => textOf(s.message))).toEqual([
+      expect.stringContaining('Zero → A'),
+      expect.stringContaining('A → B'),
+      expect.stringContaining('B → A'),
+      expect.stringContaining('A → B'),
     ]);
   });
 
-  it('a leave posts the leave line and deletes the snapshot', async () => {
+  it('a leave posts the leave card and deletes the snapshot', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'l', channelId: DEST_A })]);
     fake.setRouteKinds('l', ['member_leave', 'member_nickname_changed']);
@@ -482,7 +526,9 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.has(MEMBER)).toBe(true);
 
     await subscriber.handle(memberLeave({ receivedAtMs: 2_000 }));
-    expect(fake.sent.map((s) => s.content)).toContain(`Member left: <@${MEMBER}>`);
+    const text = textOf(sentMessage(fake.sent, fake.sent.length - 1));
+    expect(text).toContain(`<@${MEMBER}>`);
+    expect(text).toContain('left');
     expect(fake.snapshots.has(MEMBER)).toBe(false);
   });
 
@@ -529,15 +575,17 @@ const bulkDelete = (over: Partial<MessageBulkDeleteEvent> = {}): MessageBulkDele
 });
 
 describe('audit-log entries and bulk deletes', () => {
-  it('posts one kick line to a member_kick route', async () => {
+  it('posts one kick card to a member_kick route', async () => {
     const fake = makeFake();
     fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
     fake.setRouteKinds('a', ['member_kick']);
     await createLoggingSubscriber(fake.ports).handle(auditEntry({ action: 20 }));
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0]?.channelId).toBe(DEST_A);
-    expect(fake.sent[0]?.content).toContain('Kicked: <@777777777777777777>');
-    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+    const text = textOf(sentMessage(fake.sent, 0));
+    expect(text).toContain('Kicked: <@777777777777777777>');
+    expect(sentMessage(fake.sent, 0).allowedMentions).toEqual({ parse: [] });
+    expect(sentMessage(fake.sent, 0).flags).toBe(32768);
   });
 
   it('replaying the same entry posts nothing', async () => {
@@ -558,7 +606,7 @@ describe('audit-log entries and bulk deletes', () => {
     expect(fake.sent).toHaveLength(0);
   });
 
-  it('a purge posts one line per matching route', async () => {
+  it('a purge posts one card per matching route', async () => {
     const fake = makeFake();
     fake.setRoutes([
       makeRoute({ routeId: 'a', channelId: DEST_A }),
@@ -568,9 +616,9 @@ describe('audit-log entries and bulk deletes', () => {
     fake.setRouteKinds('b', ['message_bulk_delete']);
     await createLoggingSubscriber(fake.ports).handle(bulkDelete());
     expect(fake.sent).toHaveLength(2);
-    for (const line of fake.sent) {
-      expect(line.content).toBe(`Messages bulk-deleted in <#${SOURCE}>: 3 messages`);
-      expect(line.allowedMentions).toEqual({ parse: [] });
+    for (const card of fake.sent) {
+      expect(textOf(card.message)).toContain(`3 messages were purged in <#${SOURCE}>`);
+      expect(card.message.allowedMentions).toEqual({ parse: [] });
     }
   });
 
@@ -595,6 +643,74 @@ describe('audit-log entries and bulk deletes', () => {
     await subscriber.handle(event);
     await subscriber.handle(event);
     expect(fake.sent).toHaveLength(1);
+  });
+});
+
+const automodEvent = (over: Partial<AutoModerationEvent> = {}): AutoModerationEvent => ({
+  kind: 'autoModerationAction',
+  guildId: GUILD,
+  receivedAtMs: 1,
+  ruleId: '888888888888888888',
+  triggerType: 'keyword',
+  userId: MEMBER,
+  actionType: 'block',
+  channelId: SOURCE,
+  messageId: MESSAGE,
+  alertMessageId: undefined,
+  content: '',
+  matchedKeyword: undefined,
+  matchedContent: undefined,
+  ...over,
+});
+
+describe('native automod actions', () => {
+  it('posts a card with the action words, the rule and moderator buttons', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.setRouteKinds('a', ['automod_action']);
+    await createLoggingSubscriber(fake.ports).handle(automodEvent());
+    expect(fake.sent).toHaveLength(1);
+    const message = sentMessage(fake.sent, 0);
+    const text = textOf(message);
+    expect(text).toContain('-# 🛡️ DISCORD AUTOMOD');
+    expect(text).toContain(`Discord AutoMod acted on a message by <@${MEMBER}>`);
+    expect(text).toContain('Action: Blocked the message');
+    expect(text).toContain('-# Rule 888888888888888888');
+    expect(customIdsOf(message)).toEqual([
+      `bs.mod:delete:${SOURCE}:${MESSAGE}:${MEMBER}`,
+      `bs.mod:warn:${MEMBER}`,
+      `bs.mod:timeout:${MEMBER}`,
+    ]);
+  });
+
+  it('names the other actions in words, never raw codes', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    fake.setRouteKinds('a', ['automod_action']);
+    const subscriber = createLoggingSubscriber(fake.ports);
+    const cases = [
+      ['alert', 'Sent an alert'],
+      ['timeout', 'Timed the member out'],
+      ['block_interaction', 'Blocked an interaction'],
+    ] as const;
+    let at = 2;
+    for (const [actionType] of cases) {
+      await subscriber.handle(
+        automodEvent({
+          actionType,
+          receivedAtMs: at,
+          ruleId: '888888888888888888',
+        }),
+      );
+      at += 1;
+    }
+    const texts = fake.sent.map((s) => textOf(s.message));
+    // Each card carries its own fingerprint, so all three post.
+    expect(texts).toEqual([
+      expect.stringContaining('Sent an alert'),
+      expect.stringContaining('Timed the member out'),
+      expect.stringContaining('Blocked an interaction'),
+    ]);
   });
 });
 
@@ -655,7 +771,11 @@ describe('createLogPoster', () => {
     eventKind: 'member_warn',
     fingerprint: 'interaction-1',
     source: undefined,
-    render: () => 'Warned: <@777777777777777777> by <@666666666666666666>',
+    view: () => ({
+      kind: 'member_warn',
+      headline: 'Warned: <@777777777777777777> by <@666666666666666666>',
+      at: 0,
+    }),
   });
 
   it('posts through every matching route and dedupes the replay', async () => {
@@ -667,7 +787,8 @@ describe('createLogPoster', () => {
     const poster = createLogPoster(fake.ports);
     await poster.post(warnItem());
     expect(fake.sent.map((s) => s.channelId).sort()).toEqual([DEST_A, DEST_B].sort());
-    expect(fake.sent[0]?.allowedMentions).toEqual({ parse: [] });
+    expect(fake.sent[0]?.message.allowedMentions).toEqual({ parse: [] });
+    expect(fake.sent[0]?.message.flags).toBe(32768);
 
     // The same warn id replays (a retried hook call): nothing new posts.
     await poster.post(warnItem());

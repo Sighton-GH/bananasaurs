@@ -6,6 +6,7 @@ import {
 } from './attribute-deletion.js';
 import type { LogRoute } from './routing.js';
 import type { LogMessageDeletePayload } from '../jobs/kinds.js';
+import type { OutgoingMessage } from '../discord/port.js';
 import { parseSnowflakeId } from '../ids.js';
 
 const GUILD = '111111111111111111';
@@ -35,8 +36,7 @@ const payload = (over: Partial<LogMessageDeletePayload> = {}): LogMessageDeleteP
 
 function makeFake() {
   const claims = new Set<string>();
-  const sent: { channelId: string; content: string; allowedMentions: { parse: readonly [] } }[] =
-    [];
+  const sent: { channelId: string; message: OutgoingMessage }[] = [];
   const failing = new Set<string>();
   let routes: LogRoute[] = [];
   let fetchCount = 0;
@@ -69,11 +69,7 @@ function makeFake() {
       claims.delete(`${eventKind}:${fingerprint}`);
     },
     sendMessage: async (channelId, message) => {
-      sent.push({
-        channelId,
-        content: message.content,
-        allowedMentions: message.allowedMentions,
-      });
+      sent.push({ channelId, message });
       if (failing.has(channelId)) throw new Error(`send failed: ${channelId}`);
       return undefined;
     },
@@ -91,6 +87,29 @@ function makeFake() {
     counts: () => ({ fetchCount, fetchCalls: fetchCount, recordCount, claimedCounts }),
   };
 }
+
+/** Every Text Display joined: the card's headline, quote and footer. */
+const textOf = (message: OutgoingMessage): string => {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
+    walk(o['components']);
+  };
+  walk(message.components);
+  return out.join('\n');
+};
+
+const sentMessage = (
+  sent: { channelId: string; message: OutgoingMessage }[],
+  index: number,
+): OutgoingMessage => {
+  const card = sent[index];
+  if (card === undefined) throw new Error(`expected a sent card at index ${index}`);
+  return card.message;
+};
 
 describe('attributeAndLogDeletion fan-out', () => {
   it('does nothing when no route matches — no audit fetch, no send', async () => {
@@ -122,9 +141,23 @@ describe('attributeAndLogDeletion fan-out', () => {
     ]);
     await attributeAndLogDeletion(fake.ports, payload({ content: 'hello @everyone' }));
     expect(fake.sent.length).toBeGreaterThan(0);
-    for (const line of fake.sent) {
-      expect(line.allowedMentions).toEqual({ parse: [] });
+    for (const card of fake.sent) {
+      expect(card.message.allowedMentions).toEqual({ parse: [] });
     }
+  });
+
+  it('posts a Components V2 card with the eyebrow and the attribution', async () => {
+    const fake = makeFake();
+    fake.setRoutes([makeRoute({ routeId: 'a', channelId: DEST_A })]);
+    await attributeAndLogDeletion(fake.ports, payload({ content: 'hello' }));
+    expect(fake.sent).toHaveLength(1);
+    const message = sentMessage(fake.sent, 0);
+    expect(message.flags).toBe(32768);
+    expect(message.allowedMentions).toEqual({ parse: [] });
+    const text = textOf(message);
+    expect(text).toContain('-# 🗑️ MESSAGE DELETED');
+    expect(text).toContain(`Message by <@${AUTHOR}> deleted in <#${CHANNEL}>`);
+    expect(text).toContain('hello');
   });
 
   it('strips content for the route with content off', async () => {
@@ -134,7 +167,7 @@ describe('attributeAndLogDeletion fan-out', () => {
       makeRoute({ routeId: 'b', channelId: DEST_B, includeContent: true }),
     ]);
     await attributeAndLogDeletion(fake.ports, payload({ content: 'secret words' }));
-    const byChannel = new Map(fake.sent.map((s) => [s.channelId, s.content]));
+    const byChannel = new Map(fake.sent.map((s) => [s.channelId, textOf(s.message)]));
     expect(byChannel.get(DEST_A)).not.toContain('secret words');
     expect(byChannel.get(DEST_B)).toContain('secret words');
   });

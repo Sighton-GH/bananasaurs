@@ -730,7 +730,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         eventKind: 'member_warn',
         fingerprint: info.warnId,
         source: undefined,
-        render: () => formatWarn(info),
+        view: () => formatWarn(info, now()),
       }),
     cases: {
       openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),

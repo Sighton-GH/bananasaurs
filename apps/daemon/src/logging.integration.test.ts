@@ -9,6 +9,7 @@ import {
   type LoggingPorts,
   type MemberEvent,
   type MessageEvent,
+  type OutgoingMessage,
   type RoleEvent,
 } from '@bananasaurs/core';
 import {
@@ -21,7 +22,7 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
-import { FakeDiscord } from '@bananasaurs/testkit';
+import { FakeDiscord, type RestCall } from '@bananasaurs/testkit';
 
 /**
  * The logging module's plain event kinds (ADR 0023): message edits, member
@@ -43,6 +44,26 @@ const USER = '333333333333333333';
 const MESSAGE = '444444444444444444';
 const ROLE = '555555555555555555';
 const logger = pino({ level: 'silent' });
+
+/** Every Text Display joined: the card's headline, quote, changes and footer. */
+const textOf = (message: OutgoingMessage): string => {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
+    walk(o['components']);
+  };
+  walk(message.components);
+  return out.join('\n');
+};
+
+const sentMessage = (call: RestCall | undefined): OutgoingMessage => {
+  const message = call?.args[2] as OutgoingMessage | undefined;
+  if (message === undefined) throw new Error('expected a sendMessage call');
+  return message;
+};
 
 let t: ReturnType<typeof openMigratedTestDatabase>;
 let scope: GuildScope;
@@ -182,7 +203,28 @@ describe('message edits', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(OTHER_CHANNEL);
-    expect((calls[0]?.args[2] as { content: string }).content).toContain('edited text');
+    expect(textOf(sentMessage(calls[0]))).toContain('edited text');
+  });
+
+  it('posts a Components V2 card with the eyebrow, mentions, jump link and buttons', async () => {
+    seedRoute('message_edit');
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageEdit());
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    const message = sentMessage(calls[0]);
+    expect(message.flags).toBe(32768);
+    expect(message.allowedMentions).toEqual({ parse: [] });
+    const text = textOf(message);
+    expect(text).toContain('-# ✏️ MESSAGE EDITED');
+    expect(text).toContain(`<@${USER}> edited a message in <#${CHANNEL}>`);
+    expect(text).toContain('edited text');
+    expect(text).toContain(`https://discord.com/channels/${GUILD}/${CHANNEL}/${MESSAGE}`);
+    const wire = JSON.stringify(message.components);
+    expect(wire).toContain(`bs.mod:delete:${CHANNEL}:${MESSAGE}:${USER}`);
+    expect(wire).toContain(`bs.mod:warn:${USER}`);
+    expect(wire).toContain(`bs.mod:timeout:${USER}`);
   });
 
   it('omits content when the route has content turned off', async () => {
@@ -191,7 +233,7 @@ describe('message edits', () => {
     await subscriber.handle(messageEdit({ content: 'should not appear' }));
 
     const call = discord.restCalls('sendMessage')[0];
-    expect((call?.args[2] as { content: string }).content).not.toContain('should not appear');
+    expect(textOf(sentMessage(call))).not.toContain('should not appear');
   });
 
   it('does not log an edit from an excluded source channel', async () => {
@@ -371,7 +413,7 @@ describe('members', () => {
 
     const call = discord.restCalls('sendMessage')[0];
     expect(call?.args[1]).toBe(CHANNEL);
-    expect((call?.args[2] as { content: string }).content).toContain(USER);
+    expect(textOf(sentMessage(call))).toContain(USER);
   });
 
   it('logs a leave to the configured channel', async () => {
@@ -430,10 +472,11 @@ describe('member changes end to end', () => {
 
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
-    expect((calls[0]?.args[2] as { content: string }).content).toBe(
-      `Nickname changed: <@${USER}>  (none) → "new"`,
-    );
-    expect(calls[0]?.args[2]).toMatchObject({ allowedMentions: { parse: [] } });
+    const message = sentMessage(calls[0]);
+    const text = textOf(message);
+    expect(text).toContain(`<@${USER}> changed nickname`);
+    expect(text).toContain('(none) → new');
+    expect(message).toMatchObject({ allowedMentions: { parse: [] } });
 
     await subscriber.handle(memberLeave());
     expect(loggingRepo.getMemberSnapshot(scope, USER)).toBeUndefined();
@@ -460,7 +503,7 @@ describe('roles', () => {
     await subscriber.handle(roleEvent('roleDelete', 'old-name'));
 
     const call = discord.restCalls('sendMessage')[0];
-    expect((call?.args[2] as { content: string }).content).toContain('old-name');
+    expect(textOf(sentMessage(call))).toContain('old-name');
   });
 
   it('does not double-post an identical role-update redelivery', async () => {
@@ -516,9 +559,9 @@ describe('gap markers (ADR 0023 decision 5)', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
-    const content = (calls[0]?.args[2] as { content: string }).content;
-    expect(content).toContain('<t:1:t>'); // disconnectedAtMs 1_000 -> 1s
-    expect(content).toContain('<t:2:t>'); // receivedAtMs 2_000 -> 2s
+    const text = textOf(sentMessage(calls[0]));
+    expect(text).toContain('<t:1:t>'); // disconnectedAtMs 1_000 -> 1s
+    expect(text).toContain('<t:2:t>'); // receivedAtMs 2_000 -> 2s
   });
 
   it('every log post disables mention parsing, so logged text never pings', async () => {
@@ -638,6 +681,6 @@ describe('audit-log entries', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(LOG);
-    expect((calls[0]?.args[2] as { content: string }).content).toContain(`Banned: <@${USER}>`);
+    expect(textOf(sentMessage(calls[0]))).toContain(`Banned: <@${USER}>`);
   });
 });
