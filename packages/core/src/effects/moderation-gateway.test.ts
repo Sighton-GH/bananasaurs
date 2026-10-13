@@ -199,11 +199,7 @@ class MinimalModerationDiscord implements DiscordPort {
     this.notUsed('editMessage');
   }
   deleteError: Error | undefined = undefined;
-  async deleteMessage(
-    guildId: Snowflake,
-    ref: DiscordMessageRef,
-    reason: string,
-  ): Promise<void> {
+  async deleteMessage(guildId: Snowflake, ref: DiscordMessageRef, reason: string): Promise<void> {
     this.record('deleteMessage', [guildId, ref, reason]);
     if (this.deleteError !== undefined) throw this.deleteError;
   }

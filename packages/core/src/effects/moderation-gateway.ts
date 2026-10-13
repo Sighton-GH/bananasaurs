@@ -294,7 +294,10 @@ export class ModerationActionGateway {
       action: 'delete',
     };
     const refuse = (reason: DeleteRefusalReason) => {
-      deps.logger.warn(safeLogFields({ ...fields, outcome: 'refused', reason }), 'moderation action refused');
+      deps.logger.warn(
+        safeLogFields({ ...fields, outcome: 'refused', reason }),
+        'moderation action refused',
+      );
       return { status: 'refused' as const, reason };
     };
 
@@ -320,11 +323,17 @@ export class ModerationActionGateway {
       );
     } catch (err) {
       if (err instanceof DiscordApiError && err.code === DiscordErrorCode.UnknownMessage) {
-        deps.logger.info(safeLogFields({ ...fields, outcome: 'message-gone' }), 'the message was already gone');
+        deps.logger.info(
+          safeLogFields({ ...fields, outcome: 'message-gone' }),
+          'the message was already gone',
+        );
         return { status: 'skipped', reason: 'message-gone' };
       }
       const code = err instanceof Error ? err.name : 'UnknownError';
-      deps.logger.error(safeLogFields({ ...fields, outcome: 'failed', code, err }), 'the Discord call failed');
+      deps.logger.error(
+        safeLogFields({ ...fields, outcome: 'failed', code, err }),
+        'the Discord call failed',
+      );
       return { status: 'failed', code };
     }
     return { status: 'applied' };
