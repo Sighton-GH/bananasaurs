@@ -437,7 +437,9 @@ describe('R1 real validation and neutral preview', () => {
     renderCreate();
     await screen.findByLabelText(/task title/i);
     expect(screen.getByText('Descriptions can be 5000 characters or fewer.')).toBeTruthy();
-    expect(screen.getByText('Link labels can be 34 characters or fewer.')).toBeTruthy();
+    expect(
+      screen.getByText('Buttons on the task card. Each label is 34 characters or fewer.'),
+    ).toBeTruthy();
   });
   it('real code errors label and order all seven exact summary targets and focus on repeated rejection', async () => {
     const user = userEvent.setup();
