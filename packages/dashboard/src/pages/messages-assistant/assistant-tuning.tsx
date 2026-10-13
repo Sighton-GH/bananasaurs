@@ -3,7 +3,7 @@ import { FormSection } from '../../ui/FormSection.js';
 import { ErrorSummary } from '../../ui/ErrorSummary.js';
 import { useSections, KeptSection } from './section-tabs.js';
 import { Empty } from '../../ui/states.js';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { fieldError } from '../../api/describe-error.js';
 import {
   TUNING_URL,
@@ -379,6 +379,24 @@ function TuningCards({ initial }: { readonly initial: readonly TuningSetting[] }
     { value: 'resources', label: 'Resources' },
     { value: 'other', label: 'Network and connector' },
   ]);
+  // Browser Back restores the selected tab but leaves focus on the old
+  // trigger. When the tab changes without a click or keyboard on the tabs
+  // (those already leave focus on the new trigger) and focus is on one of
+  // this list's triggers, follow it to the newly selected trigger. Focus
+  // anywhere else is left alone, as is first mount.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const prevSection = useRef(sections.value);
+  useEffect(() => {
+    if (prevSection.current === sections.value) return;
+    prevSection.current = sections.value;
+    const root = tabsRef.current;
+    const active = document.activeElement;
+    if (root === null || !(active instanceof HTMLElement) || !root.contains(active)) return;
+    if (active.getAttribute('role') !== 'tab') return;
+    const selected = root.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    if (selected === null || selected === active) return;
+    selected.focus();
+  }, [sections.value]);
   const onUpdated = useCallback(
     (next: TuningSetting) =>
       setSettings((all) => all.map((setting) => (setting.key === next.key ? next : setting))),
@@ -391,30 +409,34 @@ function TuningCards({ initial }: { readonly initial: readonly TuningSetting[] }
     else items.push(setting);
   }
   const groups = [...byGroup].map(([name, items]) => ({ name, items }));
-  return sections.render(
-    <>
-      {groups.map((group) => (
-        <KeptSection
-          key={group.name}
-          hidden={
-            sections.value !== 'all' &&
-            (group.name.startsWith('Assistant')
-              ? sections.value !== 'assistant'
-              : group.name === 'Resources'
-                ? sections.value !== 'resources'
-                : sections.value !== 'other')
-          }
-        >
-          <Card title={group.name}>
-            <div className="grid gap-2">
-              {group.items.map((setting) => (
-                <TuningRow key={setting.key} setting={setting} onUpdated={onUpdated} />
-              ))}
-            </div>
-          </Card>
-        </KeptSection>
-      ))}
-    </>,
+  return (
+    <div ref={tabsRef}>
+      {sections.render(
+        <>
+          {groups.map((group) => (
+            <KeptSection
+              key={group.name}
+              hidden={
+                sections.value !== 'all' &&
+                (group.name.startsWith('Assistant')
+                  ? sections.value !== 'assistant'
+                  : group.name === 'Resources'
+                    ? sections.value !== 'resources'
+                    : sections.value !== 'other')
+              }
+            >
+              <Card title={group.name}>
+                <div className="grid gap-2">
+                  {group.items.map((setting) => (
+                    <TuningRow key={setting.key} setting={setting} onUpdated={onUpdated} />
+                  ))}
+                </div>
+              </Card>
+            </KeptSection>
+          ))}
+        </>,
+      )}
+    </div>
   );
 }
 

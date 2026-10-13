@@ -59,6 +59,24 @@ export function ArchivePage() {
     { value: 'channels', label: 'Channels and browse' },
     { value: 'tools', label: 'Message tools' },
   ]);
+  // Browser Back restores the selected tab but leaves focus on the old
+  // trigger. When the tab changes without a click or keyboard on the tabs
+  // (those already leave focus on the new trigger) and focus is on one of
+  // this list's triggers, follow it to the newly selected trigger. Focus
+  // anywhere else is left alone, as is first mount.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const prevSection = useRef(sections.value);
+  useEffect(() => {
+    if (prevSection.current === sections.value) return;
+    prevSection.current = sections.value;
+    const root = tabsRef.current;
+    const active = document.activeElement;
+    if (root === null || !(active instanceof HTMLElement) || !root.contains(active)) return;
+    if (active.getAttribute('role') !== 'tab') return;
+    const selected = root.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    if (selected === null || selected === active) return;
+    selected.focus();
+  }, [sections.value]);
   const load = useCallback(() => session.read<ArchiveStatus>('/api/archive/status'), [session]);
   const status = useResource('the archive status', load);
 
@@ -245,6 +263,7 @@ export function ArchivePage() {
         title="Archive"
         purpose="Archive means Bananasaurs collects and keeps a searchable copy of messages. It is separate from READ, which only lets the bot see current content. Choose what to save, browse saved messages, manage deletion, or repair search."
       />
+      <div ref={tabsRef}>
       {sections.render(
         <div className="grid max-w-6xl gap-3">
           <KeptSection hidden={sections.value === 'tools'}>
@@ -651,6 +670,7 @@ export function ArchivePage() {
           </KeptSection>
         </div>,
       )}
+      </div>
     </>
   );
 }
