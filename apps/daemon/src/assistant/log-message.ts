@@ -65,12 +65,19 @@ const safeSourceUrl = (raw: string): string | undefined => {
     return undefined;
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
-  return raw.replace(/[()\s<>]/g, (char) => encodeURIComponent(char));
+  return raw.replace(/[()\s<>]/g, (char) => {
+    const encoded: Record<string, string> = {
+      '(': '%28',
+      ')': '%29',
+      '<': '%3C',
+      '>': '%3E',
+      ' ': '%20',
+    };
+    return encoded[char] ?? encodeURIComponent(char);
+  });
 };
 
-/** The model name, tool names, source titles and URLs are provider- or
- * web-controlled, so every one is escaped; the link is only a link when the
- * URL survives `safeSourceUrl`. */
+/** Escape provider/web metadata and link only validated web URLs. */
 const sourceLine = (source: { readonly title: string; readonly url: string }): string => {
   const title = escapeInline(source.title.replace(/[[\]]/g, ''));
   const url = safeSourceUrl(source.url);
@@ -78,7 +85,8 @@ const sourceLine = (source: { readonly title: string; readonly url: string }): s
 };
 
 /** Whole lines only, so a link is never cut in half. */
-const clipLines = (lines: readonly string[], max = 1_000): string => {  const kept: string[] = [];
+const clipLines = (lines: readonly string[], max = 1_000): string => {
+  const kept: string[] = [];
   let length = 0;
   for (const line of lines) {
     const extra = (kept.length === 0 ? 0 : 1) + line.length;
