@@ -41,12 +41,7 @@ export function DraftFooter({
   return (
     <>
       {guard}
-      <SaveBar
-        dirtyCount={dirty && show ? 1 : 0}
-        busy={busy}
-        onSave={onSave}
-        onDiscard={discard}
-      />
+      <SaveBar dirtyCount={dirty && show ? 1 : 0} busy={busy} onSave={onSave} onDiscard={discard} />
     </>
   );
 }

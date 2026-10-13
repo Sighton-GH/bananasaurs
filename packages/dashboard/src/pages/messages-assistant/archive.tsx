@@ -264,412 +264,416 @@ export function ArchivePage() {
         purpose="Archive means Bananasaurs collects and keeps a searchable copy of messages. It is separate from READ, which only lets the bot see current content. Choose what to save, browse saved messages, manage deletion, or repair search."
       />
       <div ref={tabsRef}>
-      {sections.render(
-        <div className="grid max-w-6xl gap-3">
-          <KeptSection hidden={sections.value === 'tools'}>
-            <Card title="Search index">
-              <DataState resource={status.resource}>
-                {(data) => (
-                  <div className="flex items-center justify-between gap-4">
-                    <p className="text-sm">
-                      {String(data.index.indexed)} of {String(data.index.rows)} archived messages
-                      indexed{' '}
-                      {data.index.indexed < data.index.rows && (
-                        <Badge wrap tone="hold">
-                          behind — reindex to catch up
-                        </Badge>
-                      )}
-                    </p>
-                    <Button onClick={() => void reindex()}>Update search results</Button>
-                  </div>
-                )}
-              </DataState>
-            </Card>
-            <Card title="Archived channels">
-              <DataState
-                resource={status.resource}
-                isEmpty={(data) => data.channels.length === 0}
-                empty={
-                  <Empty
-                    title="No channels archiving yet"
-                    detail="Enable channels in Permissions. Nothing is archived until you do."
-                    action={<Link href="/permissions">Open Permissions</Link>}
-                  />
-                }
-              >
-                {(data) => (
-                  <>
-                    {data.channels.length > 20 && (
-                      <Field label="Filter loaded archive channels">
-                        <Input
-                          value={channelFilter}
-                          onChange={(e) => setChannelFilter(e.target.value)}
-                        />
-                      </Field>
-                    )}
-                    {channelFilter !== '' &&
-                      data.channels.some((c) =>
-                        c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
-                      ) && <Button onClick={() => setChannelFilter('')}>Clear filters</Button>}
-                    {data.channels.filter((c) =>
-                      c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
-                    ).length === 0 && (
-                      <Empty
-                        title="No loaded archive channels match"
-                        action={<Button onClick={() => setChannelFilter('')}>Clear filters</Button>}
-                      />
-                    )}
-                    <DataTable
-                      caption="Archive-enabled channels"
-                      rows={data.channels.filter((c) =>
-                        c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
-                      )}
-                      rowKey={(c) => c.channelId}
-                      columns={[
-                        {
-                          key: 'channel',
-                          header: 'Channel',
-                          cell: (c) => <span className="whitespace-nowrap">{c.channelId}</span>,
-                        },
-                        {
-                          key: 'scope',
-                          header: 'Scope',
-                          cell: (c) =>
-                            (c.scopeKind ?? 'channel') === 'category' ? (
-                              <Badge tone="neutral">category</Badge>
-                            ) : c.scopeKind === 'derived' ? (
-                              <span className="text-xs text-ink-muted">
-                                via category {c.derivedFrom ?? ''}
-                              </span>
-                            ) : (
-                              'channel'
-                            ),
-                        },
-                        {
-                          key: 'threads',
-                          header: 'Threads',
-                          cell: (c) =>
-                            c.threadsDone === undefined
-                              ? '—'
-                              : `${String(c.threadsDone)}/${c.threadsFound === undefined ? '?' : String(c.threadsFound)}`,
-                        },
-                        {
-                          key: 'policy',
-                          header: 'Attachments',
-                          cell: (c) => (c.attachmentPolicy === 'bytes' ? 'bytes kept' : 'none'),
-                        },
-                        {
-                          key: 'enabledAt',
-                          header: 'Enabled',
-                          cell: (c) => (
-                            <span className="whitespace-nowrap">{<Moment at={c.enabledAt} />}</span>
-                          ),
-                        },
-                        {
-                          key: 'backfill',
-                          header: 'Backfill',
-                          cell: (c) => (
-                            <Badge tone={backfillTone(c.backfillState)}>{c.backfillState}</Badge>
-                          ),
-                        },
-                        {
-                          key: 'messages',
-                          header: 'Messages',
-                          cell: (c) => c.messageCount,
-                          numeric: true,
-                        },
-                        {
-                          key: 'actions',
-                          header: '',
-                          cell: (c) =>
-                            // A derived row is coverage materialised under a
-                            // category: nothing here is the operator's to chase, so
-                            // the actions stay on the rows they own.
-                            c.scopeKind === 'derived' ? (
-                              <span className="text-xs text-ink-muted">
-                                managed by its category
-                              </span>
-                            ) : (
-                              <DropdownMenu
-                                label={`Actions for ${c.channelId}`}
-                                items={[
-                                  { label: 'Browse', onSelect: () => openBrowse(c.channelId) },
-                                  ...((c.scopeKind ?? 'channel') === 'channel'
-                                    ? [
-                                        {
-                                          label:
-                                            (c.includeThreads ?? true)
-                                              ? 'Do not archive threads'
-                                              : 'Include threads',
-                                          onSelect: () =>
-                                            void setThreads(
-                                              c,
-                                              (c.includeThreads ?? true) ? 'none' : 'all',
-                                            ),
-                                        },
-                                      ]
-                                    : []),
-                                  {
-                                    label: 'Save older messages now',
-                                    onSelect: () => void backfill(c),
-                                  },
-                                ]}
-                              />
-                            ),
-                        },
-                      ]}
-                    />
-                  </>
-                )}
-              </DataState>
-              <p className="mt-3 text-sm text-ink-muted">
-                Which channels and categories archive is managed on the{' '}
-                <Link href="/permissions" className="text-accent underline">
-                  Permissions
-                </Link>{' '}
-                page, alongside the send scope - one place owns every operating-scope change.
-              </p>
-            </Card>
-            {browseId !== undefined && (
-              <Card title={`Browsing ${browseId}`}>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-sm text-ink-muted">
-                    Newest first, 25 at a time. A purged message keeps its metadata; its text is
-                    gone for good.
-                  </p>
-                  <Button onClick={() => setBrowseId(undefined)}>Close</Button>
-                </div>
+        {sections.render(
+          <div className="grid max-w-6xl gap-3">
+            <KeptSection hidden={sections.value === 'tools'}>
+              <Card title="Search index">
+                <DataState resource={status.resource}>
+                  {(data) => (
+                    <div className="flex items-center justify-between gap-4">
+                      <p className="text-sm">
+                        {String(data.index.indexed)} of {String(data.index.rows)} archived messages
+                        indexed{' '}
+                        {data.index.indexed < data.index.rows && (
+                          <Badge wrap tone="hold">
+                            behind — reindex to catch up
+                          </Badge>
+                        )}
+                      </p>
+                      <Button onClick={() => void reindex()}>Update search results</Button>
+                    </div>
+                  )}
+                </DataState>
+              </Card>
+              <Card title="Archived channels">
                 <DataState
-                  resource={browse.resource}
-                  isEmpty={(data) => data.messages.length === 0}
+                  resource={status.resource}
+                  isEmpty={(data) => data.channels.length === 0}
                   empty={
                     <Empty
-                      title="No archived messages here yet"
-                      detail="A backfill fills the history over time."
-                      action={<Button onClick={browse.reload}>Refresh messages</Button>}
+                      title="No channels archiving yet"
+                      detail="Enable channels in Permissions. Nothing is archived until you do."
+                      action={<Link href="/permissions">Open Permissions</Link>}
                     />
                   }
                 >
                   {(data) => (
                     <>
+                      {data.channels.length > 20 && (
+                        <Field label="Filter loaded archive channels">
+                          <Input
+                            value={channelFilter}
+                            onChange={(e) => setChannelFilter(e.target.value)}
+                          />
+                        </Field>
+                      )}
+                      {channelFilter !== '' &&
+                        data.channels.some((c) =>
+                          c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
+                        ) && <Button onClick={() => setChannelFilter('')}>Clear filters</Button>}
+                      {data.channels.filter((c) =>
+                        c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
+                      ).length === 0 && (
+                        <Empty
+                          title="No loaded archive channels match"
+                          action={
+                            <Button onClick={() => setChannelFilter('')}>Clear filters</Button>
+                          }
+                        />
+                      )}
                       <DataTable
-                        caption={`Archived messages in ${browseId}`}
-                        rows={data.messages}
-                        rowKey={(m) => m.messageId}
+                        caption="Archive-enabled channels"
+                        rows={data.channels.filter((c) =>
+                          c.channelId.toLowerCase().includes(channelFilter.toLowerCase()),
+                        )}
+                        rowKey={(c) => c.channelId}
                         columns={[
                           {
-                            key: 'created',
-                            header: 'Posted',
-                            cell: (m) => (
+                            key: 'channel',
+                            header: 'Channel',
+                            cell: (c) => <span className="whitespace-nowrap">{c.channelId}</span>,
+                          },
+                          {
+                            key: 'scope',
+                            header: 'Scope',
+                            cell: (c) =>
+                              (c.scopeKind ?? 'channel') === 'category' ? (
+                                <Badge tone="neutral">category</Badge>
+                              ) : c.scopeKind === 'derived' ? (
+                                <span className="text-xs text-ink-muted">
+                                  via category {c.derivedFrom ?? ''}
+                                </span>
+                              ) : (
+                                'channel'
+                              ),
+                          },
+                          {
+                            key: 'threads',
+                            header: 'Threads',
+                            cell: (c) =>
+                              c.threadsDone === undefined
+                                ? '—'
+                                : `${String(c.threadsDone)}/${c.threadsFound === undefined ? '?' : String(c.threadsFound)}`,
+                          },
+                          {
+                            key: 'policy',
+                            header: 'Attachments',
+                            cell: (c) => (c.attachmentPolicy === 'bytes' ? 'bytes kept' : 'none'),
+                          },
+                          {
+                            key: 'enabledAt',
+                            header: 'Enabled',
+                            cell: (c) => (
                               <span className="whitespace-nowrap">
-                                {<Moment at={m.createdAt} />}
+                                {<Moment at={c.enabledAt} />}
                               </span>
                             ),
                           },
                           {
-                            key: 'author',
-                            header: 'Author',
-                            cell: (m) => m.authorId ?? 'unknown',
+                            key: 'backfill',
+                            header: 'Backfill',
+                            cell: (c) => (
+                              <Badge tone={backfillTone(c.backfillState)}>{c.backfillState}</Badge>
+                            ),
                           },
                           {
-                            key: 'content',
-                            header: 'Message',
-                            cell: (m) => (
-                              <span>
-                                {m.content === null ? (
-                                  <span className="italic text-ink-muted">content purged</span>
-                                ) : m.content.length > 120 ? (
-                                  `${m.content.slice(0, 120)}…`
-                                ) : (
-                                  m.content
-                                )}
-                                {m.deletedAt !== undefined && (
-                                  <>
-                                    {' '}
-                                    <Badge wrap tone="hold">
-                                      deleted from Discord
-                                    </Badge>
-                                  </>
-                                )}
-                              </span>
-                            ),
+                            key: 'messages',
+                            header: 'Messages',
+                            cell: (c) => c.messageCount,
+                            numeric: true,
                           },
                           {
                             key: 'actions',
                             header: '',
-                            cell: (m) => (
-                              <Button onClick={() => void openMessage(m.messageId)}>Open</Button>
-                            ),
+                            cell: (c) =>
+                              // A derived row is coverage materialised under a
+                              // category: nothing here is the operator's to chase, so
+                              // the actions stay on the rows they own.
+                              c.scopeKind === 'derived' ? (
+                                <span className="text-xs text-ink-muted">
+                                  managed by its category
+                                </span>
+                              ) : (
+                                <DropdownMenu
+                                  label={`Actions for ${c.channelId}`}
+                                  items={[
+                                    { label: 'Browse', onSelect: () => openBrowse(c.channelId) },
+                                    ...((c.scopeKind ?? 'channel') === 'channel'
+                                      ? [
+                                          {
+                                            label:
+                                              (c.includeThreads ?? true)
+                                                ? 'Do not archive threads'
+                                                : 'Include threads',
+                                            onSelect: () =>
+                                              void setThreads(
+                                                c,
+                                                (c.includeThreads ?? true) ? 'none' : 'all',
+                                              ),
+                                          },
+                                        ]
+                                      : []),
+                                    {
+                                      label: 'Save older messages now',
+                                      onSelect: () => void backfill(c),
+                                    },
+                                  ]}
+                                />
+                              ),
                           },
                         ]}
                       />
-                      {(data.messages.length === 25 || trail.length > 0) && (
-                        <div className="mt-3 flex gap-2">
-                          <Button
-                            disabled={trail.length === 0}
-                            onClick={() => {
-                              const previous = trail[trail.length - 1];
-                              setTrail((t) => t.slice(0, -1));
-                              setBefore(previous);
-                            }}
-                          >
-                            Newer
-                          </Button>
-                          <Button
-                            disabled={data.messages.length < 25}
-                            onClick={() => {
-                              const oldest = data.messages[data.messages.length - 1];
-                              if (oldest === undefined) return;
-                              setTrail((t) => [...t, before]);
-                              setBefore(oldest.messageId);
-                            }}
-                          >
-                            Older
-                          </Button>
-                        </div>
-                      )}
                     </>
                   )}
                 </DataState>
-                {detailBusy && <Loading />}
-                {detailError !== undefined &&
-                  (detailError instanceof ApiError && detailError.status === 404 ? (
-                    <NotFound what="Archived message" />
-                  ) : (
-                    <Unavailable what="archived message detail" error={detailError} />
-                  ))}
-                {detail !== undefined && (
-                  <div
-                    ref={detailRef}
-                    role="region"
-                    aria-label={`Archived message ${detail.messageId}`}
-                    className="mt-3 grid gap-1 rounded-sm border border-line bg-canvas p-3 text-sm"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium">Message {detail.messageId}</span>
-                      <Button onClick={() => setDetail(undefined)}>Close</Button>
-                    </div>
-                    <p className="text-ink-muted">
-                      {detail.authorId ?? 'unknown author'} · posted{' '}
-                      {<Moment at={detail.createdAt} />}
-                      {detail.editedAt !== undefined && (
-                        <span>
-                          {' '}
-                          · edited <Moment at={detail.editedAt} />
-                        </span>
-                      )}
-                      {detail.deletedAt !== undefined && (
-                        <span>
-                          {' '}
-                          · deleted from Discord <Moment at={detail.deletedAt} />
-                        </span>
-                      )}
-                    </p>
-                    {detail.content === null ? (
-                      <p className="italic text-ink-muted">
-                        Content purged by retention — the metadata above is all that remains.
-                      </p>
-                    ) : (
-                      <p className="whitespace-pre-wrap">{detail.content}</p>
-                    )}
-                  </div>
-                )}
+                <p className="mt-3 text-sm text-ink-muted">
+                  Which channels and categories archive is managed on the{' '}
+                  <Link href="/permissions" className="text-accent underline">
+                    Permissions
+                  </Link>{' '}
+                  page, alongside the send scope - one place owns every operating-scope change.
+                </p>
               </Card>
-            )}
-          </KeptSection>
-          <KeptSection hidden={sections.value === 'channels'}>
-            <Card title="Message tools">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <form
-                  id="archive-preserve-fields"
-                  tabIndex={-1}
-                  aria-describedby="preserve-errors"
-                  onSubmit={(e) => void preserve(e)}
-                  className="grid content-start gap-3"
-                >
-                  <FormSection title="Preserve message">
-                    <GroupErrors
-                      errors={preserveFields.summary}
-                      id="archive-preserve-fields"
-                      direct={{ 'field-messageId': 'preserve-messageId' }}
-                    />
-                    <p className="sr-only" id="preserve-errors">
-                      {preserveFields.summary.map((e) => e.message).join(' ')}
+              {browseId !== undefined && (
+                <Card title={`Browsing ${browseId}`}>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-sm text-ink-muted">
+                      Newest first, 25 at a time. A purged message keeps its metadata; its text is
+                      gone for good.
                     </p>
-                    {preserveError !== undefined && <ErrorNotice error={preserveError} />}
-                    <Field
-                      label="Preserve a message"
-                      htmlFor="preserve-messageId"
-                      hint="Retention will not delete a preserved message."
-                    >
-                      <Input
-                        value={preserveId}
-                        onChange={(e) => setPreserveId(e.target.value)}
-                        placeholder="Message ID"
+                    <Button onClick={() => setBrowseId(undefined)}>Close</Button>
+                  </div>
+                  <DataState
+                    resource={browse.resource}
+                    isEmpty={(data) => data.messages.length === 0}
+                    empty={
+                      <Empty
+                        title="No archived messages here yet"
+                        detail="A backfill fills the history over time."
+                        action={<Button onClick={browse.reload}>Refresh messages</Button>}
                       />
-                    </Field>
-                    <div>
-                      <Button
-                        type="submit"
-                        variant="primary"
-                        busy={busy}
-                        disabled={preserveId.trim() === ''}
-                      >
-                        Preserve
-                      </Button>
-                    </div>
-                  </FormSection>
-                </form>
-                <form
-                  id="archive-link-fields"
-                  tabIndex={-1}
-                  aria-describedby="link-errors"
-                  onSubmit={(e) => void linkCase(e)}
-                  className="grid content-start gap-3"
-                >
-                  <FormSection title="Link message to case">
-                    <GroupErrors
-                      errors={linkFields.summary}
-                      id="archive-link-fields"
-                      direct={{
-                        'field-messageId': 'link-messageId',
-                        'field-caseId': 'link-caseId',
-                      }}
-                    />
-                    <p className="sr-only" id="link-errors">
-                      {linkFields.summary.map((e) => e.message).join(' ')}
-                    </p>
-                    {linkFailure !== undefined && <ErrorNotice error={linkFailure} />}
-                    <Field label="Message ID" htmlFor="link-messageId">
-                      <Input
-                        value={linkMessageId}
-                        onChange={(e) => setLinkMessageId(e.target.value)}
-                      />
-                    </Field>
-                    <Field
-                      label="Link to case"
-                      htmlFor="link-caseId"
-                      {...(linkError !== undefined ? { error: linkError } : {})}
+                    }
+                  >
+                    {(data) => (
+                      <>
+                        <DataTable
+                          caption={`Archived messages in ${browseId}`}
+                          rows={data.messages}
+                          rowKey={(m) => m.messageId}
+                          columns={[
+                            {
+                              key: 'created',
+                              header: 'Posted',
+                              cell: (m) => (
+                                <span className="whitespace-nowrap">
+                                  {<Moment at={m.createdAt} />}
+                                </span>
+                              ),
+                            },
+                            {
+                              key: 'author',
+                              header: 'Author',
+                              cell: (m) => m.authorId ?? 'unknown',
+                            },
+                            {
+                              key: 'content',
+                              header: 'Message',
+                              cell: (m) => (
+                                <span>
+                                  {m.content === null ? (
+                                    <span className="italic text-ink-muted">content purged</span>
+                                  ) : m.content.length > 120 ? (
+                                    `${m.content.slice(0, 120)}…`
+                                  ) : (
+                                    m.content
+                                  )}
+                                  {m.deletedAt !== undefined && (
+                                    <>
+                                      {' '}
+                                      <Badge wrap tone="hold">
+                                        deleted from Discord
+                                      </Badge>
+                                    </>
+                                  )}
+                                </span>
+                              ),
+                            },
+                            {
+                              key: 'actions',
+                              header: '',
+                              cell: (m) => (
+                                <Button onClick={() => void openMessage(m.messageId)}>Open</Button>
+                              ),
+                            },
+                          ]}
+                        />
+                        {(data.messages.length === 25 || trail.length > 0) && (
+                          <div className="mt-3 flex gap-2">
+                            <Button
+                              disabled={trail.length === 0}
+                              onClick={() => {
+                                const previous = trail[trail.length - 1];
+                                setTrail((t) => t.slice(0, -1));
+                                setBefore(previous);
+                              }}
+                            >
+                              Newer
+                            </Button>
+                            <Button
+                              disabled={data.messages.length < 25}
+                              onClick={() => {
+                                const oldest = data.messages[data.messages.length - 1];
+                                if (oldest === undefined) return;
+                                setTrail((t) => [...t, before]);
+                                setBefore(oldest.messageId);
+                              }}
+                            >
+                              Older
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </DataState>
+                  {detailBusy && <Loading />}
+                  {detailError !== undefined &&
+                    (detailError instanceof ApiError && detailError.status === 404 ? (
+                      <NotFound what="Archived message" />
+                    ) : (
+                      <Unavailable what="archived message detail" error={detailError} />
+                    ))}
+                  {detail !== undefined && (
+                    <div
+                      ref={detailRef}
+                      role="region"
+                      aria-label={`Archived message ${detail.messageId}`}
+                      className="mt-3 grid gap-1 rounded-sm border border-line bg-canvas p-3 text-sm"
                     >
-                      <Input value={linkCaseId} onChange={(e) => setLinkCaseId(e.target.value)} />
-                    </Field>
-                    <div>
-                      <Button
-                        type="submit"
-                        variant="primary"
-                        busy={busy}
-                        disabled={linkMessageId.trim() === '' || linkCaseId.trim() === ''}
-                      >
-                        Link to case
-                      </Button>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">Message {detail.messageId}</span>
+                        <Button onClick={() => setDetail(undefined)}>Close</Button>
+                      </div>
+                      <p className="text-ink-muted">
+                        {detail.authorId ?? 'unknown author'} · posted{' '}
+                        {<Moment at={detail.createdAt} />}
+                        {detail.editedAt !== undefined && (
+                          <span>
+                            {' '}
+                            · edited <Moment at={detail.editedAt} />
+                          </span>
+                        )}
+                        {detail.deletedAt !== undefined && (
+                          <span>
+                            {' '}
+                            · deleted from Discord <Moment at={detail.deletedAt} />
+                          </span>
+                        )}
+                      </p>
+                      {detail.content === null ? (
+                        <p className="italic text-ink-muted">
+                          Content purged by retention — the metadata above is all that remains.
+                        </p>
+                      ) : (
+                        <p className="whitespace-pre-wrap">{detail.content}</p>
+                      )}
                     </div>
-                  </FormSection>
-                </form>
-              </div>
-            </Card>
-          </KeptSection>
-        </div>,
-      )}
+                  )}
+                </Card>
+              )}
+            </KeptSection>
+            <KeptSection hidden={sections.value === 'channels'}>
+              <Card title="Message tools">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <form
+                    id="archive-preserve-fields"
+                    tabIndex={-1}
+                    aria-describedby="preserve-errors"
+                    onSubmit={(e) => void preserve(e)}
+                    className="grid content-start gap-3"
+                  >
+                    <FormSection title="Preserve message">
+                      <GroupErrors
+                        errors={preserveFields.summary}
+                        id="archive-preserve-fields"
+                        direct={{ 'field-messageId': 'preserve-messageId' }}
+                      />
+                      <p className="sr-only" id="preserve-errors">
+                        {preserveFields.summary.map((e) => e.message).join(' ')}
+                      </p>
+                      {preserveError !== undefined && <ErrorNotice error={preserveError} />}
+                      <Field
+                        label="Preserve a message"
+                        htmlFor="preserve-messageId"
+                        hint="Retention will not delete a preserved message."
+                      >
+                        <Input
+                          value={preserveId}
+                          onChange={(e) => setPreserveId(e.target.value)}
+                          placeholder="Message ID"
+                        />
+                      </Field>
+                      <div>
+                        <Button
+                          type="submit"
+                          variant="primary"
+                          busy={busy}
+                          disabled={preserveId.trim() === ''}
+                        >
+                          Preserve
+                        </Button>
+                      </div>
+                    </FormSection>
+                  </form>
+                  <form
+                    id="archive-link-fields"
+                    tabIndex={-1}
+                    aria-describedby="link-errors"
+                    onSubmit={(e) => void linkCase(e)}
+                    className="grid content-start gap-3"
+                  >
+                    <FormSection title="Link message to case">
+                      <GroupErrors
+                        errors={linkFields.summary}
+                        id="archive-link-fields"
+                        direct={{
+                          'field-messageId': 'link-messageId',
+                          'field-caseId': 'link-caseId',
+                        }}
+                      />
+                      <p className="sr-only" id="link-errors">
+                        {linkFields.summary.map((e) => e.message).join(' ')}
+                      </p>
+                      {linkFailure !== undefined && <ErrorNotice error={linkFailure} />}
+                      <Field label="Message ID" htmlFor="link-messageId">
+                        <Input
+                          value={linkMessageId}
+                          onChange={(e) => setLinkMessageId(e.target.value)}
+                        />
+                      </Field>
+                      <Field
+                        label="Link to case"
+                        htmlFor="link-caseId"
+                        {...(linkError !== undefined ? { error: linkError } : {})}
+                      >
+                        <Input value={linkCaseId} onChange={(e) => setLinkCaseId(e.target.value)} />
+                      </Field>
+                      <div>
+                        <Button
+                          type="submit"
+                          variant="primary"
+                          busy={busy}
+                          disabled={linkMessageId.trim() === '' || linkCaseId.trim() === ''}
+                        >
+                          Link to case
+                        </Button>
+                      </div>
+                    </FormSection>
+                  </form>
+                </div>
+              </Card>
+            </KeptSection>
+          </div>,
+        )}
       </div>
     </>
   );

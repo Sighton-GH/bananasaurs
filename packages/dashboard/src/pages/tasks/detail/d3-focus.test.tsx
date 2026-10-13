@@ -67,9 +67,11 @@ function renderDetail(
 
 describe('reminders focus (d3 L05)', () => {
   it('adding a reminder lands focus back in the form first field', async () => {
-    const mock = renderDetail(DETAIL, [
-      { method: 'POST', url: '/api/tasks/task-1/reminders', body: { slotId: 's1' } },
-    ], '/tasks/task-1?tab=reminders');
+    const mock = renderDetail(
+      DETAIL,
+      [{ method: 'POST', url: '/api/tasks/task-1/reminders', body: { slotId: 's1' } }],
+      '/tasks/task-1?tab=reminders',
+    );
     fireEvent.change(await screen.findByLabelText(/reminder date and time/i), {
       target: { value: '2026-10-20T10:00' },
     });
@@ -93,7 +95,9 @@ describe('reminders focus (d3 L05)', () => {
     const mock = renderDetail(
       {
         ...DETAIL,
-        reminders: [{ slotId: 's1', kind: 'custom', dueAt: Date.UTC(2026, 9, 20, 10, 0), state: 'pending' }],
+        reminders: [
+          { slotId: 's1', kind: 'custom', dueAt: Date.UTC(2026, 9, 20, 10, 0), state: 'pending' },
+        ],
       },
       [{ method: 'DELETE', url: '/api/tasks/task-1/reminders/s1', body: {} }],
       '/tasks/task-1?tab=reminders',

@@ -475,37 +475,37 @@ export function PanelBuilder({
   if (created !== undefined) {
     return (
       <div ref={viewRef}>
-      <Card title="Saved">
-        <InlineAlert tone="hold" title="Saved - nothing is live yet">
-          <p className="text-sm">
-            <strong>{created.panelId}</strong> is configured. Publishing posts its message in
-            Discord and starts granting roles - a separate, confirmed action on its page.
-          </p>
-          {created.newlyAllowlistedRoleIds.length > 0 && (
-            <p className="mt-2 text-sm text-ink-muted">
-              Added to Bananasaurs&apos; managed-role scope:{' '}
-              {created.newlyAllowlistedRoleIds
-                .map((roleId) => `${roleName(roleId)} (${roleId})`)
-                .join(', ')}
-              .
+        <Card title="Saved">
+          <InlineAlert tone="hold" title="Saved - nothing is live yet">
+            <p className="text-sm">
+              <strong>{created.panelId}</strong> is configured. Publishing posts its message in
+              Discord and starts granting roles - a separate, confirmed action on its page.
             </p>
-          )}
-          <div className="mt-3 flex gap-2">
-            <Button variant="primary" onClick={() => onCreated(created.panelId)}>
-              Publish
-            </Button>
-            <Button
-              onClick={() => {
-                discard();
-                setCreated(undefined);
-                setChoice(undefined);
-              }}
-            >
-              Build another
-            </Button>
-          </div>
-        </InlineAlert>
-      </Card>
+            {created.newlyAllowlistedRoleIds.length > 0 && (
+              <p className="mt-2 text-sm text-ink-muted">
+                Added to Bananasaurs&apos; managed-role scope:{' '}
+                {created.newlyAllowlistedRoleIds
+                  .map((roleId) => `${roleName(roleId)} (${roleId})`)
+                  .join(', ')}
+                .
+              </p>
+            )}
+            <div className="mt-3 flex gap-2">
+              <Button variant="primary" onClick={() => onCreated(created.panelId)}>
+                Publish
+              </Button>
+              <Button
+                onClick={() => {
+                  discard();
+                  setCreated(undefined);
+                  setChoice(undefined);
+                }}
+              >
+                Build another
+              </Button>
+            </div>
+          </InlineAlert>
+        </Card>
       </div>
     );
   }
@@ -516,35 +516,38 @@ export function PanelBuilder({
     // kind and an emoji field is required for another.
     return (
       <div ref={viewRef}>
-      <Card title="New self-granted role setup">
-        <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
-          <Button onClick={() => setChoice('reaction')} className="grid h-auto gap-1 p-4 text-left">
-            <span className="text-sm font-medium">Reaction role</span>
-            <span className="text-sm text-ink-muted">
-              Members add an emoji reaction on a message that already exists. You attach it by
-              channel and message ID; each option is an emoji.
-            </span>
-          </Button>
-          <Button
-            onClick={() => {
-              setChoice('panel');
-              // The panel format select no longer offers reactions; land on
-              // a real option.
-              setFormat('button');
-            }}
-            className="grid h-auto gap-1 p-4 text-left"
-          >
-            <span className="text-sm font-medium">Role panel</span>
-            <span className="text-sm text-ink-muted">
-              The bot posts a new message with buttons or a dropdown. Best when the message should
-              say something specific.
-            </span>
-          </Button>
-        </div>
-        <div className="mt-3">
-          <Button onClick={cancel}>Cancel</Button>
-        </div>
-      </Card>
+        <Card title="New self-granted role setup">
+          <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+            <Button
+              onClick={() => setChoice('reaction')}
+              className="grid h-auto gap-1 p-4 text-left"
+            >
+              <span className="text-sm font-medium">Reaction role</span>
+              <span className="text-sm text-ink-muted">
+                Members add an emoji reaction on a message that already exists. You attach it by
+                channel and message ID; each option is an emoji.
+              </span>
+            </Button>
+            <Button
+              onClick={() => {
+                setChoice('panel');
+                // The panel format select no longer offers reactions; land on
+                // a real option.
+                setFormat('button');
+              }}
+              className="grid h-auto gap-1 p-4 text-left"
+            >
+              <span className="text-sm font-medium">Role panel</span>
+              <span className="text-sm text-ink-muted">
+                The bot posts a new message with buttons or a dropdown. Best when the message should
+                say something specific.
+              </span>
+            </Button>
+          </div>
+          <div className="mt-3">
+            <Button onClick={cancel}>Cancel</Button>
+          </div>
+        </Card>
       </div>
     );
   }

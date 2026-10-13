@@ -194,27 +194,27 @@ export function PermissionsSection({
 
   return (
     <div ref={sectionRef}>
-    <Card title="Permissions on this server">
-      <RoleCards
-        value={role}
-        capabilities={selected}
-        onChange={(nextRole, nextCaps) => {
-          onDraftChange(
-            nextRole === 'custom' ? { role: nextRole, customCaps: nextCaps } : { role: nextRole },
-          );
-        }}
-      />
-      {error !== undefined && (
-        <div className="mt-2">
-          <ErrorNotice error={error} />
+      <Card title="Permissions on this server">
+        <RoleCards
+          value={role}
+          capabilities={selected}
+          onChange={(nextRole, nextCaps) => {
+            onDraftChange(
+              nextRole === 'custom' ? { role: nextRole, customCaps: nextCaps } : { role: nextRole },
+            );
+          }}
+        />
+        {error !== undefined && (
+          <div className="mt-2">
+            <ErrorNotice error={error} />
+          </div>
+        )}
+        <div className="mt-3" ref={saveWrapRef}>
+          <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
+            Save changes
+          </Button>
         </div>
-      )}
-      <div className="mt-3" ref={saveWrapRef}>
-        <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
-          Save changes
-        </Button>
-      </div>
-    </Card>
+      </Card>
     </div>
   );
 }

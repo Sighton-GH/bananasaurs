@@ -55,7 +55,9 @@ function renderPermissions(extra: readonly StubRoute[] = []) {
 async function draftAndSave(user: ReturnType<typeof userEvent.setup>) {
   const tab = await screen.findByRole('tab', { name: 'Permissions' });
   expect(tab.getAttribute('aria-selected')).toBe('true');
-  await user.click(screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }));
+  await user.click(
+    screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }),
+  );
   await user.click(screen.getByLabelText('Moderate members'));
   const save = screen.getByRole('button', { name: 'Save changes' });
   expect(save).toHaveProperty('disabled', false);
@@ -71,7 +73,9 @@ describe('account permissions save focus (d3 L04)', () => {
     ]);
     await draftAndSave(user);
     await vi.waitFor(() => {
-      const posts = (mock.mock.calls as unknown[][]).filter(([url]) => url === '/api/accounts/sam/capabilities');
+      const posts = (mock.mock.calls as unknown[][]).filter(
+        ([url]) => url === '/api/accounts/sam/capabilities',
+      );
       expect(posts.length).toBeGreaterThan(0);
     });
     const heading = await screen.findByRole('heading', { name: 'Permissions on this server' });
@@ -119,9 +123,7 @@ describe('account permissions save focus (d3 L04)', () => {
     );
     await vi.waitFor(() => expect(save).toHaveProperty('disabled', false));
     await vi.waitFor(() =>
-      expect(document.activeElement).toBe(
-        screen.getByRole('button', { name: 'Save changes' }),
-      ),
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Save changes' })),
     );
   });
 });

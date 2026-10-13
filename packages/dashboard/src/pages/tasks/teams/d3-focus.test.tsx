@@ -81,9 +81,7 @@ describe('add team focus (d3 L05/L06)', () => {
     expect(writes).toHaveLength(0);
     await vi.waitFor(() =>
       expect(
-        alerts.some(
-          (a) => document.activeElement === a || a.contains(document.activeElement),
-        ),
+        alerts.some((a) => document.activeElement === a || a.contains(document.activeElement)),
       ).toBe(true),
     );
   });
