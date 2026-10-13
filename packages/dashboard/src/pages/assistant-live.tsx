@@ -7,6 +7,7 @@ import { useLiveResource } from '../hooks/useLiveResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
+import { InlineAlert } from '../ui/InlineAlert.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { LiveText } from './assistant-live-buffer.js';
 import {
@@ -229,7 +230,7 @@ export function StepLog(props: { readonly runId: string }): JSX.Element {
   ) {
     return (
       <Card title="Step log">
-        <p className="text-sm text-ink-muted">No step log is stored for this run.</p>
+        <InlineAlert tone="info" title="No step log is stored for this run." />
       </Card>
     );
   }

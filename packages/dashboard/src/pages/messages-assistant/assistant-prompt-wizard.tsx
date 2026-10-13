@@ -29,7 +29,8 @@ import { Button } from '../../ui/Button.js';
 import { Card } from '../../ui/Card.js';
 import { DataState } from '../../ui/DataState.js';
 import { EmptyState } from '../../ui/EmptyState.js';
-import { Field, Input } from '../../ui/Field.js';
+import { Checkbox, Field, Input } from '../../ui/Field.js';
+import { RadioGroup } from '../../ui/RadioGroup.js';
 import { HelpTip } from '../../ui/HelpTip.js';
 import { PageHeader } from '../../ui/PageHeader.js';
 import { useToast } from '../../ui/Toast.js';
@@ -174,14 +175,7 @@ function CheckRow({
   readonly checked: boolean;
   readonly onToggle: () => void;
 }) {
-  return (
-    <li>
-      <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-        <input type="checkbox" checked={checked} onChange={onToggle} />
-        <span>{label}</span>
-      </label>
-    </li>
-  );
+  return <Checkbox label={label} checked={checked} onChange={onToggle} />;
 }
 
 function RadioRow({
@@ -196,12 +190,13 @@ function RadioRow({
   readonly onPick: () => void;
 }) {
   return (
-    <li>
-      <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-        <input type="radio" name={name} checked={checked} onChange={onPick} />
-        <span>{label}</span>
-      </label>
-    </li>
+    <RadioGroup
+      legend=""
+      name={name}
+      value={checked ? label : undefined}
+      onChange={onPick}
+      options={[{ value: label, label }]}
+    />
   );
 }
 

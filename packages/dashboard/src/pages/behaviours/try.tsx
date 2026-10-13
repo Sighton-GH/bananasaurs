@@ -15,6 +15,7 @@ import { Card } from '../../ui/Card.js';
 import { DataState } from '../../ui/DataState.js';
 import { ErrorNotice } from '../../ui/ErrorNotice.js';
 import { Field } from '../../ui/Field.js';
+import { Textarea } from '../../ui/Textarea.js';
 
 /**
  * Task 18: the full compiled prompt for one behaviour, fetched from
@@ -176,12 +177,17 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
         Ask this behaviour a question and read its answer here. Only you see it — nothing is posted
         to Discord.
       </p>
-      <Field label="Try it question" hint="At most 2,000 characters. Twenty tries per hour.">
-        <textarea
+      <Field
+        label="Try it question"
+        hint="At most 2,000 characters. Twenty tries per hour."
+        htmlFor="try-it-question"
+      >
+        <Textarea
+          id="try-it-question"
+          showCount
           value={question}
           maxLength={2_000}
           onChange={(e) => setQuestion(e.target.value)}
-          className="mt-1 min-h-20 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
         />
       </Field>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -204,7 +210,7 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
         )}
       </div>
       {quotaText !== undefined && (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-3 text-sm text-tone-danger-ink">
           {quotaText}
         </p>
       )}

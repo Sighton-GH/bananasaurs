@@ -5,9 +5,11 @@ import { fieldError } from '../../api/describe-error.js';
 import { type Session } from '../../app/session.js';
 import { Button } from '../../ui/Button.js';
 import { ErrorNotice } from '../../ui/ErrorNotice.js';
-import { Field, Input } from '../../ui/Field.js';
+import { Checkbox, Field, Input } from '../../ui/Field.js';
 import { FormSection } from '../../ui/FormSection.js';
 import { HelpTip } from '../../ui/HelpTip.js';
+import { Select } from '../../ui/Select.js';
+import { Textarea } from '../../ui/Textarea.js';
 import { useToast } from '../../ui/Toast.js';
 import { RoleChecklist, skillEffectLabel, toggleIn } from '../assistant-shared.js';
 
@@ -157,38 +159,31 @@ export function CreateBehaviourForm({
               label="Tag"
               hint="Which kind of helper this is. It decides the safety rules it follows, for example IT help can open tickets."
             >
-              <select
+              <Select
                 value={surface}
-                onChange={(e) => setSurface(e.target.value as TagSurface)}
-                className="mt-1 block min-w-0 max-w-full w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                {TAG_SURFACES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label} - {option.blurb}
-                  </option>
-                ))}
-              </select>
+                onValueChange={(value) => setSurface(value as TagSurface)}
+                options={TAG_SURFACES.map((option) => ({
+                  value: option.value,
+                  label: `${option.label} - ${option.blurb}`,
+                }))}
+              />
             </Field>
             <div>
               <Field
                 label="Mention role"
                 {...(mentionRoleProblem === undefined ? {} : { error: mentionRoleProblem })}
               >
-                <select
-                  required
-                  value={mentionRoleId}
-                  onChange={(e) => setMentionRoleId(e.target.value)}
-                  className="mt-1 block min-w-0 max-w-full w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-                >
-                  <option value="">Choose a role…</option>
-                  {[...(data.roles ?? [])]
-                    .sort((a, b) => b.position - a.position)
-                    .map((role) => (
-                      <option key={role.id} value={role.id}>
-                        @{role.name}
-                      </option>
-                    ))}
-                </select>
+                <Select
+                  value={mentionRoleId === '' ? undefined : mentionRoleId}
+                  placeholder="Choose a role…"
+                  onValueChange={(value) => setMentionRoleId(value === '__none' ? '' : value)}
+                  options={[
+                    { value: '__none', label: 'Choose a role…' },
+                    ...[...(data.roles ?? [])]
+                      .sort((a, b) => b.position - a.position)
+                      .map((role) => ({ value: role.id, label: `@${role.name}` })),
+                  ]}
+                />
               </Field>
               <p className="mt-1 text-xs text-ink-muted">
                 Members reach this behaviour by mentioning this role in Discord, for example @IT
@@ -214,14 +209,16 @@ export function CreateBehaviourForm({
             <Field
               label="Instructions for the new behaviour"
               hint="Members do not see these operator instructions. 1 to 4,000 characters."
+              htmlFor="new-behaviour-prompt"
               {...(promptProblem === undefined ? {} : { error: promptProblem })}
             >
-              <textarea
+              <Textarea
+                id="new-behaviour-prompt"
+                showCount
                 value={prompt}
                 maxLength={4_000}
                 onChange={(e) => setPrompt(e.target.value)}
                 required
-                className="mt-1 min-h-24 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
               />
             </Field>
           </FormSection>
@@ -240,18 +237,14 @@ export function CreateBehaviourForm({
                   .filter((skill) => skill.ownerOnly !== true)
                   .map((skill) => (
                     <li key={skill.id} className="min-w-0">
-                      <label className="flex min-w-0 items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-                        <input
-                          className="shrink-0"
-                          type="checkbox"
-                          checked={skillIds.includes(skill.id)}
-                          onChange={() => setSkillIds((ids) => toggleIn(ids, skill.id))}
-                        />
-                        <span className="min-w-0 [overflow-wrap:anywhere]">
-                          <span className="block">{skill.name}</span>
-                          <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
-                        </span>
-                      </label>
+                      <Checkbox
+                        label={skill.name}
+                        checked={skillIds.includes(skill.id)}
+                        onChange={() => setSkillIds((ids) => toggleIn(ids, skill.id))}
+                      />
+                      <span className="block text-xs text-ink-muted">
+                        {skillEffectLabel(skill)}
+                      </span>
                     </li>
                   ))}
               </ul>

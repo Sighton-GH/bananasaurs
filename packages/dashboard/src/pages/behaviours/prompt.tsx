@@ -5,6 +5,7 @@ import { Button } from '../../ui/Button.js';
 import { Card } from '../../ui/Card.js';
 import { CodeBlock } from '../../ui/CodeBlock.js';
 import { Field } from '../../ui/Field.js';
+import { Textarea } from '../../ui/Textarea.js';
 import { useToast } from '../../ui/Toast.js';
 import { behaviourBody } from '../assistant-shared.js';
 
@@ -101,12 +102,13 @@ export function BehaviourPromptCard({
       <Field
         label="Instructions the assistant follows"
         hint="Members do not see these operator instructions. Saved resources and messages cannot change them."
+        htmlFor="behaviour-prompt"
       >
-        <textarea
+        <Textarea
+          id="behaviour-prompt"
           value={prompt}
           maxLength={4_000}
           onChange={(event) => setPrompt(event.target.value)}
-          className="mt-3 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
         />
       </Field>
       {conflict && (

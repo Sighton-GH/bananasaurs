@@ -3,6 +3,7 @@ import { Button } from '../ui/Button.js';
 import { DropdownMenu } from '../ui/DropdownMenu.js';
 import { Icon, IconSearch } from '../ui/icons.js';
 import { Kbd } from '../ui/Kbd.js';
+import { Select } from '../ui/Select.js';
 import { isMac } from '../lib/platform.js';
 import { usePalette } from './palette-context.js';
 import { useHealth } from './health.js';
@@ -24,20 +25,15 @@ export function GuildIdentity() {
         Active server
       </p>
       {reachable !== undefined && reachable.length > 1 ? (
-        <label className="block">
-          <span className="sr-only">Server</span>
-          <select
-            value={session.info.guildId}
-            onChange={(e) => void session.switchGuild(e.target.value)}
-            className="block w-full rounded-sm border border-line bg-panel px-2.5 py-2 text-sm font-medium text-ink"
-          >
-            {reachable.map((guild) => (
-              <option key={guild.guildId} value={guild.guildId}>
-                {guild.name ?? guild.guildId}
-              </option>
-            ))}
-          </select>
-        </label>
+        <Select
+          aria-label="Server"
+          value={session.info.guildId}
+          onValueChange={(guildId) => void session.switchGuild(guildId)}
+          options={reachable.map((guild) => ({
+            value: guild.guildId,
+            label: guild.name ?? guild.guildId,
+          }))}
+        />
       ) : (
         <p className="truncate text-sm font-medium">{name ?? 'Guild'}</p>
       )}

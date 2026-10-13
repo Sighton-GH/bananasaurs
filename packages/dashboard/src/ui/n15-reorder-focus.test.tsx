@@ -2,7 +2,7 @@
 // N15: keyboard activation of a move control must keep focus on the moved
 // item's stable control after the reorder, never on BODY - and must never
 // steal focus for pointer/drag reorder or late, unrelated commits.
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,11 +13,17 @@ afterEach(cleanup);
 interface HostProps {
   readonly initial: readonly string[];
   readonly onReorder: (next: readonly string[]) => void;
-  /** sync: apply immediately; async: apply after 10ms; intervene: render a fresh
-   *  same-order copy first, then apply after 10ms. */
+  /** sync: apply immediately; async/intervene: queue the commit until the test
+   *  releases it (intervene renders a fresh same-order copy first). */
   readonly mode?: 'sync' | 'async' | 'intervene';
   /** Instead of applying the order, drop this key (removed-item path). */
   readonly removeKey?: string;
+  /**
+   * The test-owned queue receiving each pending commit (async/intervene
+   * modes). The test releases it after the steps whose pre-commit state it
+   * asserts, so the commit can never fire mid-keyboard or mid-click.
+   */
+  readonly commitQueue?: Array<() => void>;
   readonly withInput?: boolean;
   readonly renderInput?: boolean;
   readonly stacked?: boolean;
@@ -29,6 +35,7 @@ function Host({
   onReorder,
   mode = 'sync',
   removeKey,
+  commitQueue,
   withInput = false,
   renderInput = false,
   stacked = false,
@@ -51,15 +58,13 @@ function Host({
           }
           if (mode === 'intervene') {
             // A controlled parent that re-renders with a fresh same-order
-            // array before committing the reorder a tick later.
+            // array before committing the reorder when the test releases it.
             setItems((current) => [...current]);
-            setTimeout(() => {
-              setItems(next);
-            }, 10);
+            if (commitQueue !== undefined) commitQueue.push(() => setItems(next));
+            else setItems(next);
           } else if (mode === 'async') {
-            setTimeout(() => {
-              setItems(next);
-            }, 10);
+            if (commitQueue !== undefined) commitQueue.push(() => setItems(next));
+            else setItems(next);
           } else {
             setItems(next);
           }
@@ -70,6 +75,30 @@ function Host({
     </>
   );
 }
+
+/**
+ * The test-owned side of a manually released commit: the host pushes each
+ * pending `setItems(next)` into `queue`, and the test releases it with
+ * `await act(async () => { commits.releaseNext(); })` at the point the old
+ * timer was meant to fire — after the keyboard/click steps whose pre-commit
+ * state the test asserts.
+ */
+const makeCommits = (): {
+  readonly queue: Array<() => void>;
+  readonly releaseNext: () => void;
+  readonly releaseAll: () => void;
+} => {
+  const queue: Array<() => void> = [];
+  return {
+    queue,
+    releaseNext: () => {
+      queue.shift()?.();
+    },
+    releaseAll: () => {
+      while (queue.length > 0) queue.shift()?.();
+    },
+  };
+};
 
 const TWO = ['gemini-2.5-flash', 'openrouter-model'] as const;
 const THREE = ['gemini-2.5-flash', 'gemma-3-27b-it', 'openrouter-model'] as const;
@@ -191,11 +220,15 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('focus survives an async controlled parent applying the reorder a tick later', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" />);
+    const commits = makeCommits();
+    render(<Host initial={TWO} onReorder={onReorder} mode="async" commitQueue={commits.queue} />);
     const down = screen.getByRole('button', { name: 'Move gemini-2.5-flash down' });
     down.focus();
     await user.keyboard('{Enter}');
     expect(onReorder).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(focusedName()).toBe('Move gemini-2.5-flash up');
     });
@@ -205,11 +238,17 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('keeps the pending restore through an intervening same-order rerender before the commit', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="intervene" />);
+    const commits = makeCommits();
+    render(
+      <Host initial={TWO} onReorder={onReorder} mode="intervene" commitQueue={commits.queue} />,
+    );
     const down = screen.getByRole('button', { name: 'Move gemini-2.5-flash down' });
     down.focus();
     await user.keyboard('{Enter}');
     expect(onReorder).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(focusedName()).toBe('Move gemini-2.5-flash up');
     });
@@ -218,11 +257,23 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('does not steal focus when the user focused another control before the commit lands', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" withInput />);
+    const commits = makeCommits();
+    render(
+      <Host
+        initial={TWO}
+        onReorder={onReorder}
+        mode="async"
+        commitQueue={commits.queue}
+        withInput
+      />,
+    );
     screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }).focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'Unrelated field' });
     input.focus(); // user moved on before the parent committed the reorder
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(firstRowText()).toContain('openrouter-model');
     });
@@ -232,7 +283,8 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('expires a never-timely restore instead of stealing focus later', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" />);
+    const commits = makeCommits();
+    render(<Host initial={TWO} onReorder={onReorder} mode="async" commitQueue={commits.queue} />);
     screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }).focus();
     await user.keyboard('{Enter}');
     expect(onReorder).toHaveBeenCalledTimes(1);
@@ -240,6 +292,9 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
     const now = Date.now();
     const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(now + 2000);
     try {
+      await act(async () => {
+        commits.releaseNext();
+      });
       await waitFor(() => {
         expect(firstRowText()).toContain('openrouter-model');
       });
@@ -387,7 +442,7 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
     const z: Row = { id: 'z', label: 'z' };
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    function DupObjectHost() {
+    function DupObjectHost({ commitQueue }: { readonly commitQueue?: Array<() => void> }) {
       const [items, setItems] = useState<readonly Row[]>([x, y, z]);
       return (
         <OrderedList
@@ -398,17 +453,17 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
           onReorder={(next) => {
             onReorder(next);
             // Controlled parent re-renders the SAME order first (fresh array,
-            // same object identities), then commits the reorder a tick later.
+            // same object identities), then commits the reorder when released.
             setItems((current) => [...current]);
-            setTimeout(() => {
-              setItems(next);
-            }, 10);
+            if (commitQueue !== undefined) commitQueue.push(() => setItems(next));
+            else setItems(next);
           }}
           label="dupes"
         />
       );
     }
-    render(<DupObjectHost />);
+    const commits = makeCommits();
+    render(<DupObjectHost commitQueue={commits.queue} />);
     const xDown = screen.getByRole('button', { name: 'Move x down' });
     xDown.focus();
     await user.keyboard('{Enter}');
@@ -416,10 +471,15 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
     // The same-order interim render must not let y's key match consume x's
     // pending restore.
     expect(document.activeElement).toBe(xDown);
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(focusedName()).toBe('Move x down');
     });
-    expect(document.activeElement).toBe(xDown);
+    // React does not define DOM reuse for duplicate keys; the guarantee is the moved row's control at its new position.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move x down' }));
+    expect(screen.getAllByRole('listitem')[1]?.contains(document.activeElement)).toBe(true);
   });
 
   it('duplicate keys: focus follows the moved row to its new position', async () => {
@@ -441,11 +501,23 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it("does not steal focus when the user focused another row's rendered input before the commit", async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" renderInput />);
+    const commits = makeCommits();
+    render(
+      <Host
+        initial={TWO}
+        onReorder={onReorder}
+        mode="async"
+        commitQueue={commits.queue}
+        renderInput
+      />,
+    );
     screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }).focus();
     await user.keyboard('{Enter}');
     const input = screen.getByRole('textbox', { name: 'draft openrouter-model' });
     input.focus();
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(firstRowInputLabel()).toBe('draft openrouter-model');
     });
@@ -455,7 +527,16 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it("does not redirect focus to a move button when the moved row's own input was focused", async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" renderInput />);
+    const commits = makeCommits();
+    render(
+      <Host
+        initial={TWO}
+        onReorder={onReorder}
+        mode="async"
+        commitQueue={commits.queue}
+        renderInput
+      />,
+    );
     screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }).focus();
     await user.keyboard('{Enter}');
     // The moved row's own input. In a real browser the row's reinsertion
@@ -464,6 +545,9 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
     const input = screen.getByRole('textbox', { name: 'draft gemini-2.5-flash' });
     input.focus();
     input.blur();
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(firstRowInputLabel()).toBe('draft openrouter-model');
     });
@@ -473,10 +557,14 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('a pointerdown before the commit cancels the pending keyboard restore', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={TWO} onReorder={onReorder} mode="async" />);
+    const commits = makeCommits();
+    render(<Host initial={TWO} onReorder={onReorder} mode="async" commitQueue={commits.queue} />);
     screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }).focus();
     await user.keyboard('{Enter}');
     fireEvent.pointerDown(document.body); // user clicked blank space
+    await act(async () => {
+      commits.releaseNext();
+    });
     await waitFor(() => {
       expect(firstRowText()).toContain('openrouter-model');
     });
@@ -486,11 +574,17 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
   it('a later pointer move-click is not overridden by the earlier keyboard restore', async () => {
     const onReorder = vi.fn();
     const user = userEvent.setup();
-    render(<Host initial={THREE} onReorder={onReorder} mode="async" />);
+    const commits = makeCommits();
+    render(<Host initial={THREE} onReorder={onReorder} mode="async" commitQueue={commits.queue} />);
     screen.getByRole('button', { name: 'Move gemma-3-27b-it down' }).focus();
     await user.keyboard('{Enter}');
     await user.click(screen.getByRole('button', { name: 'Move gemini-2.5-flash down' }));
     expect(onReorder).toHaveBeenCalledTimes(2);
+    // Both commits are still queued: the click below saw the pre-commit
+    // order, so the second call is deterministic. Release both in order.
+    await act(async () => {
+      commits.releaseAll();
+    });
     await waitFor(() => {
       expect(onReorder).toHaveBeenNthCalledWith(2, [
         'gemma-3-27b-it',

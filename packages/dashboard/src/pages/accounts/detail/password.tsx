@@ -6,6 +6,7 @@ import { Button } from '../../../ui/Button.js';
 import { Card } from '../../../ui/Card.js';
 import { ErrorNotice } from '../../../ui/ErrorNotice.js';
 import { Field, Input } from '../../../ui/Field.js';
+import { RadioGroup } from '../../../ui/RadioGroup.js';
 import { PrintOnceDialog } from '../../../ui/PrintOnceDialog.js';
 
 export function SetPasswordForm({
@@ -57,26 +58,16 @@ export function SetPasswordForm({
   return (
     <div className="mt-3">
       <p className="text-sm font-medium">Set a new password</p>
-      <div role="radiogroup" aria-label="New password source" className="mt-1 grid gap-2">
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name={`password-choice-${username}`}
-            checked={choice === 'generate'}
-            onChange={() => setChoice('generate')}
-          />
-          Generate one for me
-        </label>
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name={`password-choice-${username}`}
-            checked={choice === 'choose'}
-            onChange={() => setChoice('choose')}
-          />
-          I&apos;ll choose one
-        </label>
-      </div>
+      <RadioGroup
+        legend="New password source"
+        name={`password-choice-${username}`}
+        value={choice}
+        onChange={(value) => setChoice(value as 'generate' | 'choose')}
+        options={[
+          { value: 'generate', label: 'Generate one for me' },
+          { value: 'choose', label: "I'll choose one" },
+        ]}
+      />
       {choice === 'choose' && (
         <div className="mt-3 max-w-md">
           <Field

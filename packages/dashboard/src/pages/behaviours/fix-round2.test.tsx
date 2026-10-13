@@ -7,6 +7,27 @@ import { SessionProvider } from '../../app/session.js';
 import { TEST_SESSION } from '../../test-support.js';
 import { AssistantPage } from '../assistant.js';
 import { AssistantBehaviourDetailPage } from './detail.js';
+import userEvent from '@testing-library/user-event';
+
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -83,6 +104,12 @@ const promptBox = () =>
 const MINE = 'My unsaved rewrite.';
 const savePrompt = () =>
   screen.getByRole<HTMLButtonElement>('button', { name: 'Save instructions' });
+
+async function pickOption(option: string | RegExp, name: string | RegExp) {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('combobox', { name }));
+  await user.click(await screen.findByRole('option', { name: option }));
+}
 
 describe('R1: the server bumps promptVersion on every write; that alone is never a conflict', () => {
   it('own toggle (version bumped, same text) keeps the draft, no conflict, and Save sends the new version', async () => {
@@ -261,15 +288,15 @@ describe('R4: a reload that lands honours the newer server value', () => {
       return gets === 1 ? { body: data() } : refresh.promise;
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #it-services');
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
     await act(async () => {
       refresh.resolve({ body: { ...data(), settings: { logChannelId: 'chan-general' } } });
     });
     await waitFor(() =>
-      expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-general'),
+      expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#general'),
     );
     expect(bar()).toBeNull();
     expect(s.puts()).toHaveLength(1);
@@ -288,17 +315,17 @@ describe('R4: a reload that lands honours the newer server value', () => {
       return gets === 1 ? { body: data() } : refresh.promise;
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('Club assistant', TAG);
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #it-services');
     await act(async () => {
       refresh.resolve({ body: { ...data(), settings: { logChannelId: 'chan-general' } } });
     });
     await waitFor(() =>
-      expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-general'),
+      expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#general'),
     );
-    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('club');
+    expect(screen.getByRole('combobox', { name: TAG }).textContent).toContain('Club assistant');
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
     expect(s.puts()).toHaveLength(2);
   });
@@ -310,7 +337,7 @@ describe('R4: a reload that lands honours the newer server value', () => {
       return gets === 1 ? { body: data() } : { status: 500, body: { error: 'boom' } };
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #it-services');
     await screen.findByRole('button', { name: 'Try again' });

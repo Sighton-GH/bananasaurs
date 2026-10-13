@@ -5,6 +5,7 @@ import { useFieldErrors } from '../../hooks/useFieldErrors.js';
 import { Empty } from '../../ui/states.js';
 import { Moment } from './time.js';
 import { Select } from '../../ui/Select.js';
+import { Checkbox } from '../../ui/Field.js';
 import { useState } from 'react';
 import { Link } from '../../ui/Link.js';
 import {
@@ -284,21 +285,18 @@ function ReminderEditForm({
                       <ul className="grid gap-1 sm:grid-cols-4">
                         {DAY_NAMES.map((name, day) => (
                           <li key={name}>
-                            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-                              <input
-                                type="checkbox"
-                                checked={draft.days.includes(day)}
-                                onChange={() =>
-                                  setDraft({
-                                    ...draft,
-                                    days: draft.days.includes(day)
-                                      ? draft.days.filter((d) => d !== day)
-                                      : [...draft.days, day],
-                                  })
-                                }
-                              />
-                              {name}
-                            </label>
+                            <Checkbox
+                              label={name}
+                              checked={draft.days.includes(day)}
+                              onChange={() =>
+                                setDraft({
+                                  ...draft,
+                                  days: draft.days.includes(day)
+                                    ? draft.days.filter((d) => d !== day)
+                                    : [...draft.days, day],
+                                })
+                              }
+                            />
                           </li>
                         ))}
                       </ul>
