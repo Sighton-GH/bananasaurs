@@ -180,6 +180,12 @@ describe('renderEscalationCard', () => {
     });
   });
 
+  it('pings nothing with an empty reviewer list, carrying no roles key', () => {
+    const card = renderEscalationCard({ ...input, reviewerRoleIds: [] });
+    expect(card.allowedMentions).toEqual({ parse: [] });
+    expect(toOutgoingMessage(card).allowedMentions).toEqual({ parse: [] });
+  });
+
   it('escapes the question', () => {
     const texts = cardTexts(renderEscalationCard(input).components);
     expect(texts).toContain('> how do I join \\*\\*x\\*\\*?');
