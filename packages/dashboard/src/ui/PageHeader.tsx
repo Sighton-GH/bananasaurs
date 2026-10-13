@@ -41,7 +41,7 @@ export function PageHeader({
                 <span aria-hidden="true">/</span>
               </li>
             ))}
-            <li aria-current="page" className="min-w-0 max-w-full break-words text-ink">
+            <li aria-current="page" title={title} className="min-w-0 max-w-full truncate text-ink">
               {title}
             </li>
           </ol>

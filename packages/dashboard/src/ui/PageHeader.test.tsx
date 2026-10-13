@@ -95,7 +95,20 @@ it('bounds the title column to the available width so an unbroken title wraps in
   expect(classes(h1)).toContain('max-w-full');
   expect(classes(current)).toContain('min-w-0');
   expect(classes(current)).toContain('max-w-full');
-  expect(classes(current)).toContain('break-words');
+  expect(classes(current)).toContain('truncate');
+  expect(classes(current)).not.toContain('break-words');
   expect(classes(container.querySelector('ol')!)).toContain('min-w-0');
   expect(classes(container.querySelector('ol')!)).toContain('max-w-full');
+});
+
+it('keeps a long current crumb to one line with the full title on hover (L08)', () => {
+  const title = 't'.repeat(200);
+  wrap(<PageHeader title={title} purpose="p" crumbs={[{ label: 'Tasks', href: '/tasks' }]} />);
+  const current = screen
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .querySelector('[aria-current="page"]')!;
+  expect(current.classList.contains('truncate')).toBe(true);
+  expect(current.classList.contains('break-words')).toBe(false);
+  expect(current.getAttribute('title')).toBe(title);
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(title);
 });
