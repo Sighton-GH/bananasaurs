@@ -154,7 +154,7 @@ function SetupBody({
         >
           {visited.includes('model-order') && (
             <KeepAlivePanel value="model-order" tab={tab}>
-              <ModelOrderSection setup={setup} onChanged={onChanged} />
+              <ModelOrderSection key={chainSignature} setup={setup} onChanged={onChanged} />
               <AssistantRecommendedSetup onChanged={onChanged} />
               <AssistantChainPools
                 key={`pools-${chainSignature}`}
