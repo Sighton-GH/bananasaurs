@@ -1,4 +1,5 @@
 import type { MemberEvent } from '../discord/events.js';
+import type { LogCardView } from './cards.js';
 import {
   formatMemberAvatarChanged,
   formatMemberNicknameChanged,
@@ -48,7 +49,7 @@ export interface MemberBaseline {
 
 export interface MemberChange {
   eventKind: MemberChangeKind;
-  render(): string;
+  view(at: number): LogCardView;
 }
 
 /**
@@ -111,14 +112,20 @@ export function memberChanges(baseline: MemberBaseline, event: MemberEvent): Mem
     const added = event.roleIds.filter((id) => !before.has(id));
     const removed = baseline.roleIds.filter((id) => !after.has(id));
     if (added.length > 0 || removed.length > 0) {
-      const text = formatMemberRolesChanged(event.userId, added, removed);
-      changes.push({ eventKind: 'member_roles_changed', render: () => text });
+      changes.push({
+        eventKind: 'member_roles_changed',
+        view: (at) => formatMemberRolesChanged(event.userId, added, removed, at),
+      });
     }
   }
 
   if (baseline.knownNickname && baseline.nickname !== profile.nickname) {
-    const text = formatMemberNicknameChanged(event.userId, baseline.nickname, profile.nickname);
-    changes.push({ eventKind: 'member_nickname_changed', render: () => text });
+    const oldNickname = baseline.nickname;
+    const newNickname = profile.nickname;
+    changes.push({
+      eventKind: 'member_nickname_changed',
+      view: (at) => formatMemberNicknameChanged(event.userId, oldNickname, newNickname, at),
+    });
   }
 
   if (baseline.knownUserFields) {
@@ -127,43 +134,61 @@ export function memberChanges(baseline: MemberBaseline, event: MemberEvent): Mem
     const globalNameChanged =
       (baseline.globalName ?? undefined) !== (profile.globalName ?? undefined);
     if (usernameChanged || globalNameChanged) {
-      const text = formatMemberUsernameChanged({
-        userId: event.userId,
-        oldUsername: baseline.username,
-        newUsername: profile.username,
-        oldGlobalName: baseline.globalName,
-        newGlobalName: profile.globalName,
+      changes.push({
+        eventKind: 'member_username_changed',
+        view: (at) =>
+          formatMemberUsernameChanged(
+            {
+              userId: event.userId,
+              oldUsername: baseline.username,
+              newUsername: profile.username,
+              oldGlobalName: baseline.globalName,
+              newGlobalName: profile.globalName,
+            },
+            at,
+          ),
       });
-      changes.push({ eventKind: 'member_username_changed', render: () => text });
     }
     const accountChanged = baseline.avatarHash !== (profile.avatarHash ?? undefined);
     const guildAvatarChanged =
       baseline.knownGuildAvatar &&
       baseline.guildAvatarHash !== (profile.guildAvatarHash ?? undefined);
     if (accountChanged || guildAvatarChanged) {
-      const text = formatMemberAvatarChanged({
-        userId: event.userId,
-        guildId: event.guildId,
-        accountChanged,
-        newAvatarHash: profile.avatarHash,
-        guildAvatarChanged,
-        newGuildAvatarHash: profile.guildAvatarHash,
+      changes.push({
+        eventKind: 'member_avatar_changed',
+        view: (at) =>
+          formatMemberAvatarChanged(
+            {
+              userId: event.userId,
+              guildId: event.guildId,
+              accountChanged,
+              newAvatarHash: profile.avatarHash,
+              guildAvatarChanged,
+              newGuildAvatarHash: profile.guildAvatarHash,
+            },
+            at,
+          ),
       });
-      changes.push({ eventKind: 'member_avatar_changed', render: () => text });
     }
   } else if (baseline.knownGuildAvatar) {
     // No snapshot yet, but a non-partial `before` named the previous server
     // avatar: a guild-avatar change is still observable.
     if (baseline.guildAvatarHash !== (profile.guildAvatarHash ?? undefined)) {
-      const text = formatMemberAvatarChanged({
-        userId: event.userId,
-        guildId: event.guildId,
-        accountChanged: false,
-        newAvatarHash: profile.avatarHash,
-        guildAvatarChanged: true,
-        newGuildAvatarHash: profile.guildAvatarHash,
+      changes.push({
+        eventKind: 'member_avatar_changed',
+        view: (at) =>
+          formatMemberAvatarChanged(
+            {
+              userId: event.userId,
+              guildId: event.guildId,
+              accountChanged: false,
+              newAvatarHash: profile.avatarHash,
+              guildAvatarChanged: true,
+              newGuildAvatarHash: profile.guildAvatarHash,
+            },
+            at,
+          ),
       });
-      changes.push({ eventKind: 'member_avatar_changed', render: () => text });
     }
   }
 

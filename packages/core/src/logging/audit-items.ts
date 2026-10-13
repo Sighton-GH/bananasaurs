@@ -1,4 +1,6 @@
 import type { AuditChangeValue, AuditLogEntryEvent } from '../discord/events.js';
+import { escapeInline } from '../ui/discord/text.js';
+import type { LogCardView } from './cards.js';
 
 // Numeric AuditLogEvent values, see node_modules/discord-api-types/payloads/v10/auditLog.d.ts
 export const AUDIT_ACTION_GUILD_UPDATE = 1;
@@ -44,7 +46,7 @@ export const AUDIT_EVENT_KINDS: readonly string[] = [
 
 export interface AuditItem {
   eventKind: string;
-  render(): string;
+  view(at: number): LogCardView;
 }
 
 const MAX_VALUE_CHARS = 100;
@@ -124,6 +126,15 @@ function truncateInline(value: string): string {
   return value;
 }
 
+/**
+ * A member-controlled name or code bound for a headline: capped raw first,
+ * then escaped, so escaping never pushes the text back over the cap and a
+ * hostile name renders literally.
+ */
+function safeName(value: string): string {
+  return escapeInline(truncateInline(value));
+}
+
 function makeItem(
   event: AuditLogEntryEvent,
   eventKind: string,
@@ -132,12 +143,19 @@ function makeItem(
 ): AuditItem {
   return {
     eventKind,
-    render(): string {
-      const lines = [`${firstLineBase}${actorSuffix(event)}`, ...extraLines];
-      if (event.reason !== undefined && event.reason !== '') {
-        lines.push(`Reason: ${truncateReason(event.reason)}`);
-      }
-      return lines.join('\n');
+    view(at: number): LogCardView {
+      return {
+        kind: eventKind,
+        headline: `${firstLineBase}${actorSuffix(event)}`,
+        ...(extraLines.length === 0 ? {} : { changes: extraLines.map((l) => l.trim()) }),
+        ...(event.reason !== undefined && event.reason !== ''
+          ? { quote: { label: 'Reason', text: truncateReason(event.reason) } }
+          : {}),
+        at,
+        ...(eventKind.startsWith('member_') && event.targetId !== undefined
+          ? { memberId: event.targetId }
+          : {}),
+      };
     },
   };
 }
@@ -184,7 +202,7 @@ function inviteCreateItem(event: AuditLogEntryEvent): AuditItem {
   return makeItem(
     event,
     'invite_create',
-    `Invite created: discord.gg/${truncateInline(code)} for ${channelPart} (expires: ${expiry}, uses: ${uses})`,
+    `Invite created: discord.gg/${safeName(code)} for ${channelPart} (expires: ${expiry}, uses: ${uses})`,
     [],
   );
 }
@@ -205,7 +223,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         makeItem(
           event,
           'channel_create',
-          `Channel created: ${channelTarget(event)} (${truncateInline(name)})`,
+          `Channel created: ${channelTarget(event)} (${safeName(name)})`,
           [],
         ),
       ];
@@ -224,7 +242,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'channel_delete', `Channel deleted: #${truncateInline(name)}`, [])];
+      return [makeItem(event, 'channel_delete', `Channel deleted: #${safeName(name)}`, [])];
     }
     case AUDIT_ACTION_THREAD_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
@@ -232,7 +250,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         makeItem(
           event,
           'thread_create',
-          `Thread created: ${channelTarget(event)} (${truncateInline(name)})`,
+          `Thread created: ${channelTarget(event)} (${safeName(name)})`,
           [],
         ),
       ];
@@ -242,7 +260,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'thread_delete', `Thread deleted: ${truncateInline(name)}`, [])];
+      return [makeItem(event, 'thread_delete', `Thread deleted: ${safeName(name)}`, [])];
     }
     case AUDIT_ACTION_GUILD_UPDATE:
       return [
@@ -254,12 +272,12 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
       const codeChange = findChange(event, 'code');
       const code = changeString(codeChange?.old) ?? changeString(codeChange?.new) ?? 'unknown';
       return [
-        makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${truncateInline(code)}`, []),
+        makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${safeName(code)}`, []),
       ];
     }
     case AUDIT_ACTION_EMOJI_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';
-      return [makeItem(event, 'emoji_create', `Emoji added: :${truncateInline(name)}:`, [])];
+      return [makeItem(event, 'emoji_create', `Emoji added: :${safeName(name)}:`, [])];
     }
     case AUDIT_ACTION_EMOJI_UPDATE: {
       const oldName = changeString(findChange(event, 'name')?.old) ?? 'unknown';
@@ -268,7 +286,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         makeItem(
           event,
           'emoji_update',
-          `Emoji renamed: :${truncateInline(oldName)}: → :${truncateInline(newName)}:`,
+          `Emoji renamed: :${safeName(oldName)}: → :${safeName(newName)}:`,
           [],
         ),
       ];
@@ -278,14 +296,14 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'emoji_delete', `Emoji removed: :${truncateInline(oldName)}:`, [])];
+      return [makeItem(event, 'emoji_delete', `Emoji removed: :${safeName(oldName)}:`, [])];
     }
     case AUDIT_ACTION_STICKER_CREATE: {
       const name =
         changeString(findChange(event, 'name')?.new) ??
         changeString(findChange(event, 'name')?.old) ??
         'unknown';
-      return [makeItem(event, 'sticker_create', `Sticker added: ${truncateInline(name)}`, [])];
+      return [makeItem(event, 'sticker_create', `Sticker added: ${safeName(name)}`, [])];
     }
     case AUDIT_ACTION_STICKER_UPDATE: {
       const name =
@@ -296,7 +314,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         makeItem(
           event,
           'sticker_update',
-          `Sticker changed: ${truncateInline(name)}`,
+          `Sticker changed: ${safeName(name)}`,
           changeLinesFor(event.changes),
         ),
       ];
@@ -306,7 +324,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
         changeString(findChange(event, 'name')?.old) ??
         changeString(findChange(event, 'name')?.new) ??
         'unknown';
-      return [makeItem(event, 'sticker_delete', `Sticker removed: ${truncateInline(name)}`, [])];
+      return [makeItem(event, 'sticker_delete', `Sticker removed: ${safeName(name)}`, [])];
     }
     default:
       return [];
