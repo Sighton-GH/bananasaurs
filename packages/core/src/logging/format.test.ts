@@ -210,7 +210,7 @@ describe('formatMemberUsernameChanged', () => {
       AT,
     );
     expect(view.kind).toBe('member_username_changed');
-    expect(view.details).toEqual(['Username: old_name → new_name']);
+    expect(view.details).toEqual(['Username: old\\_name → new\\_name']);
   });
 
   it('renders a display-name change', () => {
@@ -252,7 +252,7 @@ describe('formatMemberUsernameChanged', () => {
       },
       AT,
     );
-    expect(view.details).toEqual(['Username: \\*\\*x\\*\\* → new_name']);
+    expect(view.details).toEqual(['Username: \\*\\*x\\*\\* → new\\_name']);
   });
 });
 
