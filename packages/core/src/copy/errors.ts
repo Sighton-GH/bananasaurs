@@ -193,6 +193,14 @@ export const ERROR_COPY = {
     tone: 'hold',
     audience: 'moderator',
   },
+  'mod.reason-required': {
+    title: 'Add a reason',
+    detail: 'Every warning and timeout needs a reason. It goes in case history and Discord’s audit log.',
+    next: 'Open the form again and write one.',
+    retryable: true,
+    tone: 'hold',
+    audience: 'moderator',
+  },
   'confirm.expired': {
     title: 'This confirmation expired',
     detail: 'A confirmation lasts 15 minutes.',
