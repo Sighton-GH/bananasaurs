@@ -265,7 +265,8 @@ export const ERROR_COPY = {
   },
   'panel.not-applied': {
     title: "Couldn't change your roles",
-    detail: "The bot couldn't apply the change just now. An organiser can see why in the dashboard.",
+    detail:
+      "The bot couldn't apply the change just now. An organiser can see why in the dashboard.",
     next: 'Try again in a minute.',
     retryable: true,
     tone: 'danger',
