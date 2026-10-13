@@ -21,6 +21,23 @@ const CASE = '0f3c9a2e-1111-4222-8333-444455556666';
 
 const text = (c: { components: readonly unknown[] }) => cardTexts(c.components);
 
+/** Every button's `style` in order (danger 4, secondary 2): `inspect.ts` reads texts and ids only. */
+const buttonStyles = (components: readonly unknown[]): number[] => {
+  const out: number[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (typeof value !== 'object' || value === null) return;
+    const node = value as Record<string, unknown>;
+    if (node['type'] === 2 && typeof node['style'] === 'number') out.push(node['style']);
+    walk(node['components']);
+  };
+  walk(components);
+  return out;
+};
+
 describe('durationLabel', () => {
   it.each([
     [10, '10 minutes'],
@@ -154,23 +171,24 @@ describe('confirm cards', () => {
     expect(text(c)).toContain(`Ban <@${U}>?`);
     expect(text(c)).toContain('Nothing has happened yet.');
     expect(cardCustomIds(c.components)).toEqual(['modconfirm:abc', 'modcancel:abc']);
+    expect(buttonStyles(c.components)).toEqual([4, 2]);
     expect(JSON.stringify(c.components)).toContain('"style":4');
   });
   it('a purge preview states exact scope', () => {
-    const t = text(
-      purgeConfirmCard({
-        channelId: C,
-        total: 37,
-        fresh: 30,
-        old: 7,
-        newestAtMs: 1_760_000_000_000,
-        reason: 'spam',
-        intentId: 'abc',
-      }),
-    );
+    const c = purgeConfirmCard({
+      channelId: C,
+      total: 37,
+      fresh: 30,
+      old: 7,
+      newestAtMs: 1_760_000_000_000,
+      reason: 'spam',
+      intentId: 'abc',
+    });
+    const t = text(c);
     expect(t).toContain(`Delete 37 messages from <#${C}>?`);
     expect(t).toContain('Newest <t:1760000000:R>');
     expect(t).toContain('30 can go in bulk. 7 are older than 14 days and go one at a time.');
+    expect(buttonStyles(c.components)).toEqual([4, 2]);
   });
 });
 
