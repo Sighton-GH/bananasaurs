@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useResource } from '../../../hooks/useResource.js';
 import { useSession } from '../../../app/session.js';
@@ -46,6 +46,28 @@ export function TaskTeamsPage() {
   };
   const [editingId, setEditingId] = useState('');
   const [memberTeamId, setMemberTeamId] = useState('');
+  // The Edit button that opened the current editor: closing the editor
+  // returns focus to it. A ref callback would need the kit Button to
+  // forward refs, so the click records its own trigger instead.
+  const editTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // The editor's mount focuses its first field only for the Edit click
+  // itself, never for a reload remount (save, delete) that must keep the
+  // focus landing the action chose.
+  const editFocusRef = useRef(false);
+  const consumeEditFocus = useCallback(() => {
+    const focus = editFocusRef.current;
+    editFocusRef.current = false;
+    return focus;
+  }, []);
+  // Creating a team reloads the setup, which remounts the add form; the
+  // fresh mount lands in its first field for the next team. Parent-held, so
+  // navigating back to this page never steals focus on load.
+  const justCreatedRef = useRef(false);
+  const consumeCreatedFocus = useCallback(() => {
+    const created = justCreatedRef.current;
+    justCreatedRef.current = false;
+    return created;
+  }, []);
 
   if (!mayManageTasks(session.info)) {
     return (
@@ -99,7 +121,11 @@ export function TaskTeamsPage() {
                             <AddTeamForm
                               channels={channelData.channels}
                               roles={roleData.roles}
-                              onCreated={setup.reload}
+                              onCreated={() => {
+                                justCreatedRef.current = true;
+                                setup.reload();
+                              }}
+                              consumeCreatedFocus={consumeCreatedFocus}
                             />
                             {data.teams.length === 0 ? (
                               <p className="rounded-panel border border-line bg-panel p-4 text-body">
@@ -133,7 +159,11 @@ export function TaskTeamsPage() {
                                     cell: (team) => (
                                       <Button
                                         aria-label={`Edit ${team.name}`}
-                                        onClick={() => setEditingId(team.teamId)}
+                                        onClick={(event) => {
+                                          editTriggerRef.current = event.currentTarget;
+                                          editFocusRef.current = true;
+                                          setEditingId(team.teamId);
+                                        }}
                                       >
                                         Edit
                                       </Button>
@@ -150,8 +180,12 @@ export function TaskTeamsPage() {
                                   team={team}
                                   channels={channelData.channels}
                                   roles={roleData.roles}
-                                  onClose={() => setEditingId('')}
+                                  onClose={() => {
+                                    setEditingId('');
+                                    editTriggerRef.current?.focus();
+                                  }}
                                   onChanged={setup.reload}
+                                  consumeInitialFocus={consumeEditFocus}
                                 />
                               ))}
                           </>

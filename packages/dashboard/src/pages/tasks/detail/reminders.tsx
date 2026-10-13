@@ -13,11 +13,13 @@ export function RemindersSection({
   reminders,
   onReload,
   onStale,
+  onRemoved,
 }: {
   task: Task;
   reminders: Reminder[];
   onReload: () => void;
   onStale: () => void;
+  onRemoved?: (headingId: string) => void;
 }) {
   const session = useSession();
   const [at, setAt] = useState('');
@@ -38,6 +40,9 @@ export function RemindersSection({
       });
       if (result === undefined) return;
       setAt('');
+      // The reload remounts this section; land back in the form's first
+      // field so another reminder can follow at once.
+      onRemoved?.('reminder-at-input');
       onReload();
     } catch (err) {
       if (
@@ -65,6 +70,9 @@ export function RemindersSection({
         undefined,
         'DELETE',
       );
+      // The cancelled row unmounts with its button; land on the section
+      // heading rather than <body>.
+      onRemoved?.('reminders-heading');
       onReload();
     } catch (err) {
       setError(
@@ -77,7 +85,9 @@ export function RemindersSection({
 
   return (
     <section className="grid gap-3 rounded-panel border border-line bg-panel p-4 text-body">
-      <h2 className="font-semibold">Reminders</h2>
+      <h2 id="reminders-heading" tabIndex={-1} className="font-semibold">
+        Reminders
+      </h2>
       {error && (
         <InlineAlert tone="danger" title="That did not work">
           {error}
@@ -110,7 +120,12 @@ export function RemindersSection({
         <h3 className="font-medium">Add reminder</h3>
         <label className="grid gap-1">
           Reminder date and time ({task.timezone})
-          <Input type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} />
+          <Input
+            id="reminder-at-input"
+            type="datetime-local"
+            value={at}
+            onChange={(e) => setAt(e.target.value)}
+          />
         </label>
         <Button type="submit" busy={busy} className="min-h-10">
           Add reminder
