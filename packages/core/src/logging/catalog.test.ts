@@ -22,4 +22,13 @@ describe('LOG_ACTION_CATALOG', () => {
     }
     expect(new Set(labels).size).toBe(labels.length);
   });
+
+  it('lists automod_match in Moderation with a source channel', () => {
+    expect(LOG_ACTION_CATALOG).toContainEqual({
+      kind: 'automod_match',
+      group: 'Moderation',
+      label: 'Automod match',
+      hasSourceChannel: true,
+    });
+  });
 });

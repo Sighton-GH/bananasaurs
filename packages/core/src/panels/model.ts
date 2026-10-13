@@ -48,6 +48,7 @@ export type AdoptionPassState = (typeof ADOPTION_PASS_STATES)[number];
  * it is refused at definition time rather than at send time.
  */
 export const MAX_PANEL_OPTIONS = 25;
+export const PANEL_CONTENT_MAX = 2000;
 
 /**
  * The canonical emoji key produced by `core/discord/emoji`.
@@ -93,7 +94,7 @@ export interface PanelConfig {
   readonly messageId: SnowflakeId | undefined;
   /**
    * The message body a managed panel posts. Undefined falls back to the
-   * default copy in `renderPanelMessage`. Adopted panels keep whatever the
+   * default copy in `renderPanelCard`. Adopted panels keep whatever the
    * existing message already says — Bananasaurs does not edit other bots'
    * messages.
    */
@@ -128,8 +129,7 @@ const baseDefinitionSchema = z.object({
   kind: z.enum(PANEL_KINDS),
   channelId: snowflakeIdSchema,
   messageId: snowflakeIdSchema.optional(),
-  // Discord's message body limit is 2000 characters.
-  content: z.string().trim().min(1).max(2000).optional(),
+  content: z.string().trim().min(1).max(PANEL_CONTENT_MAX).optional(),
   behaviour: z.enum(PANEL_BEHAVIOURS),
   component: z.enum(PANEL_COMPONENTS),
   maxRoles: z.number().int().positive().optional(),

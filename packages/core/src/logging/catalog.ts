@@ -115,6 +115,12 @@ export const LOG_ACTION_CATALOG: readonly LogActionInfo[] = [
     label: 'Discord AutoMod action',
     hasSourceChannel: false,
   },
+  {
+    kind: 'automod_match',
+    group: 'Moderation',
+    label: 'Automod match',
+    hasSourceChannel: true,
+  },
 ];
 export const logActionInfo = (kind: string): LogActionInfo | undefined =>
   LOG_ACTION_CATALOG.find((a) => a.kind === kind);

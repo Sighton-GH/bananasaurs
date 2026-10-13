@@ -299,6 +299,7 @@ export const automodPortsFor = (
   auth: Authorized<'moderation.act'>,
   logger: Logger,
   now: () => number,
+  onMatchRecorded?: AutomodSubscriberDeps['onMatchRecorded'],
 ): AutomodSubscriberDeps => {
   const guildId = parseGuildId(scope.guildId);
 
@@ -367,5 +368,6 @@ export const automodPortsFor = (
     readSafetyState: () => guildRepo.readSafetyState(scope),
     moderationGateway: gateway,
     authorRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
+    ...(onMatchRecorded === undefined ? {} : { onMatchRecorded }),
   };
 };

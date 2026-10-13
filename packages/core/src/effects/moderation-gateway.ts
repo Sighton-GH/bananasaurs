@@ -1,5 +1,6 @@
 import { authorize, capabilityOf, type Authorized, type AuthzStore } from '../authz.js';
 import type { DiscordPort } from '../discord/port.js';
+import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
 import type { GuildId, SnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 
@@ -23,6 +24,8 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
  *  10. dry run             record, no REST call
  *  11. execute             the single REST call
  *
+ * `deleteMessage` keeps 1, 2, 3, 9, 10, 11 — no hierarchy: Discord gates a
+ * delete by Manage Messages, not role position.
  * (Numbering follows `gateway.ts`'s comment so the two stay easy to diff
  * against each other; 4, 5, 6 and 8 are the role-only layers with no member
  * equivalent, and 12 — the audit row — is deliberately not this class's job:
@@ -71,6 +74,23 @@ export type ModerationOutcome =
   | { readonly status: 'refused'; readonly reason: ModerationRefusalReason }
   | { readonly status: 'failed'; readonly code: string };
 
+export interface DeleteMessageIntent {
+  readonly channelId: SnowflakeId;
+  readonly messageId: SnowflakeId;
+  readonly dedupeKey: string;
+  /** Shown in Discord's own audit log. */
+  readonly reason: string;
+}
+
+export type DeleteRefusalReason = 'unauthorized' | 'guild-unknown' | 'killswitch' | 'breaker-open';
+
+export type DeleteMessageOutcome =
+  | { readonly status: 'applied' }
+  | { readonly status: 'dry-run' }
+  | { readonly status: 'skipped'; readonly reason: 'already-applied' | 'message-gone' }
+  | { readonly status: 'refused'; readonly reason: DeleteRefusalReason }
+  | { readonly status: 'failed'; readonly code: string };
+
 export interface ModerationSafetyState {
   readonly killswitch: boolean;
   readonly breakerOpen: boolean;
@@ -103,6 +123,23 @@ export interface ModerationGatewayDeps {
 export class ModerationActionGateway {
   constructor(private readonly deps: ModerationGatewayDeps) {}
 
+  /** Layers 1–3, shared by every action. Returns the safety state, or the refusal. */
+  private preflight(
+    auth: Authorized<'moderation.act'>,
+    refuse: (reason: DeleteRefusalReason) => { status: 'refused'; reason: DeleteRefusalReason },
+  ): ModerationSafetyState | { status: 'refused'; reason: DeleteRefusalReason } {
+    const recheck = authorize(
+      { store: this.deps.authz, guildId: this.deps.guildId, actor: auth.actor },
+      capabilityOf(auth),
+    );
+    if (!recheck.ok || auth.guildId !== this.deps.guildId) return refuse('unauthorized');
+    const state = this.deps.state.read();
+    if (!state) return refuse('guild-unknown');
+    if (state.killswitch) return refuse('killswitch');
+    if (state.breakerOpen) return refuse('breaker-open');
+    return state;
+  }
+
   /**
    * Times out, untimeouts, kicks, bans, or unbans one member — or explains
    * why it did not.
@@ -132,17 +169,13 @@ export class ModerationActionGateway {
     };
 
     // --- 1. authorization, re-verified --------------------------------------
-    const recheck = authorize(
-      { store: deps.authz, guildId: deps.guildId, actor: auth.actor },
-      capabilityOf(auth),
-    );
-    if (!recheck.ok || auth.guildId !== deps.guildId) return refuse('unauthorized');
-
     // --- 2, 3. kill switch and breaker --------------------------------------
-    const state = deps.state.read();
-    if (!state) return refuse('guild-unknown');
-    if (state.killswitch) return refuse('killswitch');
-    if (state.breakerOpen) return refuse('breaker-open');
+    const pre = this.preflight(
+      auth,
+      (reason) => refuse(reason) as { status: 'refused'; reason: DeleteRefusalReason },
+    );
+    if ('status' in pre) return pre;
+    const state = pre;
 
     // --- 7. hierarchy, checked live and immediately before acting -----------
     // Never cached: the failure mode is somebody reordering roles, or Discord
@@ -240,6 +273,69 @@ export class ModerationActionGateway {
       return { status: 'failed', code };
     }
 
+    return { status: 'applied' };
+  }
+
+  /**
+   * Deletes one message for a moderator (ADR 0141 decision 7). A message
+   * someone else already removed is `skipped`, not `failed`: the outcome the
+   * moderator wanted exists, but this click did not cause it.
+   */
+  async deleteMessage(
+    auth: Authorized<'moderation.act'>,
+    intent: DeleteMessageIntent,
+  ): Promise<DeleteMessageOutcome> {
+    const { deps } = this;
+    const fields = {
+      component: 'moderation-effects',
+      guildId: deps.guildId,
+      channelId: intent.channelId,
+      messageId: intent.messageId,
+      action: 'delete',
+    };
+    const refuse = (reason: DeleteRefusalReason) => {
+      deps.logger.warn(
+        safeLogFields({ ...fields, outcome: 'refused', reason }),
+        'moderation action refused',
+      );
+      return { status: 'refused' as const, reason };
+    };
+
+    const pre = this.preflight(auth, refuse);
+    if ('status' in pre) return pre;
+
+    if (!deps.claims.claim(intent.dedupeKey).claimed)
+      return { status: 'skipped', reason: 'already-applied' };
+
+    if (pre.dryRun) {
+      deps.logger.info(
+        safeLogFields({ ...fields, dryRun: true, outcome: 'dry-run' }),
+        'dry run: no Discord call was made',
+      );
+      return { status: 'dry-run' };
+    }
+
+    try {
+      await deps.discord.deleteMessage(
+        deps.guildId,
+        { channelId: intent.channelId, messageId: intent.messageId },
+        intent.reason,
+      );
+    } catch (err) {
+      if (err instanceof DiscordApiError && err.code === DiscordErrorCode.UnknownMessage) {
+        deps.logger.info(
+          safeLogFields({ ...fields, outcome: 'message-gone' }),
+          'the message was already gone',
+        );
+        return { status: 'skipped', reason: 'message-gone' };
+      }
+      const code = err instanceof Error ? err.name : 'UnknownError';
+      deps.logger.error(
+        safeLogFields({ ...fields, outcome: 'failed', code, err }),
+        'the Discord call failed',
+      );
+      return { status: 'failed', code };
+    }
     return { status: 'applied' };
   }
 }

@@ -1,8 +1,11 @@
 import type { AuditLogEntry, Snowflake } from '../discord/port.js';
+import type { OutgoingMessage } from '../discord/port.js';
 import type { LogMessageDeletePayload } from '../jobs/kinds.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
+import { toOutgoingMessage } from '../ui/discord/card.js';
 import { correlateDeletion } from './attribution.js';
+import { renderLogCard } from './cards.js';
 import { formatMessageDelete } from './format.js';
 import { routeAccepts, routeDedupeKind, type LogRoute, type LogSource } from './routing.js';
 
@@ -47,10 +50,7 @@ export interface MessageDeleteAttributionPorts {
   ): void;
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   release(input: { eventKind: string; fingerprint: string }): void;
-  sendMessage(
-    channelId: Snowflake,
-    message: { content: string; allowedMentions: { parse: readonly [] } },
-  ): Promise<unknown>;
+  sendMessage(channelId: Snowflake, message: OutgoingMessage): Promise<unknown>;
   readonly logger: Logger;
   now(): number;
 }
@@ -110,13 +110,19 @@ export async function attributeAndLogDeletion(
   for (const route of pending) {
     const dedupeKind = routeDedupeKind(route.routeId, 'message_delete');
     try {
-      await ports.sendMessage(route.channelId, {
-        content: formatMessageDelete(
-          route.includeContent ? payload : { ...payload, content: undefined },
-          actorId,
+      await ports.sendMessage(
+        route.channelId,
+        toOutgoingMessage(
+          renderLogCard(
+            formatMessageDelete(
+              route.includeContent ? payload : { ...payload, content: undefined },
+              actorId,
+              payload.deletedAtMs,
+            ),
+            ports.guildId,
+          ),
         ),
-        allowedMentions: { parse: [] },
-      });
+      );
     } catch (err) {
       // The send failing must not blackhole this line forever (ADR 0123
       // decision 6) — but the resolution above is durable and idempotent via

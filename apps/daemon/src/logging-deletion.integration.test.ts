@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
   attributeAndLogDeletion,
+  cardTexts,
   createLoggingSubscriber,
   JOB_KINDS,
   JobWorker,
@@ -10,6 +11,7 @@ import {
   parseSnowflakeId,
   type LoggingPorts,
   type MessageDeleteAttributionPorts,
+  type OutgoingMessage,
 } from '@bananasaurs/core';
 import {
   effectRepo,
@@ -23,7 +25,7 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
-import { AUDIT_LOG_LAG_MS, FakeDiscord } from '@bananasaurs/testkit';
+import { AUDIT_LOG_LAG_MS, FakeDiscord, type RestCall } from '@bananasaurs/testkit';
 import { logMessageDeleteHandler } from './jobs/logging.js';
 
 /**
@@ -143,6 +145,12 @@ afterEach(() => {
 const define = (messageId: string) =>
   discord.defineMessage({ channelId: CHANNEL, messageId, authorId: AUTHOR });
 
+const sentMessage = (call: RestCall | undefined): OutgoingMessage => {
+  const message = call?.args[2] as OutgoingMessage | undefined;
+  if (message === undefined) throw new Error('expected a sendMessage call');
+  return message;
+};
+
 describe('a known actor', () => {
   it('is attributed and labelled inferred, never as plain attribution', async () => {
     const messageId = '600000000000000001';
@@ -153,9 +161,13 @@ describe('a known actor', () => {
     expect(await worker.drain()).toBe(1);
 
     const posted = discord.restCalls('sendMessage').at(-1);
-    const content = (posted?.args[2] as { content: string }).content;
-    expect(content).toContain(`<@${MOD_A}>`);
-    expect(content.toLowerCase()).toContain('inferred');
+    const message = sentMessage(posted);
+    expect(message.flags).toBe(32768);
+    expect(message.allowedMentions).toEqual({ parse: [] });
+    const text = cardTexts(message.components ?? []);
+    expect(text).toContain('-# 🗑️ MESSAGE DELETED');
+    expect(text).toContain(`<@${MOD_A}>`);
+    expect(text.toLowerCase()).toContain('inferred');
 
     const attribution = loggingRepo.findMessageDeleteAttribution(scope, messageId);
     expect(attribution).toEqual({ actorId: MOD_A, inferred: true });
@@ -228,9 +240,13 @@ describe('a self-deletion', () => {
     discord.advance(MESSAGE_DELETE_ATTRIBUTION_DELAY_MS);
     expect(await worker.drain()).toBe(1);
 
-    const content = (discord.restCalls('sendMessage').at(-1)?.args[2] as { content: string })
-      .content;
-    expect(content.toLowerCase()).toContain('unknown');
+    const message = sentMessage(discord.restCalls('sendMessage').at(-1));
+    expect(message.flags).toBe(32768);
+    expect(message.allowedMentions).toEqual({ parse: [] });
+    const text = cardTexts(message.components ?? []);
+    expect(text).toContain('-# 🗑️ MESSAGE DELETED');
+    expect(text).toContain(`Message by <@${AUTHOR}> deleted in <#${CHANNEL}>`);
+    expect(text.toLowerCase()).toContain('unknown');
 
     expect(loggingRepo.findMessageDeleteAttribution(scope, messageId)).toEqual({
       actorId: undefined,
@@ -296,10 +312,9 @@ describe('two candidates, both unclaimed', () => {
       deletedAtMs: discord.now(),
     });
 
-    const content = (discord.restCalls('sendMessage').at(-1)?.args[2] as { content: string })
-      .content;
-    expect(content).not.toContain(`<@${MOD_A}>`);
-    expect(content).not.toContain(`<@${MOD_B}>`);
+    const text = cardTexts(sentMessage(discord.restCalls('sendMessage').at(-1)).components ?? []);
+    expect(text).not.toContain(`<@${MOD_A}>`);
+    expect(text).not.toContain(`<@${MOD_B}>`);
     expect(loggingRepo.findMessageDeleteAttribution(scope, messageId)?.actorId).toBeUndefined();
   });
 });
@@ -332,9 +347,8 @@ describe('idempotency across a retry', () => {
 
     await attributeAndLogDeletion(jobPorts, payload);
     expect(discord.restCalls('sendMessage')).toHaveLength(2);
-    const content = (discord.restCalls('sendMessage').at(-1)?.args[2] as { content: string })
-      .content;
-    expect(content).toContain(`<@${MOD_A}>`);
+    const text = cardTexts(sentMessage(discord.restCalls('sendMessage').at(-1)).components ?? []);
+    expect(text).toContain(`<@${MOD_A}>`);
 
     // A third message in the same run must still see its own unclaimed unit —
     // the retry above must not have double-claimed the first message's unit.
@@ -385,7 +399,7 @@ describe('two routes', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls.map((c) => c.args[1]).sort()).toEqual([LOG, OTHER_LOG].sort());
     for (const call of calls) {
-      expect((call.args[2] as { content: string }).content).toContain(`<@${MOD_A}>`);
+      expect(cardTexts(sentMessage(call).components ?? [])).toContain(`<@${MOD_A}>`);
     }
     expect(loggingRepo.findMessageDeleteAttribution(scope, messageId)).toEqual({
       actorId: MOD_A,

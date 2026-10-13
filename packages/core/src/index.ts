@@ -169,6 +169,7 @@ export {
   type ConnectionPorts,
 } from './pipeline/connection-subscriber.js';
 export {
+  formatAutomodMatch,
   formatMemberJoin,
   formatMemberLeave,
   formatMessageDelete,
@@ -306,6 +307,8 @@ export {
 } from './effects/moderation-gateway.js';
 export {
   createAutomodSubscriber,
+  type AutomodActionTaken,
+  type AutomodMatchInfo,
   type AutomodSafetyState,
   type AutomodSubscriberDeps,
   type AutomodSwitchState,
@@ -380,8 +383,11 @@ export {
   createModCommandSubscriber,
   MAX_TIMEOUT_MS,
   MOD_COMMAND_NAME,
+  runDirectAction,
+  runWarn,
   type ModCommandCasePorts,
   type ModCommandDeps,
+  type ModInput,
   type NoteEvidenceCasePorts,
 } from './mod/commands.js';
 export {
@@ -393,7 +399,6 @@ export {
 } from './mod/history.js';
 export {
   banConfirmDedupeKey,
-  buildConfirmCancelComponents,
   buildModCancelCustomId,
   buildModConfirmCustomId,
   createModConfirmationSubscriber,
@@ -409,6 +414,7 @@ export {
   type ParsedModConfirmCustomId,
   type PendingActionRowLike,
 } from './mod/confirmations.js';
+export { createModCardActionSubscriber, type ModCardActionDeps } from './mod/card-actions.js';
 export {
   emojiKeySchema,
   optionByEmoji,
@@ -472,12 +478,12 @@ export {
   CUSTOM_ID_PREFIX,
   isSelectCustomId,
   parseCustomId,
-  renderPanelMessage,
+  renderPanelCard,
   type ParsedCustomId,
 } from './panels/components.js';
 export {
   createInteractionSubscriber,
-  describeResult,
+  panelResultCard,
   selectionAfterClick,
   type InteractionSubscriberDeps,
   type PanelResponder,
@@ -793,6 +799,7 @@ export * from './assistant/router.js';
 
 export * from './ui/discord/index.js';
 export { ERROR_COPY, type CopyAudience, type ErrorCode, type ErrorCopy } from './copy/errors.js';
+export { moderationRefusalCode, panelRefusalCode, refFor } from './copy/refusals.js';
 
 // Runtime schemas for the dashboard's generated automod editor. Predicate logic is unchanged.
 export { capsConfig } from './automod/predicates/caps.js';

@@ -55,6 +55,13 @@ describe('card kit constructors', () => {
     expect(button({ customId: 'd', label: 'Z', style: 'success' }).style).toBe(3);
   });
 
+  it('takes a custom emoji by id', () => {
+    expect(button({ customId: 'a', label: 'A', emoji: { id: '123' } }).emoji).toEqual({
+      id: '123',
+    });
+    expect(button({ customId: 'a', label: 'A', emoji: '🔧' }).emoji).toEqual({ name: '🔧' });
+  });
+
   it('builds a link button with style 5 and no custom id', () => {
     expect(linkButton({ url: 'https://example.com', label: 'Docs' })).toEqual({
       type: 2,

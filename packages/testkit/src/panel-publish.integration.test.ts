@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
+  cardCustomIds,
+  cardTexts,
   editManagedPanel,
   parseGuildId,
   parseSnowflakeId,
   postManagedPanel,
+  renderPanelCard,
+  toOutgoingMessage,
+  type CardMessage,
+  type OutgoingMessage,
   type PanelConfig,
   type PublishDeps,
 } from '@bananasaurs/core';
@@ -55,17 +61,31 @@ beforeEach(() => {
     discord,
     logger,
     setPanelMessage: (panelId, messageId) => recorded.push({ panelId, messageId }),
+    toMessage: (card: CardMessage): OutgoingMessage =>
+      toOutgoingMessage(card, () => ({
+        name: 'banner-panel.png',
+        contentType: 'image/png',
+        data: new Uint8Array([1]),
+      })),
   };
 });
 
 describe('posting', () => {
-  it("sends a message carrying the panel's components", async () => {
-    const ref = await postManagedPanel(managed(), deps);
+  it('sends the panel card with the V2 flag and the panel banner', async () => {
+    const panel = managed();
+    const ref = await postManagedPanel(panel, deps);
 
     const sent = discord.restCalls('sendMessage');
     expect(sent).toHaveLength(1);
-    const message = sent[0]?.args[2] as { components: { components: unknown[] }[] };
-    expect(message.components[0]?.components).toHaveLength(1);
+    const message = sent[0]?.args[2] as OutgoingMessage;
+    expect(message.flags).toBe(32768);
+    expect(message.files?.map((f) => f.name)).toEqual(['banner-panel.png']);
+    const container = message.components?.[0] as { components: readonly unknown[] };
+    expect(container.components[0]).toMatchObject({
+      type: 12,
+      items: [{ media: { url: 'attachment://banner-panel.png' } }],
+    });
+    expect(cardCustomIds(message.components ?? [])).toEqual(['bs.panel:roles:alpha']);
     expect(ref.channelId).toBe(CHANNEL);
   });
 
@@ -78,8 +98,8 @@ describe('posting', () => {
 
   it("uses the caller's content when given one", async () => {
     await postManagedPanel(managed({ content: 'Pick a team' }), deps);
-    const message = discord.restCalls('sendMessage')[0]?.args[2] as { content: string };
-    expect(message.content).toBe('Pick a team');
+    const message = discord.restCalls('sendMessage')[0]?.args[2] as OutgoingMessage;
+    expect(cardTexts(message.components ?? [])).toContain('Pick a team');
   });
 
   it('refuses to post an adopted panel', async () => {
@@ -114,16 +134,19 @@ describe('editing', () => {
       ],
     });
 
-    await editManagedPanel({ ...posted, content: 'Now with more roles' }, deps);
+    const editedPanel = { ...posted, content: 'Now with more roles' };
+    await editManagedPanel(editedPanel, deps);
 
     const edited = discord.restCalls('editMessage');
     expect(edited).toHaveLength(1);
-    const message = edited[0]?.args[2] as {
-      content: string;
-      components: { components: unknown[] }[];
-    };
-    expect(message.content).toBe('Now with more roles');
-    expect(message.components[0]?.components).toHaveLength(2);
+    const message = edited[0]?.args[2] as OutgoingMessage;
+    expect(message.flags).toBe(32768);
+    expect(cardTexts(message.components ?? [])).toContain('Now with more roles');
+    expect(cardCustomIds(message.components ?? [])).toEqual([
+      'bs.panel:roles:alpha',
+      'bs.panel:roles:beta',
+    ]);
+    expect(message).toEqual(deps.toMessage(renderPanelCard(editedPanel)));
   });
 
   it('refuses to edit an adopted panel, rather than letting Discord say 50013', async () => {

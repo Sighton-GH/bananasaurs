@@ -978,6 +978,29 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         : { channelId: posted.channel_id, messageId: posted.id };
     },
 
+    /**
+     * Replaces the message an interaction answered with, or the message a
+     * component sits on after `deferUpdate` (ADR 0141 decision 9): PATCH on
+     * the `@original` webhook-message route. Token-authenticated, like every
+     * other interaction route — no bot Authorization header. Built the same
+     * way `editMessage` builds its body, so a card edit clears `content` and
+     * `embeds` and files ride multipart with matching attachment metadata.
+     */
+    async editOriginalResponse(_guildId, ref, message) {
+      const files = restFiles(message);
+      const becomesCard = message.flags !== undefined && (message.flags & IS_COMPONENTS_V2) !== 0;
+      await mapErrors(() =>
+        rest.patch(Routes.webhookMessage(applicationId, ref.token, '@original'), {
+          body: {
+            ...toRestMessage(message),
+            ...(becomesCard ? { content: null, embeds: null } : {}),
+          },
+          ...(files === undefined ? {} : { files }),
+          auth: false,
+        }),
+      );
+    },
+
     // --- audit log -------------------------------------------------------
     async fetchAuditLog(guildId, options) {
       const log = (await mapErrors(() =>

@@ -1,7 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import { authorize, type Actor, type Authorized, type AuthzStore } from '../authz.js';
-import type { DiscordMember, DiscordPort, DiscordRole, Snowflake } from '../discord/port.js';
+import type {
+  DiscordMember,
+  DiscordMessageRef,
+  DiscordPort,
+  DiscordRole,
+  Snowflake,
+} from '../discord/port.js';
+import { DiscordApiError } from '../discord/errors.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import {
   ModerationActionGateway,
@@ -191,8 +198,10 @@ class MinimalModerationDiscord implements DiscordPort {
   async editMessage(): Promise<void> {
     this.notUsed('editMessage');
   }
-  async deleteMessage(): Promise<void> {
-    this.notUsed('deleteMessage');
+  deleteError: Error | undefined = undefined;
+  async deleteMessage(guildId: Snowflake, ref: DiscordMessageRef, reason: string): Promise<void> {
+    this.record('deleteMessage', [guildId, ref, reason]);
+    if (this.deleteError !== undefined) throw this.deleteError;
   }
   async bulkDeleteMessages(): Promise<void> {
     this.notUsed('bulkDeleteMessages');
@@ -205,6 +214,9 @@ class MinimalModerationDiscord implements DiscordPort {
   }
   async respondToInteraction(): Promise<never> {
     this.notUsed('respondToInteraction');
+  }
+  async editOriginalResponse(): Promise<void> {
+    this.notUsed('editOriginalResponse');
   }
   async fetchMessageContent(): Promise<never> {
     this.notUsed('fetchMessageContent');
@@ -468,6 +480,133 @@ describe('ModerationActionGateway', () => {
         expect(second).toEqual({ status: 'skipped', reason: 'already-applied' });
         expect(h.discord.callsFor(method)).toHaveLength(1);
       }
+    });
+  });
+
+  describe('deleteMessage (ADR 0141 decision 7)', () => {
+    const C = parseSnowflakeId('333333333333333333');
+    const M = parseSnowflakeId('666666666666666666');
+    const DEDUPE = 'mod:G:delete:intent-1';
+    const REASON = 'Deleted from a log card';
+    const deleteIntent = () => ({ channelId: C, messageId: M, dedupeKey: DEDUPE, reason: REASON });
+
+    it('refuses when the authz store denies: unauthorized, no claim, no REST call', async () => {
+      const h = build({ deps: { authz: { hasGrant: () => false } } });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'unauthorized' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('refuses when the witness guild differs from the gateway guild: unauthorized, no claim, no REST call', async () => {
+      // The grant itself is valid (permissive store, authorized actor) — only
+      // the guild binding is wrong, so `preflight`'s guild-identity half must
+      // refuse before any claim is taken or REST call made.
+      const h = build({ deps: { guildId: parseGuildId('999999999999999999') } });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'unauthorized' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('refuses when the guild is unknown: guild-unknown', async () => {
+      const h = build({ deps: { state: { read: () => undefined } } });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'guild-unknown' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('refuses when the kill switch is on: killswitch, no REST call', async () => {
+      const h = build();
+      h.setState({ killswitch: true });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'killswitch' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('refuses when the breaker is open: breaker-open', async () => {
+      const h = build();
+      h.setState({ breakerOpen: true });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'breaker-open' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('never fetches the member, the roles or the bot position: no hierarchy layer', async () => {
+      const h = build();
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'applied' });
+      expect(h.discord.callsFor('fetchMember')).toHaveLength(0);
+      expect(h.discord.callsFor('fetchRoles')).toHaveLength(0);
+      expect(h.discord.callsFor('fetchBotHighestRolePosition')).toHaveLength(0);
+    });
+
+    it('skips when the claim is already taken: already-applied, no REST call', async () => {
+      const h = build();
+      h.claimed.add(DEDUPE);
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'skipped', reason: 'already-applied' });
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('records a dry run: dry-run, claim taken, no REST call', async () => {
+      const h = build();
+      h.setState({ dryRun: true });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'dry-run' });
+      expect(h.claimed.has(DEDUPE)).toBe(true);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
+    it('deletes the message with the audit-log reason: applied', async () => {
+      const h = build();
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'applied' });
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(1);
+      expect(h.discord.callsFor('deleteMessage')[0]?.args).toEqual([
+        GUILD,
+        { channelId: C, messageId: M },
+        REASON,
+      ]);
+    });
+
+    it('treats an already-deleted message as skipped: message-gone', async () => {
+      const h = build();
+      h.discord.deleteError = new DiscordApiError(404, 10008, 'Unknown Message');
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'skipped', reason: 'message-gone' });
+    });
+
+    it('reports a permission failure: failed with the error name, logged', async () => {
+      const errorSpy = vi.fn();
+      const h = build({
+        deps: {
+          logger: {
+            warn: logger.warn.bind(logger),
+            info: logger.info.bind(logger),
+            error: errorSpy,
+          } as unknown as typeof logger,
+        },
+      });
+      h.discord.deleteError = new DiscordApiError(403, 50013, 'Missing Permissions');
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'failed', code: 'DiscordApiError' });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy.mock.calls[0]?.[0]).toMatchObject({ component: 'moderation-effects' });
     });
   });
 });

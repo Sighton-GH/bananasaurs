@@ -1,10 +1,11 @@
-import type { Snowflake } from '../discord/port.js';
+import type { OutgoingMessage, Snowflake } from '../discord/port.js';
 import { createHash } from 'node:crypto';
-import type { MemberEvent } from '../discord/events.js';
+import type { MemberEvent, NativeAutoModAction } from '../discord/events.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { fingerprintOf } from '../pipeline/fingerprint.js';
+import { toOutgoingMessage } from '../ui/discord/card.js';
 import { MESSAGE_DELETE_ATTRIBUTION_DELAY_MS } from './attribution.js';
 import { logMessageDeleteDedupeKey } from '../jobs/kinds.js';
 import {
@@ -18,11 +19,13 @@ import {
   formatGapMarker,
   formatMemberJoin,
   formatMemberLeave,
+  formatMessageCreate,
   formatMessageEdit,
   formatRoleCreate,
   formatRoleDelete,
   formatRoleUpdate,
 } from './format.js';
+import { renderLogCard, type LogCardView } from './cards.js';
 import { MEMBER_CHANGE_KINDS, baselineFor, memberChanges } from './member-changes.js';
 import { AUDIT_EVENT_KINDS, auditItemsFor } from './audit-items.js';
 import type { MemberSnapshotLike } from './member-changes.js';
@@ -59,10 +62,7 @@ export interface LoggingPorts {
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   /** Released when a send throws, so a later delivery of the same event can retry. */
   release(input: { eventKind: string; fingerprint: string }): void;
-  sendMessage(
-    channelId: Snowflake,
-    message: { content: string; allowedMentions: { parse: readonly [] } },
-  ): Promise<unknown>;
+  sendMessage(channelId: Snowflake, message: OutgoingMessage): Promise<unknown>;
   /**
    * The per-member last-seen record (ADR 0123 decision 8): what the logging
    * module last knew, so a change can be rendered old → new. Hashes only —
@@ -104,9 +104,11 @@ const ROUTE_KIND = {
  * not mapped from one gateway kind), `message_delete`, which is routed
  * here but handled by a delayed job rather than by the switch below
  * (ADR 0019 fact 3), the eighteen audit-log kinds (one item per live
- * `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
- * gateway bulk-delete event), and `member_warn` (posted by the logging
- * side of `/mod warn` through `createLogPoster`, not by this subscriber).
+ *  `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
+ *  gateway bulk-delete event), `member_warn` (posted by the logging
+ *  side of `/mod warn` through `createLogPoster`, not by this subscriber),
+ *  and `automod_match` (posted by the automod subscriber's `onMatchRecorded`
+ *  hook through `createLogPoster`, not by this subscriber).
  *
  * Exported for `bananasaurs log routing create`, which validates against it. A
  * route on an event kind nothing emits is the exact failure WP4's report §5
@@ -120,6 +122,7 @@ export const LOG_EVENT_KINDS: readonly string[] = [
   'message_delete',
   'message_bulk_delete',
   'member_warn',
+  'automod_match',
 ].sort();
 
 /**
@@ -142,7 +145,7 @@ interface LogItem {
   eventKind: string; // a LOG_EVENT_KINDS value
   fingerprint: string; // replay-stable identity of this item
   source: LogSource | undefined; // undefined for events with no source channel
-  render(includeContent: boolean): string;
+  view(includeContent: boolean): LogCardView;
 }
 
 export type { LogItem };
@@ -158,7 +161,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
       eventKind: item.eventKind,
       fingerprint: event.entryId,
       source: undefined,
-      render: () => item.render(),
+      view: () => item.view(event.receivedAtMs),
     }));
   }
 
@@ -175,8 +178,11 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: 'message_bulk_delete',
         fingerprint,
         source,
-        render: () =>
-          `Messages bulk-deleted in <#${event.channelId}>: ${event.messageIds.length} messages`,
+        view: () => ({
+          kind: 'message_bulk_delete',
+          headline: `${event.messageIds.length} messages were purged in <#${event.channelId}>`,
+          at: event.receivedAtMs,
+        }),
       },
     ];
   }
@@ -198,8 +204,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source,
-        render: (includeContent) =>
-          `Message created in <#${event.channelId}> by ${event.authorId === undefined ? 'an unknown member' : `<@${event.authorId}>`}${includeContent && event.content !== undefined ? `\nContent: ${event.content}` : ''}`,
+        view: (includeContent) => formatMessageCreate(event, includeContent, event.receivedAtMs),
       },
     ];
   }
@@ -217,7 +222,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source,
-        render: (includeContent) => formatMessageEdit(event, includeContent),
+        view: (includeContent) => formatMessageEdit(event, includeContent, event.receivedAtMs),
       },
     ];
   }
@@ -230,7 +235,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => formatMemberJoin(event),
+        view: () => formatMemberJoin(event, event.receivedAtMs),
       },
     ];
   }
@@ -243,7 +248,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => formatMemberLeave(event),
+        view: () => formatMemberLeave(event, event.receivedAtMs),
       },
     ];
   }
@@ -256,7 +261,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => formatRoleCreate(event),
+        view: () => formatRoleCreate(event, event.receivedAtMs),
       },
     ];
   }
@@ -269,7 +274,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => formatRoleUpdate(event),
+        view: () => formatRoleUpdate(event, event.receivedAtMs),
       },
     ];
   }
@@ -282,7 +287,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => formatRoleDelete(event),
+        view: () => formatRoleDelete(event, event.receivedAtMs),
       },
     ];
   }
@@ -295,7 +300,11 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => 'Server became available to Bananasaurs.',
+        view: () => ({
+          kind: 'guild_available',
+          headline: 'The server became available to Bananasaurs.',
+          at: event.receivedAtMs,
+        }),
       },
     ];
   }
@@ -308,7 +317,11 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () => 'Server became unavailable to Bananasaurs.',
+        view: () => ({
+          kind: 'guild_unavailable',
+          headline: 'The server became unavailable to Bananasaurs.',
+          at: event.receivedAtMs,
+        }),
       },
     ];
   }
@@ -321,8 +334,16 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source: undefined,
-        render: () =>
-          `Discord AutoMod action ${event.actionType} for <@${event.userId}> under rule ${event.ruleId}.`,
+        view: () => ({
+          kind: 'automod_action',
+          headline: `Discord AutoMod acted on a message by <@${event.userId}>`,
+          details: [`Action: ${automodActionLabel(event.actionType)}`, `-# Rule ${event.ruleId}`],
+          memberId: event.userId,
+          ...(event.messageId !== undefined && event.channelId !== undefined
+            ? { message: { channelId: event.channelId, messageId: event.messageId, exists: true } }
+            : {}),
+          at: event.receivedAtMs,
+        }),
       },
     ];
   }
@@ -391,12 +412,14 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
     if (event.kind === 'memberUpdate') {
       const baseline = baselineFor(ports.getMemberSnapshot(event.userId), event);
       const items: LogItem[] = memberChanges(baseline, event).map((change) => {
-        const text = change.render();
+        // `at` is fixed at 0 so a replay hashes identically; the posted view
+        // carries the event's own time.
+        const fingerprint = `${event.userId}:${change.eventKind}:${baseline.version}:${shortHash(JSON.stringify(change.view(0)))}`;
         return {
           eventKind: change.eventKind,
-          fingerprint: `${event.userId}:${change.eventKind}:${baseline.version}:${shortHash(text)}`,
+          fingerprint,
           source: undefined,
-          render: () => text,
+          view: () => change.view(event.receivedAtMs),
         };
       });
       const firstError = await postItems(ports, items, event.kind);
@@ -464,12 +487,15 @@ async function postGapMarkers(
     const fingerprint = `${event.disconnectedAtMs}:${channelId}`;
     if (!ports.claim({ eventKind: dedupeKind, fingerprint })) continue;
     try {
-      await ports.sendMessage(channelId, {
-        content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
-        // Log lines quote member-controlled text; mentions in the content
-        // must never ping anyone in the log channel.
-        allowedMentions: { parse: [] },
-      });
+      await ports.sendMessage(
+        channelId,
+        toOutgoingMessage(
+          renderLogCard(
+            formatGapMarker(event.disconnectedAtMs, event.receivedAtMs, event.receivedAtMs),
+            ports.guildId,
+          ),
+        ),
+      );
     } catch (err) {
       ports.release({ eventKind: dedupeKind, fingerprint });
       ports.logger.error(
@@ -485,6 +511,26 @@ async function postGapMarkers(
     }
   }
 }
+
+/**
+ * Words for Discord's own AutoMod action on a log card. `NativeAutoModAction`
+ * names the wire values (`block`, `alert`, `timeout`, `block_interaction`);
+ * anything else Discord adds later renders as `Other`, never a raw code.
+ */
+const automodActionLabel = (action: NativeAutoModAction): string => {
+  switch (action) {
+    case 'block':
+      return 'Blocked the message';
+    case 'alert':
+      return 'Sent an alert';
+    case 'timeout':
+      return 'Timed the member out';
+    case 'block_interaction':
+      return 'Blocked an interaction';
+    default:
+      return 'Other';
+  }
+};
 
 /**
  * Short stable hash for a member-change fingerprint, the same primitive
@@ -540,10 +586,10 @@ async function postItems(
       const dedupeKind = routeDedupeKind(route.routeId, item.eventKind);
       if (!ports.claim({ eventKind: dedupeKind, fingerprint: item.fingerprint })) continue;
       try {
-        await ports.sendMessage(route.channelId, {
-          content: item.render(route.includeContent),
-          allowedMentions: { parse: [] },
-        });
+        await ports.sendMessage(
+          route.channelId,
+          toOutgoingMessage(renderLogCard(item.view(route.includeContent), ports.guildId)),
+        );
       } catch (err) {
         // A transient send failure must not blackhole this line forever —
         // this module has no reconciliation to fall back on (ADR 0123

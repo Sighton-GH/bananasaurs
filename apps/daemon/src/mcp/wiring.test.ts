@@ -50,7 +50,10 @@ import {
   RateLimiter,
   postManagedPanel,
   seedPanelReactions,
+  toOutgoingMessage,
+  type CardMessage,
   type OpsPublishResult,
+  type OutgoingMessage,
 } from '@bananasaurs/core';
 import type { Chunk, GuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
@@ -11681,6 +11684,12 @@ describe('/mcp panel tools through the real composition', () => {
                 logger: silentLogger,
                 setPanelMessage: (id: string, messageId: string) =>
                   panelRepo.setPanelMessage(scope, id, messageId, clock),
+                toMessage: (card: CardMessage): OutgoingMessage =>
+                  toOutgoingMessage(card, () => ({
+                    name: 'banner-panel.png',
+                    contentType: 'image/png',
+                    data: new Uint8Array(),
+                  })),
               };
               let action: OpsPublishResult['action'];
               if (panel.messageId === undefined) {

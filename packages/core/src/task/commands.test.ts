@@ -82,6 +82,9 @@ const baseDeps = () => {
   );
   const deferUpdate = vi.fn(async (): Promise<void> => undefined);
   const showModal = vi.fn(async (_ref: unknown, _modal: unknown): Promise<void> => undefined);
+  const editOriginal = vi.fn(
+    async (_ref: unknown, _message: OutgoingMessage): Promise<void> => undefined,
+  );
   const taskTitle = vi.fn(() => 'Wire the brake light harness');
   const postUpdate = vi.fn(
     async (): Promise<{
@@ -102,6 +105,7 @@ const baseDeps = () => {
       respond,
       deferUpdate,
       showModal,
+      editOriginal,
     },
     now: () => 1700000000000,
     listForMember,
@@ -122,6 +126,7 @@ const baseDeps = () => {
     respond,
     deferUpdate,
     showModal,
+    editOriginal,
     startTask,
     refreshTaskCard,
     taskTitle,

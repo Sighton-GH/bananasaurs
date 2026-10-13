@@ -1,7 +1,10 @@
 // Posts one of every task card to a test channel, for a visual check on
 // desktop and mobile, light and dark (ADR 0140, docs/SMOKE_TESTS.md).
 //
-//   npm run build && npm run smoke:cards -- --channel <channel id>
+//   npm run build && npm run smoke:cards -- --channel <channel id> [--p2]
+//
+// With --p2, after the P1 cards it posts one of each P2 log, moderation,
+// history, panel and error card (ADR 0141).
 //
 // Owner-run only. Needs DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID and
 // TEST_GUILD_ID in .env. Refuses any channel outside TEST_GUILD_ID. Pings
@@ -216,6 +219,267 @@ await send(
     tone: 'ok',
   }),
 );
+
+if (args.includes('--p2')) {
+  // P2 cards (ADR 0141), from the built core. The log, mod and history
+  // renderers are pure, so the gallery calls them directly; it never runs a
+  // moderation action. Every mention below is the sample guild's own channel
+  // id or the bot's application id: allowedMentions stops them pinging, and
+  // the buttons point at nothing real, so pressing them gives a refusal or
+  // an "already handled" reply.
+  const { renderLogCard } = await import('../packages/core/dist/logging/cards.js');
+  const { formatGapMarker } = await import('../packages/core/dist/logging/format.js');
+  const {
+    modOutcomeCard,
+    warnOutcomeCard,
+    banConfirmCard,
+    purgeConfirmCard,
+    deleteConfirmCard,
+    historyCard,
+  } = await import('../packages/core/dist/mod/cards.js');
+  const { buildHistoryPage } = await import('../packages/core/dist/mod/history.js');
+
+  const APP = process.env.DISCORD_APPLICATION_ID;
+  const GUILD = process.env.TEST_GUILD_ID;
+  const MSG = '123456789012345678';
+  const IID = '1234567890123456789';
+
+  await send(
+    'log message edit',
+    renderLogCard(
+      {
+        kind: 'message_edit',
+        headline: `<@${APP}> edited a message in <#${channelId}>`,
+        quote: { label: 'Now reads', text: 'Left side done, right side tomorrow.' },
+        at: now,
+        memberId: APP,
+        message: { channelId, messageId: MSG, exists: true },
+      },
+      GUILD,
+    ),
+  );
+  await send(
+    'log message delete',
+    renderLogCard(
+      {
+        kind: 'message_delete',
+        headline: `Message by <@${APP}> deleted in <#${channelId}>`,
+        details: [`Deleted by <@${APP}> (inferred)`],
+        quote: { label: 'It read', text: 'Left side done.' },
+        at: now,
+        memberId: APP,
+        message: { channelId, messageId: MSG, exists: false },
+      },
+      GUILD,
+    ),
+  );
+  await send(
+    'log member ban',
+    renderLogCard(
+      {
+        kind: 'member_ban',
+        headline: `Banned: <@${APP}> by <@${APP}>`,
+        at: now,
+      },
+      GUILD,
+    ),
+  );
+  await send('log gap', renderLogCard(formatGapMarker(now - 60_000, now, now), GUILD));
+  await send(
+    'log automod match',
+    renderLogCard(
+      core.formatAutomodMatch(
+        {
+          ruleId: 'sample-rule',
+          ruleKind: 'keyword filter',
+          memberId: APP,
+          channelId,
+          parentChannelId: undefined,
+          categoryId: undefined,
+          messageId: MSG,
+          snippet: 'buy cheap followers now',
+          actionTaken: 'would_delete',
+          at: now,
+        },
+        true,
+      ),
+      GUILD,
+    ),
+  );
+
+  await send(
+    'mod timeout applied',
+    modOutcomeCard({
+      action: 'timeout',
+      targetId: APP,
+      outcome: { status: 'applied' },
+      reason: 'Spam links in #general',
+      durationMinutes: 10,
+      interactionId: IID,
+    }),
+  );
+  await send(
+    'mod timeout dry run',
+    modOutcomeCard({
+      action: 'timeout',
+      targetId: APP,
+      outcome: { status: 'dry-run' },
+      reason: 'Spam links in #general',
+      durationMinutes: 10,
+      interactionId: IID,
+    }),
+  );
+  await send(
+    'mod timeout refused',
+    modOutcomeCard({
+      action: 'timeout',
+      targetId: APP,
+      outcome: { status: 'refused', reason: 'role-above-bot' },
+      reason: 'Spam links in #general',
+      durationMinutes: 10,
+      interactionId: IID,
+    }),
+  );
+  await send(
+    'mod warn refused escalation',
+    warnOutcomeCard({
+      targetId: APP,
+      reason: 'Spam links in #general',
+      caseId: randomUUID(),
+      violationCount: 3,
+      escalation: { status: 'refused', reason: 'killswitch' },
+    }),
+  );
+
+  await send(
+    'mod ban confirm',
+    banConfirmCard({ targetId: APP, reason: 'Raid account', intentId: randomUUID() }),
+  );
+  await send(
+    'mod purge confirm',
+    purgeConfirmCard({
+      channelId,
+      total: 12,
+      fresh: 9,
+      old: 3,
+      newestAtMs: now,
+      reason: 'Spam flood',
+      intentId: randomUUID(),
+    }),
+  );
+  await send(
+    'mod delete confirm',
+    deleteConfirmCard({
+      guildId: GUILD,
+      channelId,
+      messageId: MSG,
+      authorId: APP,
+      intentId: randomUUID(),
+    }),
+  );
+
+  const historyCases = [
+    {
+      caseId: randomUUID(),
+      memberId: APP,
+      openedAt: now - 9 * DAY,
+      violationCount: 4,
+      escalationTier: 1,
+      status: 'open',
+    },
+    {
+      caseId: randomUUID(),
+      memberId: APP,
+      openedAt: now - 30 * DAY,
+      violationCount: 1,
+      escalationTier: 0,
+      status: 'closed',
+    },
+  ];
+  const historyKinds = [
+    { actionTaken: 'warned', matchedCategory: 'spam', actorId: true },
+    { actionTaken: 'warned', matchedCategory: 'spam', actorId: true },
+    {
+      actionTaken: 'manual_applied',
+      matchedCategory: 'timeout',
+      escalationAction: 'timeout',
+      actorId: true,
+    },
+    { actionTaken: 'deleted', matchedCategory: 'spam' },
+    { actionTaken: 'would_delete', matchedCategory: 'spam' },
+    { actionTaken: 'note', matchedCategory: 'note', actorId: true },
+    { actionTaken: 'evidence_added', matchedCategory: 'evidence', actorId: true },
+    {
+      actionTaken: 'escalation_refused',
+      matchedCategory: 'timeout',
+      escalationAction: 'timeout',
+      actorId: true,
+    },
+    {
+      actionTaken: 'escalation_dry_run',
+      matchedCategory: 'kick',
+      escalationAction: 'kick',
+      actorId: true,
+    },
+    { actionTaken: 'native_blocked', matchedCategory: 'spam' },
+    { actionTaken: 'purged', matchedCategory: 'purge', actorId: true },
+    {
+      actionTaken: 'manual_applied',
+      matchedCategory: 'ban',
+      escalationAction: 'ban',
+      actorId: true,
+    },
+  ];
+  const historyEvents = historyKinds.map((k, i) => ({
+    eventId: `evt-${i}`,
+    caseId: historyCases[i % 2].caseId,
+    ruleId: 'manual',
+    memberId: APP,
+    at: now - i * DAY,
+    matchedCategory: k.matchedCategory,
+    matchedSnippet: `sample message ${i}`,
+    actionTaken: k.actionTaken,
+    escalationAction: k.escalationAction,
+    refusalReason: k.actionTaken === 'escalation_refused' ? 'killswitch' : undefined,
+    actorId: k.actorId === true ? APP : undefined,
+  }));
+  const historyByCase = new Map(
+    historyCases.map((c) => [c.caseId, historyEvents.filter((e) => e.caseId === c.caseId)]),
+  );
+  // 12 events at 8 per page: two pages, so the card carries Older/Newer buttons.
+  await send('mod history', historyCard(buildHistoryPage(APP, historyCases, historyByCase, 0)));
+
+  await send(
+    'role panel',
+    core.renderPanelCard({
+      panelId: 'gallery-roles',
+      kind: 'managed',
+      channelId,
+      messageId: undefined,
+      content: '**Gallery roles**',
+      behaviour: 'toggle',
+      component: 'button',
+      maxRoles: undefined,
+      requiredRoleId: undefined,
+      blockedRoleIds: [],
+      status: 'enabled',
+      adoptionPassState: 'done',
+      adoptionBlockedCount: 0,
+      options: ['Mechanical', 'Electrical', 'Software', 'Aero', 'Media', 'Exec'].map(
+        (label, i) => ({
+          optionId: `opt-${i}`,
+          roleId: String(100000000000000000n + BigInt(i + 1)),
+          emojiKey: undefined,
+          label,
+          position: i,
+        }),
+      ),
+    }),
+  );
+
+  await send('error mod not-allowed', core.errorCard('mod.not-allowed', { ref: '23456789' }));
+  await send('error panel max-roles', core.errorCard('panel.max-roles'));
+}
 console.log(
   'Done. The buttons on these cards point at sample tasks, so pressing them gives a "closed" reply.',
 );

@@ -380,7 +380,9 @@ describe('the logging module, end to end', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(LOG_CHANNEL);
-    expect((calls[0]?.args[2] as { content: string }).content).toContain('beta');
+    expect(JSON.stringify((calls[0]?.args[2] as { components: unknown }).components)).toContain(
+      'beta',
+    );
   });
 
   it('enqueues and runs the deletion-attribution job through the real job worker', async () => {

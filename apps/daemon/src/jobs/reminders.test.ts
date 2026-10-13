@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
+  cardTexts,
   DiscordApiError,
   parseGuildId,
   REMINDER_RETRY_BACKOFF_MS,
+  type OutgoingMessage,
   type Reminder,
 } from '@bananasaurs/core';
 import { assistantRepo, guildRepo, type GuildScope } from '@bananasaurs/storage';
@@ -79,8 +81,11 @@ describe('deliverRemindersHandler', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
-    const message = calls[0]?.args[2] as { content: string; allowedMentions: { parse: [] } };
-    expect(message.content).toBe(`⏰ text due\n-# Set by <@${CREATOR}>`);
+    const message = calls[0]?.args[2] as OutgoingMessage;
+    expect(message.flags).toBe(32768);
+    expect(cardTexts(message.components ?? [])).toBe(
+      `-# ⏰ REMINDER\ntext due\n-# Set by <@${CREATOR}>`,
+    );
     expect(message.allowedMentions).toEqual({ parse: [] });
     expect(statusOf('due')?.status).toBe('delivered');
     expect(statusOf('later')?.status).toBe('scheduled');

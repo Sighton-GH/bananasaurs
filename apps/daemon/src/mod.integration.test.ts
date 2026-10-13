@@ -37,6 +37,7 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
+import { cardCustomIds, cardTexts } from '@bananasaurs/core';
 import { logMessageDeleteHandler } from './jobs/logging.js';
 import { modPurgeHandler } from './jobs/mod.js';
 
@@ -179,6 +180,7 @@ function buildModWiring(): {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -325,6 +327,7 @@ function buildModWiring(): {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       logger,
@@ -336,6 +339,7 @@ function buildModWiring(): {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -411,9 +415,8 @@ const dispatchSlashCommand = async (input: {
 
 /** The Confirm button's `custom_id`, pulled out of a preview reply's components. */
 const extractConfirmCustomId = (message: OutgoingMessage | undefined): string => {
-  const rows = message?.components as
-    readonly { components: readonly { custom_id: string }[] }[] | undefined;
-  const customId = rows?.[0]?.components?.[0]?.custom_id;
+  const ids = cardCustomIds(message?.components ?? []);
+  const customId = ids[0];
   if (typeof customId !== 'string') throw new Error('no Confirm button found in the preview reply');
   return customId;
 };
@@ -517,7 +520,10 @@ describe('/mod, end to end on the fake gateway', () => {
 
     expect(discord.wasEphemeral(interactionId)).toBe(true);
     const replies = discord.interactionReplies(interactionId);
-    expect(replies[0]?.content).toContain('do not have permission');
+    expect(replies[0]?.flags).toBe(32768);
+    const refusedText = cardTexts(replies[0]?.components ?? []);
+    expect(refusedText).toContain("You can't take moderation actions");
+    expect(refusedText).not.toContain('do not have permission');
     expect(discord.restCalls('kickMember')).toHaveLength(0);
 
     const modCase = findCase(TARGET);
@@ -541,7 +547,10 @@ describe('/mod, end to end on the fake gateway', () => {
     });
 
     const replies = discord.interactionReplies(interactionId);
-    expect(replies[0]?.content).toContain('refused');
+    expect(replies[0]?.flags).toBe(32768);
+    const ownerText = cardTexts(replies[0]?.components ?? []);
+    expect(ownerText).toContain("The server owner can't be moderated");
+    expect(ownerText).not.toContain('discord-owner');
     expect(discord.restCalls('timeoutMember')).toHaveLength(0);
 
     const modCase = findCase(OWNER);
@@ -564,7 +573,10 @@ describe('/mod, end to end on the fake gateway', () => {
     });
 
     const replies = discord.interactionReplies(interactionId);
-    expect(replies[0]?.content).toContain('refused');
+    expect(replies[0]?.flags).toBe(32768);
+    const roleText = cardTexts(replies[0]?.components ?? []);
+    expect(roleText).toContain('That member is above the bot');
+    expect(roleText).not.toContain('role-above-bot');
     expect(discord.restCalls('kickMember')).toHaveLength(0);
 
     const modCase = findCase(HIGH_MEMBER);
@@ -586,7 +598,8 @@ describe('/mod, end to end on the fake gateway', () => {
     });
 
     const preview = discord.interactionReplies(slashId)[0];
-    expect(preview?.content).toContain('Ban preview');
+    expect(preview?.flags).toBe(32768);
+    expect(cardTexts(preview?.components ?? [])).toContain(`Ban <@${TARGET}>?`);
     // Nothing executed yet — the whole point of the confirm-then-execute
     // handshake (ADR 0037, Task 7).
     expect(discord.restCalls('banMember')).toHaveLength(0);
@@ -614,9 +627,9 @@ describe('/mod, end to end on the fake gateway', () => {
     expect(discord.isBanned(TARGET)).toBe(true);
 
     const reply1 = discord.interactionReplies(click1)[0];
-    expect(reply1?.content).toContain('Ban applied');
+    expect(cardTexts(reply1?.components ?? [])).toContain(`Banned <@${TARGET}>`);
     const reply2 = discord.interactionReplies(click2)[0];
-    expect(reply2?.content).toContain('already executed');
+    expect(cardTexts(reply2?.components ?? [])).toContain('This was already handled');
 
     const modCase = findCase(TARGET);
     expect(modCase).toBeDefined();
@@ -704,7 +717,10 @@ describe('/mod, end to end on the fake gateway', () => {
     });
 
     const preview = discord.interactionReplies(slashId)[0];
-    expect(preview?.content).toContain('Purge preview');
+    expect(preview?.flags).toBe(32768);
+    expect(cardTexts(preview?.components ?? [])).toContain(
+      `Delete 5 messages from <#${PURGE_CHANNEL}>?`,
+    );
     expect(discord.restCalls('bulkDeleteMessages')).toHaveLength(0);
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);
 

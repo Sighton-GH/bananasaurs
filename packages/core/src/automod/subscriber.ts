@@ -2,6 +2,8 @@ import type { Subscriber } from '../pipeline/pipeline.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type {
+  DeleteMessageIntent,
+  DeleteMessageOutcome,
   ModerationIntent,
   ModerationOutcome,
   ModerationSafetyState,
@@ -46,6 +48,10 @@ export interface ModerationGatewayPort {
     auth: Authorized<'moderation.act'>,
     intent: ModerationIntent,
   ): Promise<ModerationOutcome>;
+  deleteMessage(
+    auth: Authorized<'moderation.act'>,
+    intent: DeleteMessageIntent,
+  ): Promise<DeleteMessageOutcome>;
 }
 
 /**
@@ -100,6 +106,26 @@ export type AutomodActionTaken =
 export type AutomodSwitchState = 'off' | 'watch' | 'on';
 export interface AutomodSafetyState extends ModerationSafetyState {
   readonly automodState: AutomodSwitchState;
+}
+
+/**
+ * One automod match, posted to log routes through `onMatchRecorded`
+ * (ADR 0141 decision 3). Fired after the case event is written, never throws
+ * into the subscriber. `parentChannelId`/`categoryId` travel along so
+ * excluded channels are respected, the way the logging subscriber's own
+ * `LogSource` carries them.
+ */
+export interface AutomodMatchInfo {
+  readonly ruleId: string;
+  readonly ruleKind: string;
+  readonly memberId: string;
+  readonly channelId: string;
+  readonly parentChannelId: string | undefined;
+  readonly categoryId: string | undefined;
+  readonly messageId: string;
+  readonly snippet: string;
+  readonly actionTaken: AutomodActionTaken;
+  readonly at: number;
 }
 
 export interface AutomodSubscriberDeps {
@@ -187,6 +213,12 @@ export interface AutomodSubscriberDeps {
    * nothing this module wasn't already paying.
    */
   authorRoleIds(userId: string): Promise<readonly string[]>;
+  /**
+   * Posted after the case event is written (ADR 0141 decision 3); the daemon
+   * wires it to `createLogPoster`. Never throws into the subscriber: a
+   * rejection is logged and the match itself stays recorded.
+   */
+  readonly onMatchRecorded?: ((info: AutomodMatchInfo) => Promise<void>) | undefined;
 }
 
 /**
@@ -320,12 +352,12 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         if (evaluation.kind === 'no-match') continue;
         const hit = evaluation.match;
 
-        const record = (
+        const record = async (
           caseId: string,
           actionTaken: AutomodActionTaken,
           escalationAction?: 'timeout' | 'kick',
           refusalReason?: string,
-        ): void => {
+        ): Promise<void> => {
           deps.recordCaseEvent({
             caseId,
             ruleId: rule.ruleId,
@@ -338,12 +370,38 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             refusalReason,
             trace: hit.trace,
           });
+          if (deps.onMatchRecorded !== undefined) {
+            try {
+              await deps.onMatchRecorded({
+                ruleId: rule.ruleId,
+                ruleKind: rule.kind,
+                memberId: authorId,
+                channelId: event.channelId,
+                parentChannelId: event.parentChannelId,
+                categoryId: event.categoryId,
+                messageId: event.messageId,
+                snippet: hit.snippet,
+                actionTaken,
+                at: event.receivedAtMs,
+              });
+            } catch (err) {
+              deps.logger.error(
+                safeLogFields({
+                  component: 'automod',
+                  guildId: event.guildId,
+                  ruleId: rule.ruleId,
+                  err,
+                }),
+                'failed to post an automod match to the log; the match itself is recorded',
+              );
+            }
+          }
         };
 
         // Watch records what automod would have done and touches no one.
         // `would_delete`, never `deleted` (ADR 0036).
         if (state.automodState === 'watch') {
-          record(
+          await record(
             deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
             'would_delete',
           );
@@ -366,7 +424,10 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
           // Durably recorded, not merely logged — the same requirement ADR 0035
           // imposes on a refused escalation. A moderator reading the case sees
           // "this would have been deleted but was not, and why".
-          record(deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId, blocked);
+          await record(
+            deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
+            blocked,
+          );
           deps.logger.warn(
             safeLogFields({
               component: 'automod',
@@ -431,7 +492,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // or a kick on top of a message still sitting in the channel is the
         // wrong half of the action to have succeeded.
         if (!deleted) {
-          record(caseId, 'delete_failed');
+          await record(caseId, 'delete_failed');
           continue;
         }
 
@@ -449,7 +510,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // deletion and not for a timeout, so a rule that could escalate has not
         // earned the looser tier it was admitted under.
         if (!rule.countsAsViolation) {
-          record(caseId, 'deleted');
+          await record(caseId, 'deleted');
           continue;
         }
 
@@ -458,7 +519,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // Enforce mode, but the violation count has not crossed a tier: the
         // message really was deleted and nothing was escalated.
         if (tier.action === undefined) {
-          record(caseId, 'deleted');
+          await record(caseId, 'deleted');
           continue;
         }
 
@@ -475,7 +536,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // value per `ModerationOutcome` variant — the previous mapping wrote
         // `'deleted_and_escalated'` for a dry-run, a skip and a failure too,
         // recording a punishment that had not happened.
-        record(
+        await record(
           caseId,
           ESCALATION_ACTION_TAKEN[outcome.status],
           tier.action,

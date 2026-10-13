@@ -2291,3 +2291,71 @@ describe('components V2 cards (ADR 0140)', () => {
     expect(last(requests).authorization).toBeUndefined();
   });
 });
+
+describe('editOriginalResponse (P2 task 2)', () => {
+  it('edits the original interaction response with PATCH on the @original route', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: MESSAGE } }]);
+    await port.editOriginalResponse(
+      GUILD,
+      { interactionId: '111111111111111111', token: 'tok' },
+      {
+        components: [{ type: 17, accent_color: 1, components: [] }],
+        flags: 32768,
+        allowedMentions: { parse: [] },
+      },
+    );
+    expect(requests).toHaveLength(1);
+    expect(last(requests).method).toBe('PATCH');
+    // Decoded, like the reaction-route tests above: the transport
+    // percent-encodes `@` as `%40`, and asserting the raw form would pass
+    // whether or not the adapter encoded — while decoding once catches a
+    // double encoding.
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/webhooks/${APPLICATION}/tok/messages/@original`,
+    );
+    expect(last(requests).authorization).toBeUndefined();
+    expect(last(requests).body).toMatchObject({
+      flags: 32768,
+      components: [{ type: 17, accent_color: 1, components: [] }],
+      allowed_mentions: { parse: [] },
+      content: null,
+      embeds: null,
+    });
+  });
+
+  it('uploads files on an original edit as multipart with matching attachments metadata', async () => {
+    const { port, requests } = harness([{ status: 200, body: { id: MESSAGE } }]);
+    const file = {
+      name: 'saur-thumb.png',
+      contentType: 'image/png',
+      data: new Uint8Array([137, 80, 78, 71]),
+      description: 'The Bananasaurs banana-saur',
+    };
+    await port.editOriginalResponse(
+      GUILD,
+      { interactionId: '111111111111111111', token: 'tok' },
+      {
+        components: [{ type: 17, accent_color: 1, components: [] }],
+        flags: 32768,
+        allowedMentions: { parse: [] },
+        files: [file],
+      },
+    );
+    expect(last(requests).method).toBe('PATCH');
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/webhooks/${APPLICATION}/tok/messages/@original`,
+    );
+    expect(last(requests).authorization).toBeUndefined();
+    const body = last(requests).body as {
+      payload: Record<string, unknown>;
+      files: Record<string, string>;
+    };
+    expect(body.files).toEqual({ 'files[0]': 'saur-thumb.png' });
+    expect(body.payload['attachments']).toEqual([
+      { id: 0, filename: 'saur-thumb.png', description: 'The Bananasaurs banana-saur' },
+    ]);
+    expect(body.payload['flags']).toBe(32768);
+    expect(body.payload['content']).toBeNull();
+    expect(body.payload['embeds']).toBeNull();
+  });
+});

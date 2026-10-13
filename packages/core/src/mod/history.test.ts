@@ -3,10 +3,15 @@ import { pino } from 'pino';
 import type { AuthzStore } from '../authz.js';
 import type { SlashCommandEvent } from '../discord/events.js';
 import type { InteractionRef, OutgoingMessage, Snowflake } from '../discord/port.js';
-import { parseGuildId } from '../ids.js';
+import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
+import { countComponents, countText } from '../ui/discord/budget.js';
+import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
+import { historyCard } from './cards.js';
 import {
+  buildHistoryPage,
   handleHistory,
+  showHistoryPage,
   type HistoryCase,
   type HistoryCaseEvent,
   type HistoryCasePorts,
@@ -14,10 +19,9 @@ import {
 } from './history.js';
 
 /**
- * Unit tests for `/mod history` (Task 9), the last `/mod` subcommand: a
- * read-only search over a member's case(s). Same level `commands.test.ts`
- * and `confirmations.test.ts` test at — every port faked, nothing touches a
- * real database or Discord.
+ * Unit tests for `/mod history` as a paged card (P2 Task 8). Same level
+ * `commands.test.ts` and `confirmations.test.ts` test at — every port faked,
+ * nothing touches a real database or Discord.
  */
 
 const GUILD = parseGuildId('111111111111111111');
@@ -52,6 +56,7 @@ interface Harness {
     recordCaseEvent: Parameters<HistoryCasePorts['recordCaseEvent']>[0][];
     fetchInvokerRoleIds: Snowflake[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
+    editOriginal: { ref: InteractionRef; message: OutgoingMessage }[];
   };
 }
 
@@ -69,6 +74,7 @@ function buildHarness(
     recordCaseEvent: [],
     fetchInvokerRoleIds: [],
     respond: [],
+    editOriginal: [],
   };
 
   const authz: AuthzStore = { hasGrant: () => opts.authorized ?? true };
@@ -97,6 +103,9 @@ function buildHarness(
   const responder: SlashResponder = {
     deferUpdate: vi.fn(async () => undefined),
     showModal: vi.fn(async () => undefined),
+    editOriginal: async (ref, message) => {
+      calls.editOriginal.push({ ref, message });
+    },
     defer: async () => {},
     respond: async (ref, message) => {
       calls.respond.push({ ref, message });
@@ -144,32 +153,252 @@ const event = (over: Partial<HistoryCaseEvent> = {}): HistoryCaseEvent => ({
   ...over,
 });
 
-describe('handleHistory', () => {
+const replyTexts = (calls: Harness['calls']): string =>
+  cardTexts(calls.respond.at(-1)?.message.components ?? []);
+
+describe('buildHistoryPage', () => {
+  it('pages 20 events across two cases: 8 newest first on page 0, oldest 4 on page 2', () => {
+    const caseA = openCase({ caseId: 'case-A' });
+    const caseB = openCase({ caseId: 'case-B' });
+    const eventsA = Array.from({ length: 12 }, (_, i) =>
+      event({
+        eventId: `evt-A-${String(i).padStart(2, '0')}`,
+        caseId: 'case-A',
+        at: NOW_MS - i * 2_000,
+      }),
+    );
+    const eventsB = Array.from({ length: 8 }, (_, i) =>
+      event({
+        eventId: `evt-B-${String(i).padStart(2, '0')}`,
+        caseId: 'case-B',
+        at: NOW_MS - 1_000 - i * 2_000,
+      }),
+    );
+    const byCase = new Map([
+      ['case-A', eventsA],
+      ['case-B', eventsB],
+    ]);
+
+    const first = buildHistoryPage(TARGET, [caseA, caseB], byCase, 0);
+    expect(first.pageCount).toBe(3);
+    expect(first.page).toBe(0);
+    expect(first.events).toHaveLength(8);
+    const ats = first.events.map((e) => e.at);
+    expect(ats).toEqual([...ats].sort((a, b) => b - a));
+    expect(first.events[0]?.at).toBe(NOW_MS);
+
+    const last = buildHistoryPage(TARGET, [caseA, caseB], byCase, 2);
+    expect(last.events).toHaveLength(4);
+    const seen = new Set([
+      ...first.events.map((e) => e.eventId),
+      ...buildHistoryPage(TARGET, [caseA, caseB], byCase, 1).events.map((e) => e.eventId),
+      ...last.events.map((e) => e.eventId),
+    ]);
+    expect(seen.size).toBe(20);
+  });
+
+  it('clamps the page: -1 shows the newest page, 99 shows the oldest', () => {
+    const oneCase = openCase();
+    const byCase = new Map([
+      [
+        'case-1',
+        Array.from({ length: 9 }, (_, i) => event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 })),
+      ],
+    ]);
+    expect(buildHistoryPage(TARGET, [oneCase], byCase, -1).page).toBe(0);
+    const clamped = buildHistoryPage(TARGET, [oneCase], byCase, 99);
+    expect(clamped.page).toBe(1);
+    expect(clamped.events).toHaveLength(1);
+  });
+
+  it('breaks equal timestamps by event id', () => {
+    const oneCase = openCase();
+    const byCase = new Map([
+      [
+        'case-1',
+        [event({ eventId: 'evt-b', at: NOW_MS }), event({ eventId: 'evt-a', at: NOW_MS })],
+      ],
+    ]);
+    const page = buildHistoryPage(TARGET, [oneCase], byCase, 0);
+    expect(page.events.map((e) => e.eventId)).toEqual(['evt-a', 'evt-b']);
+  });
+
+  it('counts every event by readable kind across all pages', () => {
+    const oneCase = openCase();
+    const kinds: HistoryCaseEvent[] = [
+      event({
+        eventId: 'e1',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e2',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e3',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e4',
+        actionTaken: 'manual_applied',
+        escalationAction: 'timeout',
+        matchedCategory: 'timeout',
+      }),
+      event({
+        eventId: 'e5',
+        actionTaken: 'manual_applied',
+        escalationAction: 'kick',
+        matchedCategory: 'kick',
+      }),
+      event({
+        eventId: 'e6',
+        actionTaken: 'manual_applied',
+        escalationAction: 'ban',
+        matchedCategory: 'ban',
+      }),
+      event({
+        eventId: 'e7',
+        actionTaken: 'manual_applied',
+        escalationAction: 'unban',
+        matchedCategory: 'unban',
+      }),
+      event({
+        eventId: 'e8',
+        actionTaken: 'deleted',
+        escalationAction: undefined,
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e9',
+        actionTaken: 'deleted_and_escalated',
+        escalationAction: 'timeout',
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e10',
+        actionTaken: 'native_blocked',
+        escalationAction: undefined,
+        matchedCategory: 'automod',
+      }),
+      event({
+        eventId: 'e11',
+        actionTaken: 'note',
+        escalationAction: undefined,
+        matchedCategory: 'note',
+        matchedSnippet: 'a note',
+      }),
+      event({
+        eventId: 'e12',
+        actionTaken: 'note',
+        escalationAction: undefined,
+        matchedCategory: 'note',
+        matchedSnippet: 'another',
+      }),
+      event({
+        eventId: 'e13',
+        actionTaken: 'evidence_added',
+        escalationAction: undefined,
+        matchedCategory: 'evidence',
+        matchedSnippet: 'https://example.com/x.png',
+      }),
+      event({
+        eventId: 'e14',
+        actionTaken: 'escalation_refused',
+        escalationAction: 'timeout',
+        refusalReason: 'unauthorized',
+        matchedCategory: 'timeout',
+      }),
+      event({
+        eventId: 'e15',
+        actionTaken: 'escalation_refused',
+        escalationAction: undefined,
+        refusalReason: 'unauthorized',
+        matchedCategory: 'history',
+        matchedSnippet: '',
+      }),
+      event({
+        eventId: 'e16',
+        actionTaken: 'would_delete',
+        escalationAction: undefined,
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e17',
+        actionTaken: 'purged',
+        escalationAction: undefined,
+        matchedCategory: 'purge',
+      }),
+    ];
+    const page = buildHistoryPage(TARGET, [oneCase], new Map([['case-1', kinds]]), 0);
+    expect(page.countsByKind).toEqual({
+      warnings: 3,
+      timeouts: 1,
+      kicks: 1,
+      bans: 1,
+      unbans: 1,
+      automodDeletes: 2,
+      nativeAutomod: 1,
+      notes: 2,
+      evidence: 1,
+      refused: 2,
+    });
+    expect(page.totalEvents).toBe(17);
+  });
+
+  it('an empty history is one empty page', () => {
+    const page = buildHistoryPage(TARGET, [openCase()], new Map([['case-1', []]]), 0);
+    expect(page.pageCount).toBe(1);
+    expect(page.page).toBe(0);
+    expect(page.events).toEqual([]);
+    expect(page.countsByKind).toEqual({});
+    expect(page.totalEvents).toBe(0);
+  });
+});
+
+describe('showHistoryPage', () => {
   describe('unauthorized caller', () => {
-    it('refuses with a plain ephemeral reply, never reads any case, and calls fetchInvokerRoleIds with the real invoker', async () => {
+    it('refuses with the not-allowed card, never reads any case, and calls fetchInvokerRoleIds with the real invoker', async () => {
       const { deps, calls } = buildHarness({ authorized: false });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
       expect(calls.fetchInvokerRoleIds).toEqual([MODERATOR]);
       expect(calls.listCasesForMember).toHaveLength(0);
       expect(calls.listCaseEvents).toHaveLength(0);
       expect(calls.respond).toHaveLength(1);
       expect(calls.respond[0]?.ref).toEqual(REF);
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(replyTexts(calls)).toContain("You can't take moderation actions");
+      expect(calls.editOriginal).toHaveLength(0);
     });
 
-    /**
-     * Added in the fix round after this task's first review: an unauthorized
-     * `/mod history <member>` probe is durably recorded on the *target's*
-     * case, the same way `warn`/the direct actions/`ban`/`purge`/`note`/
-     * `evidence` already record their own unauthorized attempts
-     * (`commands.ts`'s `recordDirectRefusal`) — an unauthorized attempt to
-     * read a specific member's disciplinary history is itself reconnaissance
-     * worth a trace, not only a log line.
-     */
     it('durably records the refusal on the target member’s case: escalation_refused / unauthorized, actor is the real caller', async () => {
       const { deps, calls } = buildHarness({ authorized: false });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
       expect(calls.openOrResolveCase).toEqual([{ memberId: TARGET, countsAsViolation: false }]);
       expect(calls.recordCaseEvent).toHaveLength(1);
@@ -179,60 +408,88 @@ describe('handleHistory', () => {
       expect(refusal.actorId).toBe(MODERATOR);
       expect(refusal.actionTaken).toBe('escalation_refused');
       expect(refusal.refusalReason).toBe('unauthorized');
+      expect(refusal.matchedCategory).toBe('history');
       expect(refusal.at).toBe(NOW_MS);
+    });
+
+    it('in edit mode an unauthorized page click answers privately and never edits the card', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 1,
+          interactionId: 'interaction-9',
+        },
+        REF,
+        'edit',
+      );
+
+      expect(calls.editOriginal).toHaveLength(0);
+      expect(calls.respond).toHaveLength(1);
+      expect(replyTexts(calls)).toContain("You can't take moderation actions");
+      expect(calls.recordCaseEvent).toHaveLength(1);
+      expect(calls.recordCaseEvent[0]?.actionTaken).toBe('escalation_refused');
     });
   });
 
   describe('authorized caller', () => {
-    it('reports no history for a member with no case', async () => {
+    it('reports no history with the no-history card', async () => {
       const { deps, calls } = buildHarness({ authorized: true, cases: [] });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
       expect(calls.listCasesForMember).toEqual([TARGET]);
       expect(calls.respond).toHaveLength(1);
-      expect(calls.respond[0]?.message.content).toMatch(/no case history/i);
-      expect(calls.respond[0]?.message.content).toContain(TARGET);
+      const t = replyTexts(calls);
+      expect(t).toContain('No case history for');
+      expect(t).toContain(TARGET);
     });
 
-    it('renders a case’s status, opened time, violation count, and escalation tier straight off the case row', async () => {
+    it('replies with the history card: case footer, readable words, actor and timestamp', async () => {
       const oneCase = openCase({ violationCount: 4, escalationTier: 1, status: 'open' });
-      const { deps, calls } = buildHarness({ authorized: true, cases: [oneCase] });
-      await handleHistory(deps, slashCommandEvent(), REF);
-
-      const content = calls.respond[0]?.message.content ?? '';
-      expect(content).toContain('case-1');
-      expect(content).toContain('open');
-      expect(content).toContain('violations: 4');
-      expect(content).toContain('escalation tier: 1');
-    });
-
-    it('renders each event with actor, outcome, and timestamp', async () => {
-      const oneCase = openCase();
       const evt = event({ actionTaken: 'manual_applied', actorId: MODERATOR, at: NOW_MS });
       const { deps, calls } = buildHarness({
         authorized: true,
         cases: [oneCase],
         eventsByCase: { 'case-1': [evt] },
       });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
       expect(calls.listCaseEvents).toEqual(['case-1']);
-      const content = calls.respond[0]?.message.content ?? '';
-      expect(content).toContain('manual_applied');
-      expect(content).toContain(MODERATOR);
-      expect(content).toContain(new Date(NOW_MS).toISOString());
+      expect(calls.respond).toHaveLength(1);
+      expect(calls.editOriginal).toHaveLength(0);
+      const t = replyTexts(calls);
+      expect(t).toContain('-# 📂 CASE HISTORY');
+      expect(t).toContain('Case case-1 (open, 4 violations, tier 1)');
+      expect(t).toContain('Timed out');
+      expect(t).not.toContain('manual_applied');
+      expect(t).toContain(MODERATOR);
+      expect(t).toContain(`<t:${Math.floor(NOW_MS / 1000)}:d>`);
     });
 
-    /**
-     * The Task 9 brief's central requirement (point 5, from two separate
-     * task reviews): a purge/note/evidence/refusal event recorded against a
-     * case whose *actor* is the case's own member (the moderator who ran
-     * the command) is that member acting, not the member being acted upon.
-     * `violationCount` on the case header must come from the case row, never
-     * from `events.length` — these events never touch it.
-     */
-    it('separates events the case member authored as a moderator from events done to them, and keys violations off violationCount, not event count', async () => {
-      const selfMemberId = MODERATOR; // this case belongs to the moderator themself
+    it('keeps violations off the case row and marks self-authored events as moderator actions', async () => {
+      const selfMemberId = MODERATOR;
       const oneCase = openCase({ caseId: 'case-mod', memberId: selfMemberId, violationCount: 0 });
       const purgeEvent = event({
         eventId: 'evt-purge',
@@ -241,7 +498,7 @@ describe('handleHistory', () => {
         matchedCategory: 'purge',
         actionTaken: 'purged',
         escalationAction: undefined,
-        actorId: selfMemberId, // the case owner ran this purge themselves
+        actorId: selfMemberId,
       });
       const timeoutAgainstThem = event({
         eventId: 'evt-timeout',
@@ -249,49 +506,53 @@ describe('handleHistory', () => {
         memberId: selfMemberId,
         matchedCategory: 'timeout',
         actionTaken: 'manual_applied',
-        actorId: '999999999999999999', // a DIFFERENT moderator acted on them
+        actorId: '999999999999999999',
       });
-
       const { deps, calls } = buildHarness({
         authorized: true,
         cases: [oneCase],
         eventsByCase: { 'case-mod': [purgeEvent, timeoutAgainstThem] },
       });
-      await handleHistory(
+      await showHistoryPage(
         deps,
-        slashCommandEvent({ options: [{ name: 'target', value: selfMemberId }] }),
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(selfMemberId),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
+        'reply',
       );
 
-      const content = calls.respond[0]?.message.content ?? '';
-      // The header's violation count is 0 — from the case row — even though
-      // two events are recorded on the case.
-      expect(content).toContain('violations: 0');
-      // Both sections appear, and each event lands in the right one.
-      expect(content).toMatch(/actions this member took as a moderator/i);
-      expect(content).toMatch(/recorded against this member/i);
-
-      const ownSectionIndex = content.search(/actions this member took as a moderator/i);
-      const againstSectionIndex = content.search(/recorded against this member/i);
-      const purgeIndex = content.indexOf('purged');
-      const timeoutIndex = content.indexOf('manual_applied');
-
-      // "purged" (self-authored) falls after the "took as a moderator"
-      // header; "manual_applied" (done to them) falls after the "recorded
-      // against" header — whichever header comes first in the render.
-      expect(purgeIndex).toBeGreaterThan(ownSectionIndex);
-      expect(timeoutIndex).toBeGreaterThan(againstSectionIndex);
+      const t = replyTexts(calls);
+      expect(t).toContain('0 violations');
+      expect(t).toContain('Ran a purge');
+      expect(t).toContain('(as a moderator)');
+      expect(t).not.toMatch(/was purged/i);
     });
 
-    it('renders multiple cases, in the order the repo returned them (open-first, newest-first is the repo’s job)', async () => {
+    it('lists several cases newest-page-first in the footer, in repo order', async () => {
       const first = openCase({ caseId: 'case-open', status: 'open' });
       const second = openCase({ caseId: 'case-closed', status: 'closed' });
       const { deps, calls } = buildHarness({ authorized: true, cases: [first, second] });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
-      const content = calls.respond[0]?.message.content ?? '';
-      expect(content).toContain('2 case(s)');
-      expect(content.indexOf('case-open')).toBeLessThan(content.indexOf('case-closed'));
+      const t = replyTexts(calls);
+      expect(t).toContain('2 cases');
+      expect(t).toContain('Case case-ope');
+      expect(t).toContain('Case case-clo');
+      expect(t.indexOf('case-ope')).toBeLessThan(t.indexOf('case-clo'));
     });
 
     it('writes nothing — a successful read records no case event', async () => {
@@ -301,45 +562,119 @@ describe('handleHistory', () => {
         cases: [oneCase],
         eventsByCase: { 'case-1': [event()] },
       });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'reply',
+      );
 
       expect(calls.openOrResolveCase).toHaveLength(0);
       expect(calls.recordCaseEvent).toHaveLength(0);
     });
 
-    /**
-     * Added in the fix round: a case's event log has no upper bound — there
-     * is no case-closing feature, so an actively-moderated member's open
-     * case can accumulate events indefinitely, and the fully-rendered
-     * content can legitimately exceed Discord's 2000-character message
-     * ceiling. This drives it well past that with 60 events (each roughly
-     * 100+ characters once rendered) and proves the response still fits,
-     * keeps the most recent events, and says how many it dropped.
-     */
-    it('truncates to stay under Discord’s 2000-character content limit, keeping the most recent events', async () => {
-      const oneCase = openCase({ violationCount: 60 });
-      const manyEvents = Array.from({ length: 60 }, (_, i) =>
+    it('in edit mode replaces the card in place instead of replying', async () => {
+      const oneCase = openCase();
+      const many = Array.from({ length: 9 }, (_, i) =>
         event({
           eventId: `evt-${i}`,
-          // Oldest first, per `listCaseEvents`'s own contract — index 0 is
-          // the oldest, index 59 the most recent.
-          at: NOW_MS - (60 - i) * 1000,
-          matchedSnippet: `distinguishable-marker-${String(i).padStart(3, '0')}`,
+          actionTaken: 'warned',
+          escalationAction: undefined,
+          matchedCategory: 'warn',
+          matchedSnippet: `marker-${String(i).padStart(2, '0')}`,
+          at: NOW_MS - i * 1_000,
         }),
       );
       const { deps, calls } = buildHarness({
         authorized: true,
         cases: [oneCase],
-        eventsByCase: { 'case-1': manyEvents },
+        eventsByCase: { 'case-1': many },
       });
-      await handleHistory(deps, slashCommandEvent(), REF);
+      await showHistoryPage(
+        deps,
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 1,
+          interactionId: 'interaction-1',
+        },
+        REF,
+        'edit',
+      );
 
-      const content = calls.respond[0]?.message.content ?? '';
-      expect(content.length).toBeLessThanOrEqual(2000);
-      expect(content).toMatch(/omitted/i);
-      // The most recent event survives; the oldest does not.
-      expect(content).toContain('distinguishable-marker-059');
-      expect(content).not.toContain('distinguishable-marker-000');
+      expect(calls.respond).toHaveLength(0);
+      expect(calls.editOriginal).toHaveLength(1);
+      expect(calls.editOriginal[0]?.ref).toEqual(REF);
+      const t = cardTexts(calls.editOriginal[0]?.message.components ?? []);
+      expect(t).toContain('Page 2 of 2');
+      expect(t).toContain('marker-08');
+      expect(calls.recordCaseEvent).toHaveLength(0);
     });
+
+    it('a full page of long snippets stays within the card budget', () => {
+      const oneCase = openCase();
+      const many = Array.from({ length: 8 }, (_, i) =>
+        event({
+          eventId: `evt-${i}`,
+          actionTaken: 'warned',
+          escalationAction: undefined,
+          matchedCategory: 'warn',
+          matchedSnippet: 'x'.repeat(500),
+          at: NOW_MS - i * 1_000,
+        }),
+      );
+      const page = buildHistoryPage(TARGET, [oneCase], new Map([['case-1', many]]), 0);
+      const rendered = historyCard(page);
+      expect(countText(rendered.components)).toBeLessThanOrEqual(4000);
+      expect(countComponents(rendered.components)).toBeLessThanOrEqual(40);
+    });
+
+    it('page buttons point at the neighbouring pages, and a single page has none', () => {
+      const oneCase = openCase();
+      const many = Array.from({ length: 20 }, (_, i) =>
+        event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 }),
+      );
+      const byCase = new Map([['case-1', many]]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 0)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:1`]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 1)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:0`, `bs.mod:history:${TARGET}:2`]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 2)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:1`]);
+      const single = buildHistoryPage(TARGET, [oneCase], new Map([['case-1', [event()]]]), 0);
+      expect(cardCustomIds(historyCard(single).components)).toEqual([]);
+    });
+  });
+});
+
+describe('handleHistory', () => {
+  it('shows the first page as a reply', async () => {
+    const oneCase = openCase();
+    const { deps, calls } = buildHarness({
+      authorized: true,
+      cases: [oneCase],
+      eventsByCase: { 'case-1': [event()] },
+    });
+    await handleHistory(deps, slashCommandEvent(), REF);
+
+    expect(calls.respond).toHaveLength(1);
+    expect(replyTexts(calls)).toContain('-# 📂 CASE HISTORY');
+  });
+
+  it('an unauthorized slash call gets the not-allowed card and is recorded', async () => {
+    const { deps, calls } = buildHarness({ authorized: false });
+    await handleHistory(deps, slashCommandEvent(), REF);
+
+    expect(replyTexts(calls)).toContain("You can't take moderation actions");
+    expect(calls.recordCaseEvent).toHaveLength(1);
+    expect(calls.recordCaseEvent[0]?.actionTaken).toBe('escalation_refused');
   });
 });

@@ -78,6 +78,9 @@ const harness = (
       calls.push(intent);
       return (opts.gateway ?? (async () => ({ status: 'applied' })))(intent);
     },
+    deleteMessage: async () => {
+      throw new Error('not used in this test');
+    },
   };
 
   return { repo, gateway, calls, events, count: () => violationCount };

@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { parseGuildId, parseMatchTrace, type MatchTrace } from '@bananasaurs/core';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { automodRuleRepo, guildRepo } from '@bananasaurs/storage';
-import { toAutomodRule, traceJson } from './wiring.js';
+import { FakeDiscord } from '@bananasaurs/testkit';
+import {
+  automodAuthorization,
+  automodGatewayFor,
+  automodPortsFor,
+  toAutomodRule,
+  traceJson,
+} from './wiring.js';
 
 /**
  * `traceJson` (IMPORTANT-3, coordinator ruling).
@@ -196,6 +203,28 @@ describe('toAutomodRule', () => {
     // the rule; a column added to the row later must be a deliberate choice
     // here, not a silent pass-through or a silent drop.
     expect(Object.keys(stored).sort()).toEqual(Object.keys(narrowed).sort());
+
+    t.close();
+  });
+});
+
+describe('automodPortsFor onMatchRecorded (P2 Task 4)', () => {
+  it('carries the log hook through when given, and stays undefined when omitted', () => {
+    const t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'g', now: 0 });
+    const discord = new FakeDiscord({ guildId: GUILD });
+    const gateway = automodGatewayFor(scope, discord, logger, () => 0);
+    const auth = automodAuthorization(scope);
+
+    expect(
+      automodPortsFor(scope, discord, gateway, auth, logger, () => 0).onMatchRecorded,
+    ).toBeUndefined();
+
+    const hook = async (): Promise<void> => undefined;
+    expect(
+      automodPortsFor(scope, discord, gateway, auth, logger, () => 0, hook).onMatchRecorded,
+    ).toBe(hook);
 
     t.close();
   });

@@ -12,6 +12,7 @@ const USER = '222222222222222222';
 const ROLE_A = '333333333333333333';
 const ROLE_B = '444444444444444444';
 const ROLE_C = '555555555555555555';
+const AT = 1_760_000_000_000;
 
 const updateEvent = (over: Partial<MemberEvent> = {}): MemberEvent => ({
   kind: 'memberUpdate',
@@ -105,8 +106,8 @@ describe('memberChanges without a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(undefined, event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_nickname_changed']);
-    expect(changes[0]?.render()).toContain('"Old"');
-    expect(changes[0]?.render()).toContain('"New"');
+    const details = changes[0]?.view(AT).details?.join('\n') ?? '';
+    expect(details).toBe('Old → New');
   });
 
   it('differing previousRoleIds produce a roles change', () => {
@@ -117,7 +118,7 @@ describe('memberChanges without a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(undefined, event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_roles_changed']);
-    expect(changes[0]?.render()).toContain(`<@&${ROLE_A}>`);
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain(`<@&${ROLE_A}>`);
   });
 
   it('an unknown username without a snapshot produces no username change', () => {
@@ -145,7 +146,9 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot({ nickname: 'Old' }), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_nickname_changed']);
-    expect(changes[0]?.render()).toBe(`Nickname changed: <@${USER}>  "Old" → "New"`);
+    expect(changes[0]?.view(AT).headline).toBe(`<@${USER}> changed nickname`);
+    expect(changes[0]?.view(AT).details).toEqual(['Old → New']);
+    expect(changes[0]?.view(AT).at).toBe(AT);
   });
 
   it('uses (none) for an absent nickname on either side', () => {
@@ -160,7 +163,7 @@ describe('memberChanges with a snapshot', () => {
       },
     });
     const changes = memberChanges(baselineFor(snapshot({ nickname: 'Old' }), event), event);
-    expect(changes[0]?.render()).toContain('(none)');
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain('(none)');
   });
 
   it('detects a username change with old → new', () => {
@@ -176,7 +179,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_username_changed']);
-    expect(changes[0]?.render()).toContain('member → renamed');
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain('member → renamed');
   });
 
   it('detects a display-name change', () => {
@@ -192,7 +195,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_username_changed']);
-    expect(changes[0]?.render()).toContain('Display name changed');
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain('Display name');
   });
 
   it('both username and display name changed produce one change with two lines', () => {
@@ -209,8 +212,7 @@ describe('memberChanges with a snapshot', () => {
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes).toHaveLength(1);
     expect(changes[0]?.eventKind).toBe('member_username_changed');
-    const lines = changes[0]?.render().split('\n') ?? [];
-    expect(lines).toHaveLength(2);
+    expect(changes[0]?.view(AT).details ?? []).toHaveLength(2);
   });
 
   it('detects an account avatar change as a CDN link', () => {
@@ -226,7 +228,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_avatar_changed']);
-    expect(changes[0]?.render()).toContain(
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain(
       `https://cdn.discordapp.com/avatars/${USER}/avatar2.png`,
     );
   });
@@ -244,7 +246,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_avatar_changed']);
-    expect(changes[0]?.render()).toContain(
+    expect(changes[0]?.view(AT).details?.join('\n') ?? '').toContain(
       `https://cdn.discordapp.com/guilds/${GUILD}/users/${USER}/avatars/guild1.png`,
     );
   });
@@ -262,7 +264,7 @@ describe('memberChanges with a snapshot', () => {
     });
     const changes = memberChanges(baselineFor(snapshot(), event), event);
     expect(changes.map((c) => c.eventKind)).toEqual(['member_avatar_changed']);
-    expect(changes[0]?.render().toLowerCase()).toContain('removed their avatar');
+    expect(changes[0]?.view(AT).details?.join('\n').toLowerCase() ?? '').toContain('removed');
   });
 
   it('detects role grants and removals, added first', () => {
@@ -275,7 +277,9 @@ describe('memberChanges with a snapshot', () => {
       event,
     );
     expect(changes.map((c) => c.eventKind)).toEqual(['member_roles_changed']);
-    expect(changes[0]?.render()).toBe(`Roles changed: <@${USER}>  +<@&${ROLE_B}>  −<@&${ROLE_C}>`);
+    const view = changes[0]?.view(AT);
+    expect(view?.headline).toBe(`<@${USER}>'s roles changed`);
+    expect(view?.details).toEqual([`Added <@&${ROLE_B}>`, `Removed <@&${ROLE_C}>`]);
   });
 
   it('an identical profile produces no changes', () => {

@@ -14,11 +14,13 @@ import {
   createLoggingSubscriber,
   createLogPoster,
   createMemberUpdateSubscriber,
+  createModCardActionSubscriber,
   createModCommandSubscriber,
   createTaskCommandSubscriber,
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  formatAutomodMatch,
   formatWarn,
   DIGEST_DEFAULT_INPUT_CHARS,
   DIGEST_DEFAULT_MAX_PROPOSALS,
@@ -84,6 +86,7 @@ import {
 } from '@bananasaurs/storage';
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
+import { cardOut } from '../cards/art.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
 import {
@@ -459,9 +462,36 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // `panelEffectsFor` in taking an already-constructed gateway and witness so
   // Task 12's integration test can build the identical wiring without
   // re-deriving it (`apps/daemon/src/automod/wiring.ts`).
+  //
+  // P2 Task 4 (ADR 0141 decision 3): every recorded match also posts an
+  // `automod_match` card to log routes, through the same `createLogPoster`
+  // `/mod warn` uses for `member_warn` — claimed on
+  // `automod:<messageId>:<ruleId>`, so a redelivered message posts no second
+  // card. Built here rather than inside `automodPortsFor` because the poster
+  // belongs to the logging module, not the automod one.
+  const logPoster = createLogPoster(loggingPorts);
   const automodGateway = automodGatewayFor(scope, discord, logger, now);
   const automodAuth = automodAuthorization(scope);
-  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now);
+  const automodPorts = automodPortsFor(
+    scope,
+    discord,
+    automodGateway,
+    automodAuth,
+    logger,
+    now,
+    (info) =>
+      logPoster.post({
+        eventKind: 'automod_match',
+        fingerprint: `automod:${info.messageId}:${info.ruleId}`,
+        source: {
+          channelId: parseSnowflakeId(info.channelId),
+          parentChannelId:
+            info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
+          categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
+        },
+        view: (includeContent) => formatAutomodMatch(info, includeContent),
+      }),
+  );
 
   // ADR 0038, Task 5: native Discord AutoMod observability. Deliberately
   // narrower than `automodPorts` above — this subscriber makes no Discord
@@ -706,12 +736,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
   };
-
-  const logPoster = createLogPoster(loggingPorts);
 
   const modCommandDeps: ModCommandDeps = {
     guildId,
@@ -729,7 +758,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         eventKind: 'member_warn',
         fingerprint: info.warnId,
         source: undefined,
-        render: () => formatWarn(info),
+        view: () => formatWarn(info, now()),
       }),
     cases: {
       openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
@@ -837,6 +866,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       logger,
@@ -848,6 +878,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -1126,6 +1157,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       listForMember: async (userId) => {
@@ -1320,6 +1352,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
+    createModCardActionSubscriber({
+      guildId,
+      commands: modCommandDeps,
+      confirmations: modConfirmationDeps,
+      responder: modCommandDeps.responder,
+      now,
+      logger,
+    }),
 
     // Assistant skills route only through mentions; one service handles routing and jobs (B2).
     createAssistantCommandSubscriber({
@@ -1638,6 +1678,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
     setPanelMessage: (panelId: string, messageId: string) =>
       panelRepo.setPanelMessage(scope, panelId, messageId, now()),
+    toMessage: cardOut,
   };
 
   const ops: GuildOperations = {

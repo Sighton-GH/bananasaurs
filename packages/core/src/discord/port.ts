@@ -651,6 +651,17 @@ export interface DiscordPort {
    */
   showModal(guildId: Snowflake, ref: InteractionRef, modal: Modal): Promise<void>;
 
+  /**
+   * Replace the message an interaction answered with, or the message a
+   * component sits on after `deferUpdate` (PATCH …/messages/@original, ADR 0141
+   * decision 9). Token-authenticated, like every interaction route.
+   */
+  editOriginalResponse(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    message: OutgoingMessage,
+  ): Promise<void>;
+
   // --- audit log ---------------------------------------------------------
   /** Attribution for MESSAGE_DELETE, which carries no actor of its own. */
   fetchAuditLog(

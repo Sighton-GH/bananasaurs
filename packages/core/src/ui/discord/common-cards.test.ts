@@ -89,6 +89,17 @@ describe('errorCard', () => {
 });
 
 describe('resultCard', () => {
+  it('caps escaped title and detail independently at the final wire length', () => {
+    const c = resultCard({
+      icon: 'done',
+      title: '*_~@<'.repeat(2000),
+      detail: '*_~@<'.repeat(2000),
+      tone: 'ok',
+    });
+    const rendered = contents(c)[0] ?? '';
+    expect(rendered.length).toBeLessThanOrEqual(4000);
+    expect(rendered).toContain('…');
+  });
   it('escapes member or operator supplied title and detail', () => {
     const title = '@everyone **title**';
     const detail = '<@&123456789012345678> **detail**';

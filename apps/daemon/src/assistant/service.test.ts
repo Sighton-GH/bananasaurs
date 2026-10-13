@@ -2168,7 +2168,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
       accountUsername: 'owner-name',
     });
     expect(result.answer).toBe(
-      'The AI service is busy right now. Try again in a minute. No action was taken.',
+      'The AI is busy right now, so nothing was done. Try again in a minute.',
     );
     const trace = traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId);
     expect(trace?.outcome).toBe('failed');
