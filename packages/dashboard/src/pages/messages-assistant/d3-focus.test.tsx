@@ -6,6 +6,9 @@ import { Router } from 'wouter';
 import { renderWithSession, stubFetch, TEST_SESSION } from '../../test-support.js';
 import { ArchivePage } from './archive.js';
 import { AssistantTuningPage } from './assistant-tuning.js';
+import { useSession, type Session } from '../../app/session.js';
+import type { AssistantData, AssistantSetup } from '../../api/assistant.js';
+import { SetupTracker } from './assistant-setup-tracker.js';
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -101,5 +104,68 @@ describe('tab history focus (d3 L12)', () => {
     const allTab = await screen.findByRole('tab', { name: 'All sections' });
     await vi.waitFor(() => expect(allTab.getAttribute('aria-selected')).toBe('true'));
     await vi.waitFor(() => expect(document.activeElement).not.toBe(allTab));
+  });
+});
+
+const TRACKER_ROLES = [
+  { id: 'role-member', name: 'Member', position: 10 },
+  { id: 'role-helper', name: 'Helper', position: 5 },
+];
+
+function trackerSteps(): AssistantSetup {
+  const state = (id: 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on') =>
+    id === 'connect' || id === 'terms'
+      ? { state: 'done' as const, detail: `${id} detail.` }
+      : { state: 'todo' as const, detail: `${id} detail.` };
+  return {
+    answering: false,
+    steps: [
+      { id: 'connect', ...state('connect') },
+      { id: 'terms', ...state('terms') },
+      { id: 'cost', ...state('cost') },
+      { id: 'who', ...state('who') },
+      { id: 'skills', ...state('skills') },
+      { id: 'on', ...state('on') },
+    ],
+  };
+}
+
+function trackerData(): AssistantData {
+  return {
+    behaviours: [],
+    resources: [],
+    reminders: [],
+    skills: [],
+    activity: [],
+    roles: TRACKER_ROLES,
+    aiStatus: {
+      provider: 'gemini',
+      enabled: true,
+      modelConfigured: true,
+      keyConfigured: true,
+      keyReadable: true,
+      costClass: 'free',
+      secretSource: 'env',
+    },
+    setup: trackerSteps(),
+  };
+}
+
+describe('who-can-ask discard focus (d3 L14)', () => {
+  it('Discard lands focus on the draft field, not body', async () => {
+    stubFetch([]);
+    function Capture() {
+      const session: Session = useSession();
+      return <SetupTracker data={trackerData()} session={session} reload={() => undefined} />;
+    }
+    renderWithSession(<Capture />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('checkbox', { name: 'Member' }));
+    const discard = await screen.findByRole('button', { name: 'Discard' });
+    await user.click(discard);
+    expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull();
+    const member = screen.getByRole('checkbox', { name: 'Member' });
+    await vi.waitFor(() => expect(document.activeElement).toBe(member));
+    expect(document.activeElement).not.toBe(document.body);
   });
 });

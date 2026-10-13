@@ -1,6 +1,6 @@
 import { DraftFooter } from './draft-footer.js';
 import { FormSection } from '../../ui/FormSection.js';
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { Link } from '../../ui/Link.js';
 import {
   behaviourUrl,
@@ -100,6 +100,8 @@ function WhoAction({
   const toast = useToast();
   const [roleIds, setRoleIds] = useState<readonly string[]>([]);
   const [busy, setBusy] = useState(false);
+  // Discard unmounts its own button; the draft's field takes focus instead.
+  const whoRef = useRef<HTMLDivElement>(null);
   const target = data.behaviours.find(
     (b) => b.callerRoleIds === undefined || b.callerRoleIds.length === 0,
   );
@@ -153,7 +155,7 @@ function WhoAction({
 
   if (data.behaviours.length > 0 && target === undefined) return null;
   return (
-    <div>
+    <div ref={whoRef}>
       <FormSection title="Who can ask">
         <RoleChecklist
           label="Who can ask the assistant"
@@ -166,6 +168,7 @@ function WhoAction({
           busy={busy}
           onSave={() => void save()}
           onDiscard={() => setRoleIds([])}
+          discardFocusTarget={() => whoRef.current?.querySelector<HTMLElement>('input') ?? null}
         />
         <div hidden={roleIds.length > 0} className="mt-2">
           <Button
