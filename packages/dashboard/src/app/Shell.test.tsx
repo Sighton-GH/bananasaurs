@@ -610,7 +610,7 @@ describe('Shell accessibility under root StrictMode', () => {
 });
 
 describe('Shell mobile reflow', () => {
-  it('lets the sticky header grow into separate brand and bounded control rows', () => {
+  it('lets the sticky header grow into a brand-and-controls row and a bounded navigation row', () => {
     renderAt('/panels');
     const header = document.querySelector('header');
     expect(header).toBeTruthy();
@@ -623,9 +623,10 @@ describe('Shell mobile reflow', () => {
     const jump = within(header!).getByRole('button', {
       name: 'Open navigation - current page Role panels',
     });
+    // D4: JumpNav has its own full-width row; its label still wraps inside it.
     const controls = jump.parentElement!;
-    expect(controls.classList.contains('grid')).toBe(true);
-    expect(controls.classList.contains('grid-cols-[2.5rem_minmax(0,1fr)]')).toBe(true);
+    expect(controls.parentElement).toBe(header);
+    expect(controls.classList.contains('min-w-0')).toBe(true);
     expect(controls.classList.contains('[&>button:last-child]:min-w-0')).toBe(true);
     expect(controls.classList.contains('[&>button:last-child]:max-w-full')).toBe(true);
     expect(controls.classList.contains('[&>button:last-child>span]:whitespace-normal')).toBe(true);
@@ -645,6 +646,15 @@ describe('Shell mobile reflow', () => {
     const theme = within(header).getByRole('button', { name: /Switch to .* mode/ });
     expect(document.activeElement).toBe(theme);
     await user.keyboard('{Enter}');
+    // D4: search and the account menu share the brand row, before navigation.
+    await user.tab();
+    expect(document.activeElement).toBe(
+      within(header).getByRole('button', { name: 'Search or jump to' }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
+      within(header).getByRole('button', { name: `Account menu for ${TEST_SESSION.accountId}` }),
+    );
     await user.tab();
     const jump = within(header).getByRole('button', {
       name: 'Open navigation - current page Role panels',

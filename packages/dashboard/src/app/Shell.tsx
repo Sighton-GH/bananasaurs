@@ -303,18 +303,23 @@ export function Shell() {
               Skip to content
             </a>
             <div className="min-h-screen lg:flex">
-              {/* Separate rows let native zoom narrow the CSS viewport without
-                controls covering the mark. Constrain JumpNav here so its full
-                accessible name survives even when the visible label wraps. */}
+              {/* Two rows: brand plus the icon controls share the top row and wrap
+                without overlapping at narrow widths; JumpNav gets the full
+                second row so its full accessible name survives even when the
+                visible label wraps. */}
               <header className="sticky top-0 z-30 flex flex-col items-stretch gap-2 border-b border-line bg-canvas/95 px-4 py-3 backdrop-blur lg:hidden [&>div:first-child_p:last-child]:break-words">
-                <Brand />
-                <div className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-2 [&>button:last-child]:h-auto [&>button:last-child]:min-h-10 [&>button:last-child]:min-w-0 [&>button:last-child]:max-w-full [&>button:last-child]:py-2 [&>button:last-child>span]:min-w-0 [&>button:last-child>span]:whitespace-normal [&>button:last-child>span]:break-words">
-                  <ThemeToggle />
-                  <JumpNav />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Brand />
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <ThemeToggle />
+                    <SearchButton variant="mobile" />
+                    <AccountMenu />
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <SearchButton variant="mobile" />
-                  <AccountMenu />
+                <div className="min-w-0 [&>button:last-child]:h-auto [&>button:last-child]:min-h-10 [&>button:last-child]:min-w-0 [&>button:last-child]:max-w-full [&>button:last-child]:py-2 [&>button:last-child>span]:min-w-0 [&>button:last-child>span]:whitespace-normal [&>button:last-child>span]:break-words">
+                  <JumpNav />
                 </div>
               </header>
 
