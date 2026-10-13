@@ -418,7 +418,7 @@ describe('AssistantPage', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
       target: { value: 'New member help' },
     });
-    await pickOption(/help/, 'Tag');
+    await pickOption('@help - A separate help tag for member questions.', 'Tag');
     await pickOption('@Onboarding', 'Mention role');
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Answer new member questions from reviewed sources only.' },
