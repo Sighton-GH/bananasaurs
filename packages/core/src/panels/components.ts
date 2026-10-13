@@ -12,7 +12,13 @@ import {
   type ActionRow,
 } from '../ui/discord/kit.js';
 import { subtext, truncate } from '../ui/discord/text.js';
-import { MAX_PANEL_OPTIONS, orderedOptions, type PanelConfig, type PanelOption } from './model.js';
+import {
+  MAX_PANEL_OPTIONS,
+  orderedOptions,
+  PANEL_CONTENT_MAX,
+  type PanelConfig,
+  type PanelOption,
+} from './model.js';
 
 /**
  * What a managed panel looks like on Discord, and how a click gets back.
@@ -154,7 +160,6 @@ export const buildComponents = (panel: PanelConfig): readonly ActionRow[] => {
   return rows;
 };
 
-const PANEL_CONTENT_MAX = 1500;
 const PANEL_HINT = (panel: PanelConfig): string => {
   if (panel.component === 'select')
     return panel.behaviour === 'add_only'
