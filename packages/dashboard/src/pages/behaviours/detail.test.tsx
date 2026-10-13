@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { Route } from 'wouter';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../../test-support.js';

@@ -31,6 +31,7 @@ import { DataState } from '../../ui/DataState.js';
 import { PageHeader } from '../../ui/PageHeader.js';
 import { useToast } from '../../ui/Toast.js';
 import { RoleChecklist, skillEffectLabel, toggleIn } from '../assistant-shared.js';
+import { RadioGroup } from '../../ui/RadioGroup.js';
 import { SkillItemsCard } from '../skill-items.js';
 
 /** Loaded (found or not): a 404 renders the empty state through `DataState`, not a thrown error. */
@@ -152,6 +153,7 @@ function ScopeEditor({
 
   const defaultNote = (forMode: SkillScopeMode): string =>
     scope.isDefault && scope.mode === forMode ? ' Default for this skill.' : '';
+  const modeError = fields.errorFor('mode');
   return (
     <div className="mt-3">
       <form
@@ -164,49 +166,19 @@ function ScopeEditor({
         <FormSection title="Skill scope">
           <ErrorSummary errors={fields.summary} />
           {error !== undefined && <ErrorNotice error={error} />}
-          <div
+          <RadioGroup
+            legend="Who can use this"
+            name="skill-scope"
             id="field-mode"
-            tabIndex={-1}
-            role="radiogroup"
-            aria-label="Who can use this"
-            aria-describedby={
-              fields.errorFor('mode') === undefined ? undefined : 'scope-mode-error'
-            }
-            className="grid gap-1"
-          >
-            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="radio"
-                name="skill-scope"
-                checked={mode === 'everyone'}
-                onChange={() => setMode('everyone')}
-              />
-              Everyone who can ask{defaultNote('everyone')}
-            </label>
-            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="radio"
-                name="skill-scope"
-                checked={mode === 'roles'}
-                onChange={() => setMode('roles')}
-              />
-              Specific roles{defaultNote('roles')}
-            </label>
-            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="radio"
-                name="skill-scope"
-                checked={mode === 'owner'}
-                onChange={() => setMode('owner')}
-              />
-              Owner only{defaultNote('owner')}
-            </label>
-          </div>
-          {fields.errorFor('mode') !== undefined && (
-            <p id="scope-mode-error" role="alert">
-              {fields.errorFor('mode')}
-            </p>
-          )}
+            value={mode}
+            onChange={(value) => setMode(value as SkillScopeMode)}
+            options={[
+              { value: 'everyone', label: `Everyone who can ask${defaultNote('everyone')}` },
+              { value: 'roles', label: `Specific roles${defaultNote('roles')}` },
+              { value: 'owner', label: `Owner only${defaultNote('owner')}` },
+            ]}
+            {...(modeError === undefined ? {} : { error: modeError })}
+          />
           {mode === 'roles' && (
             <div
               id="field-roleIds"

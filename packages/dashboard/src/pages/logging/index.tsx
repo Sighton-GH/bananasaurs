@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { Link } from 'wouter';
 import { LOG_ACTION_CATALOG, LOG_ACTION_GROUPS, logActionInfo } from '@bananasaurs/core';
 import type { GuildChannelInfo, LogRoute, LogRoutesResponse } from '../../api/ops.js';
@@ -48,18 +48,18 @@ function TriCheckbox({
   readonly indeterminate: boolean;
   readonly onChange: (checked: boolean) => void;
 }) {
+  const id = useId();
+  useEffect(() => {
+    const input = document.getElementById(id);
+    if (input instanceof HTMLInputElement) input.indeterminate = indeterminate;
+  }, [id, indeterminate]);
   return (
-    <label className="inline-flex items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        checked={checked}
-        ref={(el) => {
-          if (el !== null) el.indeterminate = indeterminate;
-        }}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      {label}
-    </label>
+    <Checkbox
+      id={id}
+      label={label}
+      checked={checked}
+      onChange={(e) => onChange(e.target.checked)}
+    />
   );
 }
 

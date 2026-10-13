@@ -1,4 +1,6 @@
 import type { AssistantSkill, ReminderStatus } from '@bananasaurs/core';
+import { Checkbox } from '../ui/Field.js';
+
 import {
   type AssistantBehaviourView,
   type DecisionRow,
@@ -108,14 +110,11 @@ export function RoleChecklist({
         .sort((a, b) => b.position - a.position)
         .map((role) => (
           <li key={role.id}>
-            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="checkbox"
-                checked={selected.includes(role.id)}
-                onChange={() => onToggle(role.id)}
-              />
-              <span className="min-w-0 truncate">{role.name}</span>
-            </label>
+            <Checkbox
+              label={role.name}
+              checked={selected.includes(role.id)}
+              onChange={() => onToggle(role.id)}
+            />
           </li>
         ))}
     </ul>
@@ -146,14 +145,11 @@ export function MemberChecklist({
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((member) => (
           <li key={member.id}>
-            <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-              <input
-                type="checkbox"
-                checked={selected.includes(member.id)}
-                onChange={() => onToggle(member.id)}
-              />
-              <span className="min-w-0 truncate">{member.name}</span>
-            </label>
+            <Checkbox
+              label={member.name}
+              checked={selected.includes(member.id)}
+              onChange={() => onToggle(member.id)}
+            />
           </li>
         ))}
     </ul>
