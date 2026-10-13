@@ -32,6 +32,13 @@ export interface AssistantLogInput {
 
 const TONE = { answered: 'ok', refused: 'hold', failed: 'danger' } as const;
 
+/** Final quoted/escaped length of each Text Display, so the card fits the 4,000-char budget. */
+const QUESTION_MAX = 1_000;
+const ANSWER_MAX = 1_000;
+const REASON_MAX = 600;
+const SOURCES_MAX = 600;
+const TOOLS_MAX = 300;
+
 const clip = (text: string, max = 1_000): string => {
   const value = text.trim() === '' ? '(empty)' : text;
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
@@ -74,21 +81,27 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
       ),
     ),
     text(
-      `${`<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`} · Behaviour: ${escapeInline(input.behaviourName)}`,
+      `${`<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`} · Behaviour: ${truncate(escapeInline(input.behaviourName), 100)}`,
     ),
     text('**Question**'),
-    text(quote(truncate(escapeText(clip(input.question, 1_000)), 1_000))),
+    text(truncate(quote(escapeText(clip(input.question))), QUESTION_MAX)),
     text('**Answer**'),
-    text(quote(truncate(clip(input.answer, 1_000), 1_000))),
+    text(truncate(quote(clip(input.answer)), ANSWER_MAX)),
     ...(input.reason === undefined
       ? []
-      : [text('**Reason**'), text(quote(truncate(escapeText(clip(input.reason, 1_000)), 1_000)))]),
+      : [
+          text('**Reason**'),
+          text(truncate(quote(escapeText(clip(input.reason))), REASON_MAX)),
+        ]),
     text(
       subtext(
-        `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,
+        truncate(
+          `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,
+          TOOLS_MAX,
+        ),
       ),
     ),
-    text(subtext(`Sources: ${sourceLines.length === 0 ? 'none' : clipLines(sourceLines)}`)),
+    text(subtext(`Sources: ${sourceLines.length === 0 ? 'none' : clipLines(sourceLines, SOURCES_MAX)}`)),
     text(subtext(ts(input.at, 'R'))),
   ];
   return toOutgoingMessage(card({ tone: TONE[input.outcome], children }));

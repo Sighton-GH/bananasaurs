@@ -204,8 +204,9 @@ describe('assistantLogMessage (ADR 0065)', () => {
     );
     const reasonPart = texts.split('**Reason**\n')[1]?.split('\n-# Tools:')[0] ?? '';
     const sourcesLine = texts.split('\n-# Sources: ')[1]?.split('\n-# <t:')[0] ?? '';
-    expect(reasonPart.replace(/^> /, '')).toHaveLength(1_000);
-    expect(sourcesLine.length).toBeLessThanOrEqual(1_000);
+    expect(reasonPart.length).toBeLessThanOrEqual(600);
+    expect(reasonPart.replace(/^> /, '').length).toBeLessThanOrEqual(600);
+    expect(sourcesLine.length).toBeLessThanOrEqual(600);
     expect(
       countComponents(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? []),
     ).toBeLessThanOrEqual(40);
