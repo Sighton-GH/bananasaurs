@@ -10,6 +10,7 @@ import { DataState } from '../../../ui/DataState.js';
 import { DataTable } from '../../../ui/DataTable.js';
 import { Field, Input } from '../../../ui/Field.js';
 import { InlineAlert } from '../../../ui/InlineAlert.js';
+import { MemberRef } from '../../../ui/MemberRef.js';
 import { Select } from '../../../ui/Select.js';
 import { type StoredMember, type DirectoryMember } from './types.js';
 
@@ -138,6 +139,25 @@ export function MembersSection({ teamId, teamName }: { teamId: string; teamName:
     }
   };
 
+  // A stored member with no saved display name resolves against the live
+  // guild member directory; anything the directory does not know stays a
+  // bare id with MemberRef's honest note — never a guessed name.
+  const memberCell = (m: StoredMember) => {
+    if (m.displayName !== null) return m.displayName;
+    const entry =
+      directory.resource.state === 'ready'
+        ? directory.resource.data.members.find((d) => d.memberId === m.discordUserId)
+        : undefined;
+    return (
+      <MemberRef
+        id={m.discordUserId}
+        member={
+          entry === undefined ? null : { displayName: entry.displayName, username: entry.username }
+        }
+      />
+    );
+  };
+
   return (
     <div className="grid gap-3">
       <h2 ref={headingRef} tabIndex={-1} className="text-section font-semibold">
@@ -158,7 +178,7 @@ export function MembersSection({ teamId, teamName }: { teamId: string; teamName:
               rows={data.members}
               rowKey={(m) => m.discordUserId}
               columns={[
-                { key: 'member', header: 'Member', cell: (m) => m.displayName ?? m.discordUserId },
+                { key: 'member', header: 'Member', cell: (m) => memberCell(m) },
                 {
                   key: 'role',
                   header: 'Role',
