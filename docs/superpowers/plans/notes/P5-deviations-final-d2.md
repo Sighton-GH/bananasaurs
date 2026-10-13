@@ -86,3 +86,13 @@ restore. The pre-commit `toBe(xDown)` at line 473 passes; only the post-commit
 node-identity assertion at line 480 cannot hold once commit timing is
 deterministic. Per the brief this is reported as a product bug rather than
 fixed here: no change to `OrderedList.tsx`.
+
+## D2 remaining
+
+Fresh inventory after steps 3–6:
+
+- No raw `<select>`, `<textarea>`, `type="radio"`, `type="checkbox"`, `<table`, `text-danger`, or `text-xl` remains in the listed production page files.
+- `packages/dashboard/src/pages/messages-assistant/skill-items.tsx:169,179,218` — `JSON.stringify` compares recurrence/request state to detect dirty fields and construct unchanged request patches; it is not rendered.
+- `packages/dashboard/src/pages/messages-assistant/assistant-prompt-wizard.tsx:239,241` — `JSON.stringify` compares wizard answers to the initial baseline for unsaved-change detection; it is not rendered.
+- `packages/dashboard/src/pages/run-detail/index.tsx:38` and `packages/dashboard/src/pages/ai-setup/index.tsx:111` appeared only when the broad page-directory search was used; they are outside the D2 Files list and were not changed.
+- Test-only `JSON.stringify` response construction remains in the existing touched tests; it is not user-visible and does not alter request assertions.

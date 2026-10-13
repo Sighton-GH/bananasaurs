@@ -177,7 +177,11 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
         Ask this behaviour a question and read its answer here. Only you see it — nothing is posted
         to Discord.
       </p>
-      <Field label="Try it question" hint="At most 2,000 characters. Twenty tries per hour." htmlFor="try-it-question">
+      <Field
+        label="Try it question"
+        hint="At most 2,000 characters. Twenty tries per hour."
+        htmlFor="try-it-question"
+      >
         <Textarea
           id="try-it-question"
           showCount

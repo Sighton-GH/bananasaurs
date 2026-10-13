@@ -367,7 +367,11 @@ export function DecisionsCard({
                     />
                     <Select
                       aria-label={`Memory subject ${d.id}`}
-                      value={(memoryDrafts[d.id]?.subjectId ?? '') === '' ? '__none' : (memoryDrafts[d.id]?.subjectId ?? '')}
+                      value={
+                        (memoryDrafts[d.id]?.subjectId ?? '') === ''
+                          ? '__none'
+                          : (memoryDrafts[d.id]?.subjectId ?? '')
+                      }
                       onValueChange={(value) =>
                         setMemoryDrafts((all) => ({
                           ...all,

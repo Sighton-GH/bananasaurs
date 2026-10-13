@@ -242,7 +242,9 @@ export function CreateBehaviourForm({
                         checked={skillIds.includes(skill.id)}
                         onChange={() => setSkillIds((ids) => toggleIn(ids, skill.id))}
                       />
-                      <span className="block text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
+                      <span className="block text-xs text-ink-muted">
+                        {skillEffectLabel(skill)}
+                      </span>
                     </li>
                   ))}
               </ul>
