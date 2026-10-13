@@ -59,6 +59,10 @@ Task 7: the integration test hand-assembles the `guild.ts` port blocks (as `mod.
 
 Checklist spot-checks: "Purging…" → `:699`–`:700`; "Cancelled" → `:449`–`:450`; "Nothing to purge" → `commands.test.ts:310`; "Cannot purge" (over-budget) → `:581` (number dropped by design, see above); "Cannot unban" → no pre-Task-6 test ever asserted an unban refusal reply, so nothing to restore — the refusal path is shared with kick (`commands.test.ts:432`) and unit-covered for every action via the `modOutcomeCard` refused/failed tests in `cards.test.ts`, with unban-applied at `commands.test.ts:477`; "already executed" → `:411`, `:725`; "Violation count: 3" → `commands.test.ts:519`; "escalation tier" → `:504` + `:520`; "do not have permission" → all `You can't take moderation actions` sites listed above.
 
+## Fix wave (budget by construction, history self-authorship, cycle removal)
+
+- Fix wave task 1: `logging/cards.ts` caps final rendered strings — head text ≤1,000 chars, quote block (label + quoted lines) ≤1,500, changes block ≤1,300 including fences (content truncated, closing fence re-added). A cut spoiler is closed with `||` within budget, and a cut landing right after `> ` (whose space `truncate`'s trimEnd eats) rolls back to a `> …` line, so every quoted line keeps its prefix.
+
 ## Task 8
 
 - Task 8: plan-mandated test additions live in `packages/core/src/mod/cards.test.ts` (`describeCaseEvent` 23-value table, `historyCard` render/budget/buttons) and `packages/core/src/mod/card-actions.test.ts` (history page-click branch), outside the task Files list under its forced-harness clause (Task 7 precedent). `commands.test.ts` history assertions moved from `content` to `cardTexts` the same way.

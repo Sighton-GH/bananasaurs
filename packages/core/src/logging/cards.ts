@@ -136,8 +136,11 @@ const ACTION_KINDS: ReadonlySet<string> = new Set([
   'automod_action',
 ]);
 
-const QUOTE_MAX = 1500;
-const CHANGES_MAX = 1200;
+const HEAD_FINAL_MAX = 1000;
+const QUOTE_FINAL_MAX = 1500;
+const CHANGES_FINAL_MAX = 1300;
+/** The fence lines around a changes block: "```\n" and "\n```". */
+const CHANGES_FENCE_OVERHEAD = '```\n'.length + '\n```'.length;
 
 /** Delete (when the message exists), Warn and Timeout. Undefined when there is nothing to offer. */
 export const modActionRow = (input: {
@@ -175,26 +178,63 @@ export const modActionRow = (input: {
   return buttons.length === 0 ? undefined : actionRow(buttons);
 };
 
+/**
+ * The quote block, capped as a final rendered string: escaping (a backslash
+ * per Markdown character) and the `> ` prefix on every line both add
+ * characters, so truncating before them can roughly double past the cap.
+ * `truncate` only removes from the end, so every line keeps its prefix; when
+ * the cut lands inside a spoiler, the closing `||` is re-added within budget.
+ */
 const quoteBlock = (q: NonNullable<LogCardView['quote']>): string => {
-  const body = escapeText(truncate(q.text.trim() === '' ? '(empty)' : q.text, QUOTE_MAX));
+  const body = escapeText(q.text.trim() === '' ? '(empty)' : q.text);
   const wrapped = q.spoiler === true ? `||${body}||` : body;
-  return [`**${q.label}**`, ...wrapped.split('\n').map((line) => `> ${line}`)].join('\n');
+  const full = [`**${q.label}**`, ...wrapped.split('\n').map((line) => `> ${line}`)].join('\n');
+  if (full.length <= QUOTE_FINAL_MAX) return full;
+  // Slack for the two repairs below, both kept within budget: `truncate`'s
+  // trimEnd can eat the space of a `> ` prefix when the cut lands right
+  // after it (leaving a bare `>` line), and a cut spoiler needs its closing
+  // `||` re-added.
+  const budget = QUOTE_FINAL_MAX - (q.spoiler === true ? 3 : 1);
+  let out = truncate(full, budget);
+  const lines = out.split('\n');
+  const last = lines[lines.length - 1] ?? '';
+  if (lines.length > 1 && !last.startsWith('> ')) out = `${lines.slice(0, -1).join('\n')}\n> …`;
+  if (q.spoiler !== true) return out;
+  // The body is escaped, so the wrapper holds the only raw `||`: an odd
+  // count means the cut landed inside the spoiler, which is closed here.
+  return (out.split('||').length - 1) % 2 === 1 ? `${out}||` : out;
 };
 
+/**
+ * The changes block, capped as a final rendered string including both fence
+ * lines: the content is truncated first, then the closing fence is added, so
+ * the fence can never be cut off. Backticks that would close the block early
+ * are already neutralised before the cap.
+ */
 const changesBlock = (lines: readonly string[]): string =>
-  ['```', truncate(lines.join('\n').replaceAll('```', 'ˋˋˋ'), CHANGES_MAX), '```'].join('\n');
+  [
+    '```',
+    truncate(
+      lines.join('\n').replaceAll('```', 'ˋˋˋ'),
+      CHANGES_FINAL_MAX - CHANGES_FENCE_OVERHEAD,
+    ),
+    '```',
+  ].join('\n');
 
 export const renderLogCard = (view: LogCardView, guildId: string): CardMessage => {
   // `view.kind` is a plain string (audit items and the subscriber build views
   // from one), so a value outside `LogEventKind | 'gap'` can still reach this
   // lookup — the fallback stays for exactly that case.
   const meta = (LOG_KIND_META as Readonly<Record<string, Meta>>)[view.kind] ?? FALLBACK;
-  const head = [
-    subtext(`${ICON[meta.icon]} ${meta.label.toUpperCase()}`),
-    view.headline,
-    ...(view.details ?? []),
-  ];
-  const children: ContainerChild[] = [text(head.join('\n'))];
+  const head = truncate(
+    [
+      subtext(`${ICON[meta.icon]} ${meta.label.toUpperCase()}`),
+      view.headline,
+      ...(view.details ?? []),
+    ].join('\n'),
+    HEAD_FINAL_MAX,
+  );
+  const children: ContainerChild[] = [text(head)];
   if (view.quote !== undefined) children.push(text(quoteBlock(view.quote)));
   if (view.changes !== undefined && view.changes.length > 0)
     children.push(text(changesBlock(view.changes)));
