@@ -504,6 +504,7 @@ describe('ModerationActionGateway', () => {
       const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
 
       expect(outcome).toEqual({ status: 'refused', reason: 'guild-unknown' });
+      expect(h.claimed.size).toBe(0);
       expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
     });
 
@@ -513,6 +514,7 @@ describe('ModerationActionGateway', () => {
       const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
 
       expect(outcome).toEqual({ status: 'refused', reason: 'killswitch' });
+      expect(h.claimed.size).toBe(0);
       expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
     });
 
@@ -522,6 +524,7 @@ describe('ModerationActionGateway', () => {
       const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
 
       expect(outcome).toEqual({ status: 'refused', reason: 'breaker-open' });
+      expect(h.claimed.size).toBe(0);
       expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
     });
 
