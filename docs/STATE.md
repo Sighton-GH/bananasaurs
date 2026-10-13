@@ -1,12 +1,17 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-12 (attachments, ADR 0149; assistant streaming, ADR 0148; daily digest, ADR 0150; provider key pools and routing, ADRs 0143–0144; assistant new abilities, ADRs 0145–0147; assistant capability truth, ADRs 0136–0137).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-13 (UI/UX overhaul, ADRs 0140–0142; attachments, ADR 0149; assistant streaming, ADR 0148; daily digest, ADR 0150; provider key pools and routing, ADRs 0143–0144; assistant new abilities, ADRs 0145–0147; assistant capability truth, ADRs 0136–0137).
 
-**Log, moderation and panel cards (ADR 0141), 2026-10-13.** Log routes, automod matches, /mod replies,
-confirmations, case history, role panels, assistant reminders, escalations and the AI log are all
-Components V2 cards. Log cards for messages and automod carry Delete / Warn / Timeout buttons that run
-the /mod code path (no MCP equivalent). One error catalogue; refusals never show raw codes. No migration.
-Owner check: npm run smoke:cards -- --p2.
+**UI/UX overhaul P1–P5 (ADRs 0140–0142), 2026-10-13 — on branch `uiux/final`, fast-forward onto `main`; not merged, deployed or verified live.**
+
+- **Task cards (P1, ADR 0140):** every task post is a Components V2 card with description, links (≤5), art, and I'm on it / Post update buttons; cards refresh within a minute of any edit; links are editable in the dashboard and MCP. Migration `drizzle/0110_ui_task_cards.sql` (renumbered from GLM's 0107 after main took 0107–0109; SQL unchanged).
+- **Log, moderation and panel cards (P2, ADR 0141):** log routes, automod matches, /mod replies, confirmations, paged case history, role panels, assistant reminders, escalations and the AI log are cards. Message and automod log cards carry Delete / Warn / Timeout buttons that run the /mod code path: each click or modal submit is authorised on its own interaction, Delete is a two-step confirm through `ModerationActionGateway.deleteMessage`, and reasons are capped at 500 characters on the server. One error catalogue; refusals never show raw codes. Every card caps its fields after escaping, so no input can exceed Discord's 4,000-character / 40-component budget (worst-case tests for every renderer). No MCP equivalent for the buttons.
+- **Dashboard foundations and shell (P3–P4, ADR 0142):** light-first tokens checked for AA in both themes, bundled Inter, Lucide icons, shared kit primitives (Select, Textarea, RadioGroup, Tabs, DropdownMenu, Tooltip, alerts, banner, states), crash boundaries, skip link, page titles; rail regrouped (Club, Moderation, Assistant, Messages, System), breadcrumbs, one system banner per live cause, Ctrl/⌘-K palette.
+- **Page sweep (P5) and integration:** every page on the kit, including main's newer AI setup pieces (key pools, routing, model check, recommended setup, digests); keyboard focus returns to a sensible control after saves, deletes and reorders; the phone header is two rows; confirm and re-auth dialogs dim the sticky header; long titles take one breadcrumb line; team members with no stored name resolve through the member directory. Light-first ignores a dark OS preference by design (ADR 0142).
+- **Gates at merge:** typecheck and lint clean; 11,471 tests green; build clean.
+- **Deploy:** stop → `npm ci` → `npm run build` → `npm run db:migrate` (applies 0110; the script imports the built storage package) → start; then `npm run doctor`.
+- **Owner checks:** `npm run smoke:cards -- --channel <test channel> --p2` and the P2 list in `docs/SMOKE_TESTS.md` (live Delete / Timeout / unauthorised Warn, panel republish); `/kit` in both themes.
+- **Known limits:** a `BANANASAURS_READONLY` instance still shows write buttons (the server refuses honestly); words wrap mid-word at 180 CSS px.
 
 ---
 
@@ -73,23 +78,6 @@ Owner check: npm run smoke:cards -- --p2.
 - **Helpful wizard:** the default boundary helps with any reasonable request; FOCUS replaces WHAT YOU HELP WITH; sources are club first, then the web. Prompts saved by the old wizard are rewritten when compiled.
 - **AI setup page:** chain models OpenRouter no longer lists are flagged, and each OpenRouter model shows chips (reads images, reads PDFs, uses tools, thinks) from OpenRouter's public model list, refreshed hourly.
 - **Fixtures:** capability fixtures from the live transcripts check that each failing conversation now gets a prompt that makes the right answer possible.
-**Dashboard shell (P4), 2026-10-12.** Rail regrouped (Club, Moderation, Assistant, Messages, System) with
-icons and parent highlighting; page headers with breadcrumbs; one system banner per live cause (offline,
-kill switch, breaker, gateway, read-only, preview, safety status unknown, failing models); Ctrl/⌘-K palette
-over pages, actions, tasks, cases, automod rules and members by ID. The Guide and the CLI-parity note now use the new
-page names. P4 audit repair: system hold causes use polite status; danger causes stay alert. Shared
-Banner defaults remain unchanged when no live override is set. Palette fuzzy subsequences now match
-astral code points as well as BMP characters. No new dependencies. Built on a local branch; not merged, deployed or verified live.
-
-**Dashboard foundations (ADR 0142), 2026-10-11.** Light-first tokens checked for AA in both themes, Inter
-(bundled), Lucide icons via src/ui/icons.ts, new primitives (Select, Textarea, RadioGroup, Link, Tabs,
-DropdownMenu, Tooltip, DescriptionList, KeyValueTable, CodeBlock, Pagination, alerts, banner, error
-summary, skeleton, progress), states kit (Forbidden/NotFound/Unavailable/Stale/timed Loading), crash
-boundaries, skip link and page titles. Owner check: /kit in both themes. Pages are swept in P5.
-
-**Task cards (ADR 0140), 2026-10-11.** Every task post is a Components V2 card with description, links (≤5), art, and I'm on it / Post update buttons; cards refresh within a minute of any edit; links editable in the dashboard and MCP. Migration ui_task_cards. Owner check: npm run smoke:cards. Built on a local branch; not merged, deployed or verified live.
-
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-12 (assistant harness v2 branch, ADRs 0069–0077).
 
 ---
 

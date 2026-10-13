@@ -169,3 +169,20 @@ Facts checked on 2026-10-10, against `main` at `950f78fe`:
   deliberate second step. A third tap would only add friction.
 - **Buttons on every card that names a member.** Profile and role changes are not conduct. Buttons
   there are noise and a misclick risk.
+
+## Amendments (2026-10-13, during implementation)
+
+- **A modal submit is authorised before it is validated.** A blank or over-long reason from someone
+  without `moderation.act` takes the shared `/mod` refusal path, so the attempt is refused and recorded
+  on the target's case like any other unauthorised action. Only an authorised moderator sees the
+  validation card. The 500-character reason limit (`MOD_REASON_MAX`) is enforced on the server, not only
+  by the modal's `maxLength`, and has its own catalogue entry (`mod.reason-too-long`).
+- **Every card fits Discord's budget by construction.** `card()` throws when the Text Displays exceed
+  4,000 characters or the components exceed 40, and a throw loses the post. So every renderer caps each
+  field after it is escaped and quoted, not before (escaping and `> ` prefixes can roughly double the
+  length), and each renderer has a worst-case test. The AI log card caps the question and answer at
+  1,000, the reason and the sources line at 600, and the tools line at 300. A role panel keeps the full
+  2,000 characters its validator allows (`PANEL_CONTENT_MAX`).
+- **Provider and web metadata in the AI log is inert.** Model, tool and source names are escaped; a
+  source is a link only for an `http:`/`https:` URL that parses, with `( ) < >` and whitespace
+  percent-encoded.
