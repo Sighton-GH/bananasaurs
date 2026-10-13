@@ -4,9 +4,8 @@ import {
   countComponents,
   countText,
   TONE_ACCENT,
-  toOutgoingMessage,
 } from '@bananasaurs/core';
-import { assistantLogMessage, clip, clipLines } from './log-message.js';
+import { assistantLogMessage } from './log-message.js';
 
 const base = {
   userId: '111111111111111111',
@@ -178,3 +177,30 @@ describe('assistantLogMessage (ADR 0065)', () => {
     expect(stripQuotes(answerPart).length).toBeLessThanOrEqual(1_000);
     expect(questionPart).toContain('…');
   });
+
+  it('caps the reason and source links and keeps the card within budget', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'failed',
+        answer: 'an answer',
+        reason: 'r'.repeat(5_000),
+        trace: {
+          latencyMs: 1,
+          tools: [],
+          sources: Array.from({ length: 100 }, (_, index) => ({
+            title: `Source ${String(index)}`,
+            url: `https://example.com/${'p'.repeat(50)}/${String(index)}`,
+          })),
+          web: true,
+        },
+      }),
+    );
+    const reasonPart = texts.split('**Reason**\n')[1]?.split('\n-# Tools:')[0] ?? '';
+    const sourcesLine = texts.split('\n-# Sources: ')[1]?.split('\n-# <t:')[0] ?? '';
+    expect(reasonPart.replace(/^> /, '')).toHaveLength(1_000);
+    expect(sourcesLine.length).toBeLessThanOrEqual(1_000);
+    expect(countComponents(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? [])).toBeLessThanOrEqual(40);
+    expect(countText(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? [])).toBeLessThanOrEqual(4_000);
+  });
+});
