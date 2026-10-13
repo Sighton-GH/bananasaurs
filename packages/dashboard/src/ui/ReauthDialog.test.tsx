@@ -39,4 +39,14 @@ describe('ReauthDialog', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it('paints the overlay above the sticky header and the content above the overlay (L08)', () => {
+    render(<ReauthDialog open onSubmit={() => undefined} onCancel={() => undefined} />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.classList.contains('z-50')).toBe(true);
+    const overlay = document.querySelector('[data-state="open"].fixed.inset-0');
+    expect(overlay).not.toBeNull();
+    expect(overlay).not.toBe(dialog);
+    expect((overlay as Element).classList.contains('z-40')).toBe(true);
+  });
 });

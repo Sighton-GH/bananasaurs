@@ -469,3 +469,24 @@ it('stacked narrow actions inherit width stretch and keep keyboard cancel/confir
   await user.keyboard('{Enter}');
   expect(confirm).toHaveBeenCalledTimes(1);
 });
+
+describe('ConfirmDialog layering (L08)', () => {
+  it('paints the overlay above the sticky header and the content above the overlay', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="T"
+        scope="s"
+        confirmLabel="Do it"
+        onConfirm={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.classList.contains('z-50')).toBe(true);
+    const overlay = document.querySelector('[data-state="open"].fixed.inset-0');
+    expect(overlay).not.toBeNull();
+    expect(overlay).not.toBe(dialog);
+    expect((overlay as Element).classList.contains('z-40')).toBe(true);
+  });
+});

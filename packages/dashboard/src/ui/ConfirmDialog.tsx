@@ -115,7 +115,7 @@ export function ConfirmDialog({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-canvas/70" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-canvas/70" />
         <Dialog.Content
           ref={contentRef}
           onOpenAutoFocus={() => {
@@ -129,7 +129,7 @@ export function ConfirmDialog({
             initialRef.current = null;
             if (opener !== null && opener.isConnected) opener.focus();
           }}
-          className={`fixed left-1/2 w-[28rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto overscroll-contain rounded-md border border-line bg-panel p-4 text-ink [overflow-wrap:anywhere] ${
+          className={`fixed left-1/2 z-50 w-[28rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto overscroll-contain rounded-md border border-line bg-panel p-4 text-ink [overflow-wrap:anywhere] ${
             anchored ? '' : 'top-1/2 -translate-y-1/2 max-h-[calc(100dvh-2rem)]'
           }`}
           style={
