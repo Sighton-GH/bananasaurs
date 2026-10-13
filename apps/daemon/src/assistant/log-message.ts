@@ -37,7 +37,12 @@ const clip = (text: string, max = 1_000): string => {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 };
 
-/** Whole lines only, so a link is never cut in half. */
+/** Every line quoted, so a multi-line question or answer stays inside the quote. */
+const quote = (body: string): string =>
+  body
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');/** Whole lines only, so a link is never cut in half. */
 const clipLines = (lines: readonly string[], max = 1_000): string => {
   const kept: string[] = [];
   let length = 0;
@@ -70,12 +75,12 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
       `${`<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`} · Behaviour: ${escapeInline(input.behaviourName)}`,
     ),
     text('**Question**'),
-    text(`> ${truncate(escapeText(clip(input.question, 1_000)), 1_000)}`),
+    text(quote(truncate(escapeText(clip(input.question, 1_000)), 1_000))),
     text('**Answer**'),
-    text(`> ${truncate(clip(input.answer, 1_000), 1_000)}`),
+    text(quote(truncate(clip(input.answer, 1_000), 1_000))),
     ...(input.reason === undefined
       ? []
-      : [text('**Reason**'), text(`> ${truncate(escapeText(clip(input.reason, 1_000)), 1_000)}`)]),
+      : [text('**Reason**'), text(quote(truncate(escapeText(clip(input.reason, 1_000)), 1_000)))]),
     text(
       subtext(
         `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,

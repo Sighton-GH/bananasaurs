@@ -145,6 +145,22 @@ describe('assistantLogMessage (ADR 0065)', () => {
     expect(texts).toContain('Behaviour: \\*\\*x\\*\\*');
   });
 
+  it('quotes every line of a multi-line question and answer', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'answered',
+        question: 'line one\nline two\nline three',
+        answer: 'first\n# Heading\nthird',
+      }),
+    );
+    const questionPart = texts.split('**Question**\n')[1]?.split('\n**Answer**')[0] ?? '';
+    for (const line of ['> line one', '> line two', '> line three'])
+      expect(questionPart).toContain(line);
+    const answerPart = texts.split('**Answer**\n')[1]?.split('\n-# Tools:')[0] ?? '';
+    for (const line of ['> first', '> # Heading', '> third']) expect(answerPart).toContain(line);
+  });
+
   it('caps question and answer at 1,000 characters', () => {
     const long = 'x'.repeat(5_000);
     const texts = textsOf(
