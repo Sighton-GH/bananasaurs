@@ -23,6 +23,7 @@ export const buildUserMessage = (input: UserMessageInput): string => {
   if (input.quoteEnvelope !== undefined && input.quoteEnvelope !== '')
     parts.push(input.quoteEnvelope);
   parts.push(currentBlock);
+  parts.push('You can read an attachment only if its contents are included here.');
   if (input.abilitiesNote === true)
     parts.push(
       `Your abilities for ${name} are exactly what WHAT YOU CAN DO RIGHT NOW lists. An earlier reply here that says otherwise was to someone with different access, or is out of date.`,

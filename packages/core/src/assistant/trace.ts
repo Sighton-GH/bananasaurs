@@ -13,6 +13,17 @@ export const assistantTraceIncludedSchema = z.object({
   channelMessages: z.number().int().nonnegative().optional(),
   /** ADR 0091: the stored summary version the history led with. Absent means none. */
   summaryVersion: z.number().int().nonnegative().optional(),
+  /** ADR 0149: what rode along; metadata only, never bytes. */
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().max(120),
+        kind: z.enum(['text', 'image', 'pdf']),
+        sizeBytes: z.number().int().nonnegative(),
+      }),
+    )
+    .max(10)
+    .optional(),
 });
 export type AssistantTraceIncluded = z.infer<typeof assistantTraceIncludedSchema>;
 

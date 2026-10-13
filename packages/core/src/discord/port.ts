@@ -222,6 +222,25 @@ export interface RecentMessage {
   /** From `referenced_message.author`, when the message is a reply. */
   readonly referencedAuthorName?: string | undefined;
   readonly hasAttachments: boolean;
+  /** Attachment metadata for marker lines (ADR 0149); absent means unknown, not none. */
+  readonly attachments?: readonly FetchedAttachment[] | undefined;
+}
+
+/** One attachment on a fetched message (ADR 0149). `url` is the Discord-signed CDN link, when present. */
+export interface FetchedAttachment {
+  readonly attachmentId: string;
+  readonly fileName: string;
+  readonly contentType?: string | undefined;
+  readonly sizeBytes: number;
+  readonly url?: string | undefined;
+}
+
+/** One embed on a fetched message (ADR 0149): text for marker lines only. */
+export interface FetchedEmbed {
+  readonly title?: string | undefined;
+  readonly description?: string | undefined;
+  readonly providerName?: string | undefined;
+  readonly thumbnailUrl?: string | undefined;
 }
 
 export interface DiscordPort {
@@ -337,7 +356,16 @@ export interface DiscordPort {
     guildId: Snowflake,
     channelId: Snowflake,
     messageId: Snowflake,
-  ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  ): Promise<
+    | {
+        authorId: Snowflake;
+        authorName: string;
+        content: string;
+        attachments: readonly FetchedAttachment[];
+        embeds: readonly FetchedEmbed[];
+      }
+    | undefined
+  >;
   /** One message's author, content and embeds: edit/delete eligibility and undo (ADR 0116 §4). */
   fetchMessageAuthor(
     guildId: Snowflake,

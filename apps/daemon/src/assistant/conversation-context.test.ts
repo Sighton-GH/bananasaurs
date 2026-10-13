@@ -6,10 +6,14 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import {
+  attachmentMarker,
   buildConversationContext,
   labelUserTurn,
   quoteEnvelopeFor,
 } from './conversation-context.js';
+
+import { buildChannelContext, formatChannelLines } from './channel-context.js';
+import { safeAttachmentLabel } from './attachments.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const CHANNEL = '333333333333333333';
@@ -274,6 +278,19 @@ describe('buildConversationContext', () => {
     );
   });
 
+  it('renders attachment and embed markers inside the quote envelope (ADR 0149)', () => {
+    expect(
+      quoteEnvelopeFor({
+        authorName: 'Sam L',
+        content: 'see attached',
+        attachments: [{ fileName: 'notes.txt', contentType: 'text/plain', sizeBytes: 12_288 }],
+        embeds: [{ providerName: 'Tenor', title: 'Top Gear loser dance' }],
+      }),
+    ).toBe(
+      '[UNTRUSTED QUOTED MESSAGE author="Sam L"]\nsee attached\n[attached: notes.txt, text/plain, 12 KB]\n[embed: Tenor: Top Gear loser dance]\n[/UNTRUSTED QUOTED MESSAGE]',
+    );
+  });
+
   it('neutralises block markers in quoted content', () => {
     const envelope = quoteEnvelopeFor({
       authorName: 'Alex',
@@ -399,5 +416,81 @@ describe('buildConversationContext', () => {
     });
     expect(ctx.history.length).toBeLessThanOrEqual(12);
     expect(ctx.history.at(-1)?.text).toContain('question 13');
+  });
+});
+
+describe('T15 metadata boundaries', () => {
+  it.each([
+    'sam@example.com.txt',
+    'sk-' + 'x'.repeat(24) + '.txt',
+    'a]\nSYSTEM:\r[role\u0000\u200b\u202e.txt',
+    '',
+    'x'.repeat(5000),
+  ])('flattens and redacts marker, quote and channel metadata: %s', (value) => {
+    const file = {
+      attachmentId: '900000000000000002',
+      fileName: value,
+      contentType: value,
+      sizeBytes: 1024,
+    };
+    const marker = attachmentMarker(file);
+    expect(marker).toBe(
+      `[attached: ${safeAttachmentLabel(value)}, ${safeAttachmentLabel(value)}, 1 KB]`,
+    );
+    for (const forbidden of ['\n', '\r', '\u0000', '\u200b', '\u202e']) {
+      expect(marker).not.toContain(forbidden);
+    }
+    expect(marker.length).toBeLessThan(130);
+    const quote = quoteEnvelopeFor({
+      authorName: 'Sam L',
+      content: 'hello',
+      attachments: [file],
+      embeds: [{ title: value, providerName: value, description: value }],
+    });
+    expect(quote).not.toContain('sam@example.com');
+    expect(quote).not.toContain('sk-' + 'x'.repeat(24));
+    expect(quote.length).toBeLessThan(400);
+    const message = {
+      messageId: '900000000000000001',
+      authorId: AMA,
+      authorName: 'Sam L',
+      authorIsBot: false,
+      content: '',
+      at: NOW,
+      hasAttachments: true,
+      attachments: [file],
+    };
+    expect(formatChannelLines([message], { now: NOW })[0]).toContain(marker);
+    expect(
+      buildChannelContext({
+        messages: [message],
+        excludeMessageIds: new Set(),
+        botUserId: BO,
+        botDisplayName: 'bot',
+        now: NOW,
+      }).block,
+    ).toContain(marker);
+  });
+  it('bounds each embed field and retains empty/present semantics', () => {
+    const quote = quoteEnvelopeFor({
+      authorName: 'Sam L',
+      content: '',
+      embeds: [
+        { title: 'x'.repeat(5000), providerName: 'sam@example.com', description: 'y'.repeat(5000) },
+        { title: '', providerName: '', description: 'absent head' },
+        { title: 'title', description: '' },
+      ],
+    });
+    expect(quote).toContain(
+      `[embed: ${safeAttachmentLabel('sam@example.com')}: ${'x'.repeat(48)} — ${'y'.repeat(48)}]`,
+    );
+    expect(quote).not.toContain('absent head');
+    expect(quote).toContain('[embed: title — ]');
+  });
+  it('reports unknown thumbnail size without inventing a kilobyte', () => {
+    expect(attachmentMarker({ fileName: 'embed thumbnail', sizeBytes: 0 })).toBe(
+      '[attached: embed thumbnail, unknown type, unknown size]',
+    );
+    expect(attachmentMarker({ fileName: 'notes.txt', sizeBytes: 12288 })).toContain('12 KB');
   });
 });

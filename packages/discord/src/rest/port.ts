@@ -23,7 +23,7 @@ import {
   type RESTPatchAPIGuildRolePositionsJSONBody,
   type RESTPostAPIGuildRoleJSONBody,
 } from 'discord.js';
-import { DiscordApiError, unicodeEmojiChars } from '@bananasaurs/core';
+import { DiscordApiError, unicodeEmojiChars, validateResourceUrl } from '@bananasaurs/core';
 import type {
   AuditLogEntry,
   DiscordMember,
@@ -31,6 +31,8 @@ import type {
   DiscordPort,
   DiscordRole,
   EmojiKey,
+  FetchedAttachment,
+  FetchedEmbed,
   InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
@@ -113,6 +115,42 @@ interface DeferredInteraction {
  * than widened in the library's own type.
  */
 type APIMessageWithMember = APIMessage & { member?: { nick?: string | null } };
+
+const toFetchedAttachments = (message: APIMessageWithMember): FetchedAttachment[] =>
+  (message.attachments ?? []).map((a) => ({
+    attachmentId: a.id,
+    fileName: a.filename,
+    ...(a.content_type === undefined ? {} : { contentType: a.content_type }),
+    sizeBytes: a.size,
+    url: a.url ?? a.proxy_url ?? undefined,
+  }));
+
+/** Selection only; the byte fetcher still validates, pins DNS and checks redirects. */
+const usableThumbnailProxy = (raw: string | undefined): boolean => {
+  if (raw === undefined) return false;
+  try {
+    const url = validateResourceUrl(raw);
+    return (
+      (url.port === '' || url.port === '443') &&
+      (url.hostname === 'cdn.discordapp.com' || url.hostname === 'media.discordapp.net')
+    );
+  } catch {
+    return false;
+  }
+};
+
+const toFetchedEmbeds = (message: APIMessageWithMember): FetchedEmbed[] =>
+  (message.embeds ?? []).map((e) => {
+    const thumbnailUrl = usableThumbnailProxy(e.thumbnail?.proxy_url)
+      ? e.thumbnail?.proxy_url
+      : (e.thumbnail?.url ?? e.thumbnail?.proxy_url);
+    return {
+      ...(e.title === undefined ? {} : { title: e.title }),
+      ...(e.description === undefined ? {} : { description: e.description }),
+      ...(e.provider?.name === undefined ? {} : { providerName: e.provider.name }),
+      ...(thumbnailUrl === undefined ? {} : { thumbnailUrl }),
+    };
+  });
 
 export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
   const { rest, applicationId } = deps;
@@ -367,6 +405,8 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           authorId: message.author.id,
           authorName: message.member?.nick ?? message.author.global_name ?? message.author.username,
           content: message.content,
+          attachments: toFetchedAttachments(message),
+          embeds: toFetchedEmbeds(message),
         };
       } catch (err) {
         // Gone or no access is routine here — a member quoting an old or
@@ -444,6 +484,7 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
                       referencedAuthor.username,
                   }),
               hasAttachments: (message.attachments?.length ?? 0) > 0,
+              attachments: toFetchedAttachments(message),
             } satisfies RecentMessage;
           })
           .reverse();

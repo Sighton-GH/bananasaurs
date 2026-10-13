@@ -204,7 +204,7 @@ describe('GET /api/assistant/tuning', () => {
     });
     expect(response.statusCode).toBe(200);
     const body = response.json<{ settings: { key: string }[] }>();
-    expect(body.settings).toHaveLength(34);
+    expect(body.settings).toHaveLength(41);
     expect(body.settings.map((s) => s.key)).toContain('assistant.retryDelaysMs');
     expect(body.settings.map((s) => s.key)).toContain('assistant.channelContextMessages');
     expect(body.settings.map((s) => s.key)).toContain('mcp.cap.message');

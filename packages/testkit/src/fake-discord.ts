@@ -11,6 +11,8 @@ import {
   type DomainEvent,
   type InteractionRef,
   type EmojiKey,
+  type FetchedAttachment,
+  type FetchedEmbed,
   type FetchedMessage,
   type NativeAutoModAction,
   type NativeAutoModTrigger,
@@ -1872,12 +1874,27 @@ export class FakeDiscord implements DiscordPort {
     guildId: Snowflake,
     channelId: Snowflake,
     messageId: Snowflake,
-  ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined> {
+  ): Promise<
+    | {
+        authorId: Snowflake;
+        authorName: string;
+        content: string;
+        attachments: readonly FetchedAttachment[];
+        embeds: readonly FetchedEmbed[];
+      }
+    | undefined
+  > {
     this.record('fetchMessageContent', [guildId, channelId, messageId]);
     this.check('fetchMessageContent', guildId);
     const m = this.messages.get(key(channelId, messageId));
     if (!m || m.deleted || m.content === undefined) return undefined;
-    return { authorId: m.authorId, authorName: m.authorName, content: m.content };
+    return {
+      authorId: m.authorId,
+      authorName: m.authorName,
+      content: m.content,
+      attachments: [],
+      embeds: [],
+    };
   }
 
   async sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void> {

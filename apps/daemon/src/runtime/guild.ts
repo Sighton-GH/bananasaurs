@@ -96,6 +96,7 @@ import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
+import { ATTACHMENT_HOSTS, type AttachmentCaps } from '../assistant/attachments.js';
 import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
 import { websiteFetchHeaders } from '../assistant/website-fetch-headers.js';
 import { conversationPruneHandler } from '../jobs/conversation-prune.js';
@@ -1324,6 +1325,28 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }
   };
 
+  // ADR 0149: attachment bytes come only from Discord's CDN hosts, through
+  // the reviewed fetcher (DNS pinning, public-address check, per-hop
+  // allowlist re-check, byte cap). Caps are read live per call, so
+  // dashboard changes apply without a restart; absent settings mean the
+  // D7 defaults.
+  const attachmentFetcher =
+    settings === undefined
+      ? new ReviewedResourceFetcher({ now })
+      : new ReviewedResourceFetcher({
+          now,
+          limits: () => ({ timeoutMs: settings.get('resources.fetchTimeoutMs') }),
+        });
+  const attachmentCaps = (): AttachmentCaps => ({
+    textMaxBytes: settings?.get('assistant.attachments.textMaxBytes') ?? 262_144,
+    textMaxChars: settings?.get('assistant.attachments.textMaxChars') ?? 24_000,
+    textMaxCount: settings?.get('assistant.attachments.textMaxCount') ?? 3,
+    imageMaxBytes: settings?.get('assistant.attachments.imageMaxBytes') ?? 5_242_880,
+    imageMaxCount: settings?.get('assistant.attachments.imageMaxCount') ?? 4,
+    pdfMaxBytes: settings?.get('assistant.attachments.pdfMaxBytes') ?? 10_485_760,
+    pdfMaxCount: settings?.get('assistant.attachments.pdfMaxCount') ?? 2,
+  });
+
   const worker = new JobWorker({
     store: jobStoreFor(scope),
     handlers: [
@@ -1375,6 +1398,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         // ADR 0089: channel context for mentions, beside the quote fetch.
         fetchChannelMessages: (channelId, opts) =>
           discord.fetchChannelMessages(guildId, channelId, opts),
+        // ADR 0149: live attachment bytes and caps (S4-T5/S4-T9 deps).
+        fetchAttachmentBytes: async (url, maxBytes) => {
+          const fetched = await attachmentFetcher.fetchBytes(url, {
+            allowedHosts: ATTACHMENT_HOSTS,
+            maxBytes,
+          });
+          return fetched.ok
+            ? { ok: true as const, bytes: fetched.bytes, mediaType: fetched.mediaType }
+            : { ok: false as const, code: fetched.code };
+        },
+        attachmentCaps,
         // ADR 0126: Write re-gates the reply at run time; Read gates the
         // live channel-context fetches. The quoted message fetch stays
         // ungated (a handed message).

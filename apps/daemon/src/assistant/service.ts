@@ -27,6 +27,7 @@ import {
   type ChannelAccess,
   type CompiledAssistantContext,
   type Config,
+  type GenerationMedia,
   type GenerationMessage,
   type Logger,
   type RecentMessage,
@@ -78,6 +79,7 @@ import {
   NOOP_RUN_RECORDER,
   type RunRecorder,
 } from './run-recorder.js';
+import { safeAttachmentLabel } from './attachments.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { sanitizeMentionsForProvider } from './mentions.js';
@@ -97,8 +99,15 @@ const textOf = (input: Readonly<Record<string, string>>): string => Object.value
  * The trace's `user-message` section carries the same text minus the quoted
  * message itself: the envelope arrives as its own part, so the trace swaps
  * it for a placeholder while the provider request is unchanged.
+ *
+ * ADR 0149 (S4-T6): the current message's attachment wrapper is swapped the
+ * same way. The file text is evidence the provider needs once, never for
+ * keeps — the durable cursor and the stored trace carry the placeholder.
  */
 const TRACE_QUOTE_PLACEHOLDER = '[quoted message: not kept in the trace]';
+const TRACE_ATTACHMENTS_PLACEHOLDER = '[message attachments: not kept in the trace]';
+const MESSAGE_ATTACHMENTS_WRAPPER =
+  /\[UNTRUSTED MESSAGE ATTACHMENTS\][\s\S]*?\[\/UNTRUSTED MESSAGE ATTACHMENTS\]/g;
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
@@ -121,10 +130,14 @@ const traceSections = (
             { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
           ];
         })();
-  const tracedUserText =
+  const withoutQuote =
     quoteEnvelope === undefined || quoteEnvelope === ''
       ? userText
       : userText.replaceAll(quoteEnvelope, TRACE_QUOTE_PLACEHOLDER);
+  const tracedUserText = withoutQuote.replace(
+    MESSAGE_ATTACHMENTS_WRAPPER,
+    TRACE_ATTACHMENTS_PLACEHOLDER,
+  );
   return [
     ...withHistory,
     {
@@ -1200,7 +1213,7 @@ export const createAssistantService = (
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
         const loopDetail = (): AssistantTraceDetail => ({
           sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
-          history: historyForLoop,
+          history: historyForTrace,
           attempts: failed.attempts,
           toolCalls: failed.toolCalls,
           usage: failed.usage,
@@ -1216,6 +1229,15 @@ export const createAssistantService = (
               ? {}
               : { channelMessages: input.channelMessages }),
             ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+            ...(input.attachmentSummary === undefined
+              ? {}
+              : {
+                  attachments: input.attachmentSummary.slice(0, 10).map((a) => ({
+                    name: safeAttachmentLabel(a.name),
+                    kind: a.kind,
+                    sizeBytes: a.sizeBytes,
+                  })),
+                }),
           },
           // ADR 0093: hits gathered before the failure still link.
           ...(recalled.length === 0 ? {} : { recalled: [...new Set(recalled)] }),
@@ -1336,7 +1358,24 @@ export const createAssistantService = (
       };
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
-      const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      const mediaForLoop: readonly GenerationMedia[] = input.media ?? [];
+      const historyForLoop: readonly GenerationMessage[] =
+        mediaForLoop.length === 0
+          ? (input.history ?? [])
+          : [
+              ...(input.history ?? []),
+              {
+                role: 'user',
+                text: `[attached files: ${mediaForLoop.map((m) => safeAttachmentLabel(m.name)).join(', ')}]`,
+                media: mediaForLoop,
+              },
+            ];
+      // ADR 0149 plan correction: the provider gets `historyForLoop` with its
+      // bytes; every persisted detail and staged cursor gets this copy, which
+      // never carries `media` (JSON.stringify runs before any schema strip).
+      const historyForTrace: readonly GenerationMessage[] = historyForLoop.map(
+        ({ media: _media, ...rest }) => rest,
+      );
       const question = stripNewTopic(textOf(input.input));
       // ADR 0145 item 1: only resolve mentions in this current question and
       // its invocation lists. Older channel context keeps the flat tokens.
@@ -1579,7 +1618,7 @@ export const createAssistantService = (
         );
       sink.detail = {
         sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
-        history: historyForLoop,
+        history: historyForTrace,
         attempts: loop.attempts,
         toolCalls: loop.toolCalls,
         usage: loop.usage,
@@ -1595,6 +1634,15 @@ export const createAssistantService = (
             ? {}
             : { channelMessages: input.channelMessages }),
           ...(input.summaryVersion === undefined ? {} : { summaryVersion: input.summaryVersion }),
+          ...(input.attachmentSummary === undefined
+            ? {}
+            : {
+                attachments: input.attachmentSummary.slice(0, 10).map((a) => ({
+                  name: safeAttachmentLabel(a.name),
+                  kind: a.kind,
+                  sizeBytes: a.sizeBytes,
+                })),
+              }),
         },
         ...(loop.model === undefined ? {} : { model: loop.model }),
         ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),

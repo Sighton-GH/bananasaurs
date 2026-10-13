@@ -68,6 +68,67 @@ describe('GeminiProvider', () => {
     });
   });
 
+  it('sends user-turn media as inlineData parts after the text (ADR 0149)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      sse({
+        candidates: [{ content: { parts: [{ text: 'seen' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2, totalTokenCount: 5 },
+        modelVersion: 'gemini-test-001',
+      }),
+    );
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          role: 'user',
+          text: 'what is this?',
+          media: [
+            { kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'chart.png' },
+            { kind: 'pdf', mediaType: 'application/pdf', dataBase64: 'amVm', name: 'report.pdf' },
+          ],
+        },
+      ],
+    });
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    const requestedUrl =
+      typeof url === 'string' ? url : url instanceof URL ? url.href : (url as Request).url;
+    expect(requestedUrl).toContain(':streamGenerateContent?alt=sse');
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: 'what is this?' },
+            { inlineData: { mimeType: 'image/png', data: 'aGk=' } },
+            { inlineData: { mimeType: 'application/pdf', data: 'amVm' } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('sends no Discord URL with media (ADR 0149)', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        sse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }], modelVersion: 'm' }),
+      );
+    const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+    await provider.generateText({
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          role: 'user',
+          text: 'hi',
+          media: [{ kind: 'image', mediaType: 'image/png', dataBase64: 'aGk=', name: 'a.png' }],
+        },
+      ],
+    });
+    const [, init] = fetch.mock.calls[0] ?? [];
+    expect(init?.body as string).not.toContain('discordapp');
+  });
+
   it.each([
     [401, 'authentication', false],
     [429, 'rate-limit', true],

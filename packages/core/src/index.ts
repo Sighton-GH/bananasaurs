@@ -29,6 +29,8 @@ export type {
   DiscordRole,
   DiscordThread,
   EmojiKey,
+  FetchedAttachment,
+  FetchedEmbed,
   FetchedMessage,
   InteractionRef,
   OutgoingMessage,
@@ -621,6 +623,7 @@ export * from './channels/access.js';
 export type {
   GenerateTextRequest,
   GenerateTextResponse,
+  GenerationMedia,
   GenerationMessage,
   ProviderCapability,
   ProviderEligibility,
