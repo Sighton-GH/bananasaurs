@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ACCOUNT_ROLES,
   roleForCapabilities,
@@ -33,6 +33,11 @@ export interface PermissionsDraftEntry {
 }
 
 export type PermissionsDraftPatch = Partial<PermissionsDraftEntry>;
+
+// The username whose save just succeeded. The reload that follows unmounts
+// the permissions panel, so the fresh mount checks this to land focus on
+// the section heading instead of leaving it on <body>.
+let pendingSavedFocus: string | undefined;
 
 export function usePermissionsDrafts(): {
   readonly store: Readonly<Record<string, PermissionsDraftEntry>>;
@@ -102,6 +107,33 @@ export function PermissionsSection({
   const customCaps = draft?.customCaps ?? held;
   const busy = draft?.busy ?? false;
   const error = draft?.error;
+  // A successful save reloads the accounts, which unmounts this panel; the
+  // fresh mount lands focus on the section heading instead of leaving it on
+  // <body>. Only the account just saved claims it, and only once.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (pendingSavedFocus === undefined) return;
+    const mine = pendingSavedFocus === username;
+    pendingSavedFocus = undefined;
+    if (!mine) return;
+    const heading = sectionRef.current?.querySelector<HTMLElement>('h2');
+    if (heading === undefined || heading === null) return;
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+  }, [username]);
+  // The in-flight Save disables, which drops focus to <body> in a real
+  // browser. When a refusal leaves focus there, put it back on Save; when
+  // the operator moved elsewhere mid-flight, leave them alone. Deferred
+  // past the busy update's commit: until it lands the button is still
+  // disabled and cannot take focus.
+  const saveWrapRef = useRef<HTMLDivElement>(null);
+  const recoverSaveFocus = (): void => {
+    if (document.activeElement !== document.body) return;
+    window.setTimeout(() => {
+      if (document.activeElement !== document.body) return;
+      saveWrapRef.current?.querySelector<HTMLElement>('button')?.focus();
+    }, 0);
+  };
 
   const selected: readonly Capability[] =
     role === 'custom' ? customCaps : (ACCOUNT_ROLES.find((r) => r.id === role)?.capabilities ?? []);
@@ -121,6 +153,7 @@ export function PermissionsSection({
         );
         if (result === undefined) {
           onDraftChange({ busy: false });
+          recoverSaveFocus();
           return;
         }
       }
@@ -132,6 +165,7 @@ export function PermissionsSection({
         );
         if (result === undefined) {
           onDraftChange({ busy: false });
+          recoverSaveFocus();
           return;
         }
       }
@@ -146,6 +180,7 @@ export function PermissionsSection({
       });
       // A successful save reconciles deliberately: the page clears the draft
       // and reloads, so the fresh response becomes the baseline.
+      pendingSavedFocus = username;
       onSaved();
     } catch (err) {
       // writeOrThrow lets the server's 400/409 answers through; everything
@@ -153,10 +188,12 @@ export function PermissionsSection({
       // translating the refusal here — even if the operator has since
       // switched tabs, the draft above the panels keeps it.
       onDraftChange({ busy: false, error: err });
+      recoverSaveFocus();
     }
   };
 
   return (
+    <div ref={sectionRef}>
     <Card title="Permissions on this server">
       <RoleCards
         value={role}
@@ -172,11 +209,12 @@ export function PermissionsSection({
           <ErrorNotice error={error} />
         </div>
       )}
-      <div className="mt-3">
+      <div className="mt-3" ref={saveWrapRef}>
         <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
           Save changes
         </Button>
       </div>
     </Card>
+    </div>
   );
 }
