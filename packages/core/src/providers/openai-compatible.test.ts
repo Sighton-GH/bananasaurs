@@ -43,7 +43,9 @@ describe('OpenAI-compatible providers', () => {
     const message = {
       role: 'user' as const,
       text: 'read this',
-      media: [{ kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' }],
+      media: [
+        { kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' },
+      ],
     };
     const denied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     await createOpenRouterProvider({ apiKey: 'secret', fetch: denied }).generateText({
@@ -80,7 +82,14 @@ describe('OpenAI-compatible providers', () => {
         {
           role: 'user',
           text: 'read this',
-          media: [{ kind: 'pdf' as const, mediaType: 'application/pdf', dataBase64: 'amVm', name: 'r.pdf' }],
+          media: [
+            {
+              kind: 'pdf' as const,
+              mediaType: 'application/pdf',
+              dataBase64: 'amVm',
+              name: 'r.pdf',
+            },
+          ],
         },
       ],
     });

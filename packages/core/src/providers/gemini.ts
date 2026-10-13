@@ -62,10 +62,7 @@ const geminiResponseSchema = z.object({
  * Adjacent tool results are merged into one user turn: Gemini expects every
  * call of a parallel batch answered together.
  */
-const toContents = (
-  messages: readonly GenerationMessage[],
-  caps: ModelCapabilities,
-): unknown[] => {
+const toContents = (messages: readonly GenerationMessage[], caps: ModelCapabilities): unknown[] => {
   const contents: { role: 'user' | 'model'; parts: unknown[] }[] = [];
   for (const message of messages) {
     if (message.role === 'tool') {

@@ -2062,11 +2062,7 @@ describe('T15 thumbnail selection', () => {
       undefined,
       'https://cdn.discordapp.com/original.png',
     ],
-    [
-      'https://i.ytimg.com/thumb.png',
-      'https://elsewhere.test/proxy.png',
-      undefined,
-    ],
+    ['https://i.ytimg.com/thumb.png', 'https://elsewhere.test/proxy.png', undefined],
   ])('chooses only a usable CDN proxy (%s, %s)', async (url, proxy_url, expected) => {
     const { port } = harness([
       {

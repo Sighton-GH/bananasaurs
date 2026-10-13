@@ -113,7 +113,9 @@ describe('GeminiProvider', () => {
     const message = {
       role: 'user' as const,
       text: 'what is this?',
-      media: [{ kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' }],
+      media: [
+        { kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' },
+      ],
     };
     const denied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       sse({
