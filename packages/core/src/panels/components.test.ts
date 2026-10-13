@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseSnowflakeId } from '../ids.js';
+import { countText } from '../ui/discord/budget.js';
 import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
-import type { ActionRow, Button, Container, StringSelect } from '../ui/discord/kit.js';
+import type { ActionRow, Button, Container, StringSelect, TextDisplay } from '../ui/discord/kit.js';
 import type { PanelBehaviour, PanelComponent, PanelConfig } from './model.js';
 import {
   buildComponents,
@@ -230,12 +231,24 @@ const containerOf = (panel: PanelConfig): Container =>
   renderPanelCard(panel).components[0] as Container;
 
 describe('renderPanelCard', () => {
-  it('caps hostile owner content after formatting', () => {
-    const content = '*_~@<'.repeat(2000);
+  it('renders the validator limit of owner content in full', () => {
+    const content = 'x'.repeat(2000);
     const card = renderPanelCard(panelWith({ content }));
-    const rendered = cardTexts(card.components).split('\n')[0] ?? '';
-    expect(rendered.length).toBeLessThanOrEqual(1500);
-    expect(rendered).toContain('…');
+    const contentDisplay = (card.components[0] as Container).components[1] as TextDisplay;
+    expect(contentDisplay.content).toBe(content);
+  });
+
+  it('keeps the worst-case panel within the card text budget', () => {
+    const content = 'x'.repeat(2000);
+    const options = Array.from({ length: 25 }, (_, i) => ({
+      optionId: `o${i}`,
+      roleId: ROLE(i + 10),
+      emojiKey: undefined,
+      label: `Option ${i}`,
+      position: i,
+    }));
+    const card = renderPanelCard(panelWith({ content, options }));
+    expect(countText(card.components)).toBeLessThanOrEqual(4000);
   });
   it('posts one container whose first child is the panel banner', () => {
     const card = renderPanelCard(threeOptions());
