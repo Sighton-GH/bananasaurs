@@ -8,6 +8,7 @@ import {
   formatMemberNicknameChanged,
   formatMemberRolesChanged,
   formatMemberUsernameChanged,
+  formatMessageCreate,
   formatMessageDelete,
   formatMessageEdit,
   formatRoleCreate,
@@ -20,6 +21,7 @@ const CHANNEL = '111111111111111111';
 const AUTHOR = '222222222222222222';
 const MESSAGE = '333333333333333333';
 const ROLE = '444444444444444444';
+const AT = 1_760_000_000_000;
 
 const messageEditEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   kind: 'messageUpdate',
@@ -42,65 +44,104 @@ const messageEditEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   ...over,
 });
 
+describe('formatMessageCreate', () => {
+  it('names the author and channel, quotes the content, and carries the target', () => {
+    const view = formatMessageCreate(messageEditEvent({ kind: 'messageCreate' }), true, AT);
+    expect(view.kind).toBe('message_create');
+    expect(view.headline).toBe(`<@${AUTHOR}> sent a message in <#${CHANNEL}>`);
+    expect(view.quote).toEqual({ label: 'Message', text: 'hello world' });
+    expect(view.memberId).toBe(AUTHOR);
+    expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: true });
+    expect(view.at).toBe(AT);
+  });
+
+  it('omits the quote when the route has content turned off', () => {
+    const view = formatMessageCreate(
+      messageEditEvent({ kind: 'messageCreate', content: 'secret' }),
+      false,
+      AT,
+    );
+    expect(view.quote).toBeUndefined();
+  });
+});
+
 describe('formatMessageEdit', () => {
-  it('names the channel and author, and includes content when asked and available', () => {
-    const text = formatMessageEdit(messageEditEvent(), true);
-    expect(text).toContain(`<#${CHANNEL}>`);
-    expect(text).toContain(`<@${AUTHOR}>`);
-    expect(text).toContain('hello world');
+  it('names the author and channel, quotes the new content, and carries the target', () => {
+    const view = formatMessageEdit(messageEditEvent(), true, AT);
+    expect(view.kind).toBe('message_edit');
+    expect(view.headline).toBe(`<@${AUTHOR}> edited a message in <#${CHANNEL}>`);
+    expect(view.quote).toEqual({ label: 'Now reads', text: 'hello world' });
+    expect(view.memberId).toBe(AUTHOR);
+    expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: true });
+    expect(view.at).toBe(AT);
   });
 
-  it('omits content entirely when the route has content turned off', () => {
-    const text = formatMessageEdit(messageEditEvent({ content: 'secret' }), false);
-    expect(text).not.toContain('secret');
+  it('omits the quote and says content is not logged when the route has content off', () => {
+    const view = formatMessageEdit(messageEditEvent({ content: 'secret' }), false, AT);
+    expect(view.quote).toBeUndefined();
+    expect(view.details).toEqual(['-# Content is not logged on this route.']);
   });
 
-  it('says content is unavailable rather than silently omitting it when the message was uncached', () => {
-    const text = formatMessageEdit(messageEditEvent({ content: undefined }), true);
-    expect(text.toLowerCase()).toContain('not available');
+  it('says the new content was not available when the message was uncached', () => {
+    const view = formatMessageEdit(messageEditEvent({ content: undefined }), true, AT);
+    expect(view.quote).toBeUndefined();
+    expect(view.details).toEqual(['-# The new content was not available.']);
   });
 
   it('reports the author as unknown rather than mentioning nobody when uncached', () => {
-    const text = formatMessageEdit(messageEditEvent({ authorId: undefined }), true);
-    expect(text.toLowerCase()).toContain('unknown');
-    expect(text).not.toContain('<@undefined>');
+    const view = formatMessageEdit(messageEditEvent({ authorId: undefined }), true, AT);
+    expect(view.headline.toLowerCase()).toContain('unknown');
+    expect(view.headline).not.toContain('<@undefined>');
+    expect(view.memberId).toBeUndefined();
   });
 });
 
 const ACTOR = '999999999999999999';
 
 describe('formatMessageDelete', () => {
-  it('names the channel, the author, and the inferred actor', () => {
-    const text = formatMessageDelete(
-      { channelId: CHANNEL, authorId: AUTHOR, content: 'deleted text' },
+  it('names the author, the channel, the inferred actor, and quotes the content', () => {
+    const view = formatMessageDelete(
+      { channelId: CHANNEL, messageId: MESSAGE, authorId: AUTHOR, content: 'deleted text' },
       ACTOR,
+      AT,
     );
-    expect(text).toContain(`<#${CHANNEL}>`);
-    expect(text).toContain(`<@${AUTHOR}>`);
-    expect(text).toContain(`<@${ACTOR}>`);
-    expect(text).toContain('deleted text');
-  });
-
-  it('labels the actor as inferred — never plain attribution (docs/20 gate)', () => {
-    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, ACTOR);
-    expect(text.toLowerCase()).toContain('inferred');
+    expect(view.kind).toBe('message_delete');
+    expect(view.headline).toBe(`Message by <@${AUTHOR}> deleted in <#${CHANNEL}>`);
+    expect(view.details).toEqual([`Deleted by <@${ACTOR}> (inferred)`]);
+    expect(view.quote).toEqual({ label: 'It read', text: 'deleted text' });
+    expect(view.memberId).toBe(AUTHOR);
+    expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: false });
+    expect(view.at).toBe(AT);
   });
 
   it('says the actor is unknown rather than guessing when none was found', () => {
-    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, undefined);
-    expect(text.toLowerCase()).toContain('unknown');
-    expect(text).not.toContain(`<@${ACTOR}>`);
+    const view = formatMessageDelete(
+      { channelId: CHANNEL, messageId: MESSAGE, authorId: AUTHOR },
+      undefined,
+      AT,
+    );
+    expect(view.details).toEqual(['Deleted by: unknown']);
+    expect(view.headline).not.toContain(`<@${ACTOR}>`);
   });
 
   it('reports the author as unknown when the message was uncached', () => {
-    const text = formatMessageDelete({ channelId: CHANNEL, authorId: undefined }, undefined);
-    expect(text.toLowerCase()).toContain('unknown');
-    expect(text).not.toContain('<@undefined>');
+    const view = formatMessageDelete(
+      { channelId: CHANNEL, messageId: MESSAGE, authorId: undefined },
+      undefined,
+      AT,
+    );
+    expect(view.headline.toLowerCase()).toContain('unknown');
+    expect(view.headline).not.toContain('<@undefined>');
+    expect(view.memberId).toBeUndefined();
   });
 
-  it('omits the content line entirely when there is none to show', () => {
-    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, ACTOR);
-    expect(text.toLowerCase()).not.toContain('content');
+  it('omits the quote entirely when there is no content to show', () => {
+    const view = formatMessageDelete(
+      { channelId: CHANNEL, messageId: MESSAGE, authorId: AUTHOR },
+      ACTOR,
+      AT,
+    );
+    expect(view.quote).toBeUndefined();
   });
 });
 
@@ -117,72 +158,101 @@ const memberEvent = (kind: MemberEvent['kind'], over: Partial<MemberEvent> = {})
 
 describe('formatMemberJoin', () => {
   it('mentions the member', () => {
-    expect(formatMemberJoin(memberEvent('memberAdd'))).toContain(`<@${AUTHOR}>`);
+    const view = formatMemberJoin(memberEvent('memberAdd'), AT);
+    expect(view.kind).toBe('member_join');
+    expect(view.headline).toBe(`<@${AUTHOR}> joined`);
+    expect(view.at).toBe(AT);
   });
 });
 
 describe('formatMemberRolesChanged', () => {
   it('names added roles first, then removed ones', () => {
-    const text = formatMemberRolesChanged(AUTHOR, ['111', '222'], ['333']);
-    expect(text).toContain(`<@${AUTHOR}>`);
-    expect(text).toContain('+<@&111>');
-    expect(text).toContain('+<@&222>');
-    expect(text).toContain('−<@&333>');
-    expect(text.indexOf('+<@&111>')).toBeLessThan(text.indexOf('−<@&333>'));
+    const view = formatMemberRolesChanged(AUTHOR, ['111', '222'], ['333'], AT);
+    expect(view.kind).toBe('member_roles_changed');
+    expect(view.headline).toBe(`<@${AUTHOR}>'s roles changed`);
+    expect(view.details).toEqual(['Added <@&111> <@&222>', 'Removed <@&333>']);
   });
 
   it('omits an empty side', () => {
-    expect(formatMemberRolesChanged(AUTHOR, ['111'], [])).not.toContain('−<@&');
-    expect(formatMemberRolesChanged(AUTHOR, [], ['333'])).not.toContain('+<@&');
+    expect(formatMemberRolesChanged(AUTHOR, ['111'], [], AT).details).toEqual(['Added <@&111>']);
+    expect(formatMemberRolesChanged(AUTHOR, [], ['333'], AT).details).toEqual(['Removed <@&333>']);
   });
 });
 
 describe('formatMemberNicknameChanged', () => {
-  it('renders old → new in quotes', () => {
-    expect(formatMemberNicknameChanged(AUTHOR, 'Old', 'New')).toBe(
-      `Nickname changed: <@${AUTHOR}>  "Old" → "New"`,
-    );
+  it('renders old → new escaped', () => {
+    const view = formatMemberNicknameChanged(AUTHOR, 'Old', 'New', AT);
+    expect(view.kind).toBe('member_nickname_changed');
+    expect(view.headline).toBe(`<@${AUTHOR}> changed nickname`);
+    expect(view.details).toEqual(['Old → New']);
   });
 
-  it('uses (none) for an absent nickname on either side', () => {
-    expect(formatMemberNicknameChanged(AUTHOR, undefined, 'New')).toContain('(none)');
-    expect(formatMemberNicknameChanged(AUTHOR, 'Old', undefined)).toContain('(none)');
+  it('escapes markdown and uses (none) for an absent nickname on either side', () => {
+    expect(formatMemberNicknameChanged(AUTHOR, 'a*', undefined, AT).details).toEqual([
+      'a\\* → (none)',
+    ]);
+    expect(formatMemberNicknameChanged(AUTHOR, undefined, 'New', AT).details).toEqual([
+      '(none) → New',
+    ]);
   });
 });
 
 describe('formatMemberUsernameChanged', () => {
   it('renders a username change', () => {
-    const text = formatMemberUsernameChanged({
-      userId: AUTHOR,
-      oldUsername: 'old_name',
-      newUsername: 'new_name',
-      oldGlobalName: 'Global',
-      newGlobalName: 'Global',
-    });
-    expect(text).toContain('old_name → new_name');
+    const view = formatMemberUsernameChanged(
+      {
+        userId: AUTHOR,
+        oldUsername: 'old_name',
+        newUsername: 'new_name',
+        oldGlobalName: 'Global',
+        newGlobalName: 'Global',
+      },
+      AT,
+    );
+    expect(view.kind).toBe('member_username_changed');
+    expect(view.details).toEqual(['Username: old_name → new_name']);
   });
 
   it('renders a display-name change', () => {
-    const text = formatMemberUsernameChanged({
-      userId: AUTHOR,
-      oldUsername: 'member',
-      newUsername: 'member',
-      oldGlobalName: undefined,
-      newGlobalName: 'New Display',
-    });
-    expect(text).toContain('Display name changed');
-    expect(text).toContain('(none)');
+    const view = formatMemberUsernameChanged(
+      {
+        userId: AUTHOR,
+        oldUsername: 'member',
+        newUsername: 'member',
+        oldGlobalName: undefined,
+        newGlobalName: 'New Display',
+      },
+      AT,
+    );
+    expect(view.details).toEqual(['Display name: (none) → New Display']);
   });
 
   it('renders both lines when both changed', () => {
-    const text = formatMemberUsernameChanged({
-      userId: AUTHOR,
-      oldUsername: 'old_name',
-      newUsername: 'new_name',
-      oldGlobalName: 'Old Display',
-      newGlobalName: 'New Display',
-    });
-    expect(text.split('\n')).toHaveLength(2);
+    const view = formatMemberUsernameChanged(
+      {
+        userId: AUTHOR,
+        oldUsername: 'old_name',
+        newUsername: 'new_name',
+        oldGlobalName: 'Old Display',
+        newGlobalName: 'New Display',
+      },
+      AT,
+    );
+    expect(view.details).toHaveLength(2);
+  });
+
+  it('escapes markdown in names', () => {
+    const view = formatMemberUsernameChanged(
+      {
+        userId: AUTHOR,
+        oldUsername: '**x**',
+        newUsername: 'new_name',
+        oldGlobalName: 'Global',
+        newGlobalName: 'Global',
+      },
+      AT,
+    );
+    expect(view.details).toEqual(['Username: \\*\\*x\\*\\* → new_name']);
   });
 });
 
@@ -190,53 +260,65 @@ describe('formatMemberAvatarChanged', () => {
   const GUILD = '000000000000000001';
 
   it('links the new account avatar', () => {
-    const text = formatMemberAvatarChanged({
-      userId: AUTHOR,
-      guildId: GUILD,
-      accountChanged: true,
-      newAvatarHash: 'abc',
-      guildAvatarChanged: false,
-      newGuildAvatarHash: undefined,
-    });
-    expect(text).toContain(`https://cdn.discordapp.com/avatars/${AUTHOR}/abc.png`);
+    const view = formatMemberAvatarChanged(
+      {
+        userId: AUTHOR,
+        guildId: GUILD,
+        accountChanged: true,
+        newAvatarHash: 'abc',
+        guildAvatarChanged: false,
+        newGuildAvatarHash: undefined,
+      },
+      AT,
+    );
+    expect(view.details).toEqual([`Avatar: https://cdn.discordapp.com/avatars/${AUTHOR}/abc.png`]);
   });
 
   it('links the new server avatar', () => {
-    const text = formatMemberAvatarChanged({
-      userId: AUTHOR,
-      guildId: GUILD,
-      accountChanged: false,
-      newAvatarHash: undefined,
-      guildAvatarChanged: true,
-      newGuildAvatarHash: 'ghi',
-    });
-    expect(text).toContain(
-      `https://cdn.discordapp.com/guilds/${GUILD}/users/${AUTHOR}/avatars/ghi.png`,
+    const view = formatMemberAvatarChanged(
+      {
+        userId: AUTHOR,
+        guildId: GUILD,
+        accountChanged: false,
+        newAvatarHash: undefined,
+        guildAvatarChanged: true,
+        newGuildAvatarHash: 'ghi',
+      },
+      AT,
     );
+    expect(view.details).toEqual([
+      `Server avatar: https://cdn.discordapp.com/guilds/${GUILD}/users/${AUTHOR}/avatars/ghi.png`,
+    ]);
   });
 
   it('names a removal rather than linking', () => {
-    const text = formatMemberAvatarChanged({
-      userId: AUTHOR,
-      guildId: GUILD,
-      accountChanged: true,
-      newAvatarHash: undefined,
-      guildAvatarChanged: false,
-      newGuildAvatarHash: undefined,
-    });
-    expect(text.toLowerCase()).toContain('removed their avatar');
-    expect(text).not.toContain('cdn.discordapp.com');
+    const view = formatMemberAvatarChanged(
+      {
+        userId: AUTHOR,
+        guildId: GUILD,
+        accountChanged: true,
+        newAvatarHash: undefined,
+        guildAvatarChanged: false,
+        newGuildAvatarHash: undefined,
+      },
+      AT,
+    );
+    expect(view.details?.join('\n').toLowerCase()).toContain('removed');
+    expect(view.details?.join('\n')).not.toContain('cdn.discordapp.com');
   });
 });
+
 describe('formatMemberLeave', () => {
   it('mentions the member', () => {
-    expect(formatMemberLeave(memberEvent('memberRemove'))).toContain(`<@${AUTHOR}>`);
+    const view = formatMemberLeave(memberEvent('memberRemove'), AT);
+    expect(view.kind).toBe('member_leave');
+    expect(view.headline).toBe(`<@${AUTHOR}> left`);
   });
 
   it('says nothing about why — kick/ban attribution is not this release (ADR 0023)', () => {
-    const text = formatMemberLeave(memberEvent('memberRemove')).toLowerCase();
-    expect(text).not.toContain('kick');
-    expect(text).not.toContain('ban');
+    const headline = formatMemberLeave(memberEvent('memberRemove'), AT).headline.toLowerCase();
+    expect(headline).not.toContain('kick');
+    expect(headline).not.toContain('ban');
   });
 });
 
@@ -250,71 +332,89 @@ const roleEvent = (kind: RoleEvent['kind'], over: Partial<RoleEvent> = {}): Role
 });
 
 describe('formatRoleCreate', () => {
-  it('names the role', () => {
-    expect(formatRoleCreate(roleEvent('roleCreate'))).toContain('moderators');
+  it('names the escaped role and the id', () => {
+    const view = formatRoleCreate(roleEvent('roleCreate'), AT);
+    expect(view.kind).toBe('role_create');
+    expect(view.headline).toBe('Role **moderators** created');
+    expect(view.details).toEqual([`-# ${ROLE}`]);
+  });
+
+  it('escapes markdown in the name', () => {
+    expect(formatRoleCreate(roleEvent('roleCreate', { name: '**x**' }), AT).headline).toBe(
+      'Role **\\*\\*x\\*\\*** created',
+    );
   });
 });
 
 describe('formatRoleUpdate', () => {
-  it('names the role', () => {
-    expect(formatRoleUpdate(roleEvent('roleUpdate'))).toContain('moderators');
+  it('names the role as changed', () => {
+    const view = formatRoleUpdate(roleEvent('roleUpdate'), AT);
+    expect(view.kind).toBe('role_update');
+    expect(view.headline).toBe('Role **moderators** changed');
+    expect(view.details).toEqual([`-# ${ROLE}`]);
   });
 });
 
 describe('formatRoleDelete', () => {
   it('names the role by its last-known name, not a bare id', () => {
-    const text = formatRoleDelete(roleEvent('roleDelete', { name: 'old-name' }));
-    expect(text).toContain('old-name');
+    const view = formatRoleDelete(roleEvent('roleDelete', { name: 'old-name' }), AT);
+    expect(view.kind).toBe('role_delete');
+    expect(view.headline).toBe('Role **old-name** deleted');
+    expect(view.details).toEqual([`-# ${ROLE}`]);
   });
 });
 
 describe('formatWarn', () => {
   it('names the member, the moderator, the reason, the case and the count', () => {
-    const text = formatWarn({
-      memberId: '333333333333333333',
-      actorId: '222222222222222222',
-      reason: 'spam',
-      caseId: 'case-1',
-      violationCount: 2,
-    });
-    expect(text).toBe(
-      [
-        'Warned: <@333333333333333333> by <@222222222222222222>',
-        'Reason: spam',
-        'Case case-1, warning 2',
-      ].join('\n'),
+    const view = formatWarn(
+      {
+        memberId: '333333333333333333',
+        actorId: '222222222222222222',
+        reason: 'spam',
+        caseId: 'case-1-23456789',
+        violationCount: 2,
+      },
+      AT,
     );
+    expect(view.kind).toBe('member_warn');
+    expect(view.headline).toBe('<@333333333333333333> was warned by <@222222222222222222>');
+    expect(view.quote).toEqual({ label: 'Reason', text: 'spam' });
+    expect(view.details).toEqual(['Case case-1-2 · warning 2']);
+    expect(view.at).toBe(AT);
   });
 
   it('caps a long reason at 300 characters', () => {
-    const text = formatWarn({
-      memberId: '333333333333333333',
-      actorId: '222222222222222222',
-      reason: 'r'.repeat(400),
-      caseId: 'case-1',
-      violationCount: 1,
-    });
-    const reasonLine = text.split('\n')[1] ?? '';
-    expect(reasonLine).toBe(`Reason: ${'r'.repeat(300)}`);
+    const view = formatWarn(
+      {
+        memberId: '333333333333333333',
+        actorId: '222222222222222222',
+        reason: 'r'.repeat(400),
+        caseId: 'case-1',
+        violationCount: 1,
+      },
+      AT,
+    );
+    expect(view.quote).toEqual({ label: 'Reason', text: 'r'.repeat(300) });
   });
 });
 
 describe('formatGapMarker', () => {
   it('names the window with Discord timestamp markup, not a server-assumed timezone', () => {
     // 1_700_000_000_000 ms -> 1_700_000_000 s, 1_700_000_060_000 ms -> 1_700_000_060 s.
-    const text = formatGapMarker(1_700_000_000_000, 1_700_000_060_000);
-    expect(text).toContain('<t:1700000000:t>');
-    expect(text).toContain('<t:1700000060:t>');
+    const view = formatGapMarker(1_700_000_000_000, 1_700_000_060_000, AT);
+    expect(view.kind).toBe('gap');
+    expect(view.headline).toBe(
+      'Bananasaurs was disconnected from <t:1700000000:t> to <t:1700000060:t>.',
+    );
+    expect(view.at).toBe(AT);
   });
 
   it('says what kind of events were missed, not only "logs"', () => {
-    const text = formatGapMarker(1_700_000_000_000, 1_700_000_060_000).toLowerCase();
-    expect(text).toContain('message');
-    expect(text).toContain('member');
-    expect(text).toContain('role');
-  });
-
-  it('is visibly a warning, not a routine notice', () => {
-    expect(formatGapMarker(0, 1)).toMatch(/^⚠/);
+    const details = formatGapMarker(1_700_000_000_000, 1_700_000_060_000, AT)
+      .details?.join('\n')
+      .toLowerCase();
+    expect(details).toContain('message');
+    expect(details).toContain('member');
+    expect(details).toContain('role');
   });
 });
