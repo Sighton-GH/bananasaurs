@@ -88,14 +88,20 @@ describe('renderLogCard', () => {
   });
 
   it('keeps repaired quote truncation within the exact cap', () => {
-    const nonSpoilerText = ['a'.repeat(391), ...Array.from({ length: 368 }, () => 'a'), 'b'.repeat(500)].join(
-      '\n',
-    );
-    const spoilerText = ['a'.repeat(384), ...Array.from({ length: 368 }, () => 'a'), 'b'.repeat(500)].join('\n');
+    const nonSpoilerText = [
+      'a'.repeat(391),
+      ...Array.from({ length: 368 }, () => 'a'),
+      'b'.repeat(500),
+    ].join('\n');
+    const spoilerText = [
+      'a'.repeat(384),
+      ...Array.from({ length: 368 }, () => 'a'),
+      'b'.repeat(500),
+    ].join('\n');
     const display = (view: LogCardView): string =>
-      displaysOf(renderLogCard({ ...edit, quote: view.quote }, G)).find((d) =>
-        d.startsWith('**Cut**'),
-      ) ?? '';
+      displaysOf(
+        renderLogCard({ ...edit, ...(view.quote === undefined ? {} : { quote: view.quote }) }, G),
+      ).find((d) => d.startsWith('**Cut**')) ?? '';
     const nonSpoiler = display({
       kind: 'message_edit',
       headline: 'x',

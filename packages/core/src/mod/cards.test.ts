@@ -178,7 +178,11 @@ describe('worst-case card budgets', () => {
 
   it('keeps a ban confirmation within budget', () => {
     expectWithinBudget(() =>
-      banConfirmCard({ targetId: U, reason: hostileReason.slice(0, 500), intentId: 'i'.repeat(100) }),
+      banConfirmCard({
+        targetId: U,
+        reason: hostileReason.slice(0, 500),
+        intentId: 'i'.repeat(100),
+      }),
     );
   });
 
