@@ -522,10 +522,10 @@ export function TaskCreatePage() {
                         )}
                       </fieldset>
                     </FormSection>
-                    <FormSection title="Links" description="Buttons on the task card.">
-                      <p className="text-small text-ink-muted">
-                        Link labels can be 34 characters or fewer.
-                      </p>
+                    <FormSection
+                      title="Links"
+                      description="Buttons on the task card. Each label is 34 characters or fewer."
+                    >
                       <LinkListEditor
                         value={links}
                         onChange={(rows) => {

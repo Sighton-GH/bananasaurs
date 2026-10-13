@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ACCOUNT_ROLES,
   roleForCapabilities,
@@ -89,6 +89,7 @@ export function PermissionsSection({
   draft,
   onDraftChange,
   onSaved,
+  savedFocusRef,
 }: {
   readonly session: Session;
   readonly username: string;
@@ -96,12 +97,45 @@ export function PermissionsSection({
   readonly draft: PermissionsDraftEntry | undefined;
   readonly onDraftChange: (patch: PermissionsDraftPatch) => void;
   readonly onSaved: () => void;
+  /**
+   * Page-owned ref naming the account whose save just succeeded. The reload
+   * that follows unmounts this panel, so the fresh mount checks it to land
+   * focus on the section heading instead of leaving it on <body>.
+   */
+  readonly savedFocusRef: { current: string | undefined };
 }) {
   const toast = useToast();
   const role = draft?.role ?? roleForCapabilities(held);
   const customCaps = draft?.customCaps ?? held;
   const busy = draft?.busy ?? false;
   const error = draft?.error;
+  // A successful save reloads the accounts, which unmounts this panel; the
+  // fresh mount lands focus on the section heading instead of leaving it on
+  // <body>. Only the account just saved claims it, and only once.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (savedFocusRef.current === undefined) return;
+    const mine = savedFocusRef.current === username;
+    savedFocusRef.current = undefined;
+    if (!mine) return;
+    const heading = sectionRef.current?.querySelector<HTMLElement>('h2');
+    if (heading === undefined || heading === null) return;
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+  }, [username, savedFocusRef]);
+  // The in-flight Save disables, which drops focus to <body> in a real
+  // browser. When a refusal leaves focus there, put it back on Save; when
+  // the operator moved elsewhere mid-flight, leave them alone. Deferred
+  // past the busy update's commit: until it lands the button is still
+  // disabled and cannot take focus.
+  const saveWrapRef = useRef<HTMLDivElement>(null);
+  const recoverSaveFocus = (): void => {
+    if (document.activeElement !== document.body) return;
+    window.setTimeout(() => {
+      if (document.activeElement !== document.body) return;
+      saveWrapRef.current?.querySelector<HTMLElement>('button')?.focus();
+    }, 0);
+  };
 
   const selected: readonly Capability[] =
     role === 'custom' ? customCaps : (ACCOUNT_ROLES.find((r) => r.id === role)?.capabilities ?? []);
@@ -121,6 +155,7 @@ export function PermissionsSection({
         );
         if (result === undefined) {
           onDraftChange({ busy: false });
+          recoverSaveFocus();
           return;
         }
       }
@@ -132,6 +167,7 @@ export function PermissionsSection({
         );
         if (result === undefined) {
           onDraftChange({ busy: false });
+          recoverSaveFocus();
           return;
         }
       }
@@ -145,7 +181,8 @@ export function PermissionsSection({
             }),
       });
       // A successful save reconciles deliberately: the page clears the draft
-      // and reloads, so the fresh response becomes the baseline.
+      // and reloads, so the fresh response becomes the baseline. The page
+      // records the focus landing before reloading (see savedFocusRef).
       onSaved();
     } catch (err) {
       // writeOrThrow lets the server's 400/409 answers through; everything
@@ -153,30 +190,33 @@ export function PermissionsSection({
       // translating the refusal here — even if the operator has since
       // switched tabs, the draft above the panels keeps it.
       onDraftChange({ busy: false, error: err });
+      recoverSaveFocus();
     }
   };
 
   return (
-    <Card title="Permissions on this server">
-      <RoleCards
-        value={role}
-        capabilities={selected}
-        onChange={(nextRole, nextCaps) => {
-          onDraftChange(
-            nextRole === 'custom' ? { role: nextRole, customCaps: nextCaps } : { role: nextRole },
-          );
-        }}
-      />
-      {error !== undefined && (
-        <div className="mt-2">
-          <ErrorNotice error={error} />
+    <div ref={sectionRef}>
+      <Card title="Permissions on this server">
+        <RoleCards
+          value={role}
+          capabilities={selected}
+          onChange={(nextRole, nextCaps) => {
+            onDraftChange(
+              nextRole === 'custom' ? { role: nextRole, customCaps: nextCaps } : { role: nextRole },
+            );
+          }}
+        />
+        {error !== undefined && (
+          <div className="mt-2">
+            <ErrorNotice error={error} />
+          </div>
+        )}
+        <div className="mt-3" ref={saveWrapRef}>
+          <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
+            Save changes
+          </Button>
         </div>
-      )}
-      <div className="mt-3">
-        <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
-          Save changes
-        </Button>
-      </div>
-    </Card>
+      </Card>
+    </div>
   );
 }

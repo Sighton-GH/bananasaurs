@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   customEmojiKey,
   emojiKeySchema,
@@ -201,6 +201,23 @@ export function PanelBuilder({
   const [busy, setBusy] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
   const fieldErrors = useFieldErrors();
+  // Keyboard focus follows the step: each view change lands on the new
+  // step's heading. First mount never moves focus; a freshly mounted error
+  // summary keeps its own focus (it announces every problem).
+  const stepKey = created !== undefined ? 'saved' : choice === undefined ? 'type' : step;
+  const viewRef = useRef<HTMLDivElement>(null);
+  const prevStepKey = useRef(stepKey);
+  useEffect(() => {
+    if (prevStepKey.current === stepKey) return;
+    prevStepKey.current = stepKey;
+    const view = viewRef.current;
+    if (view === null) return;
+    if (view.querySelector('[role="alert"] a[href^="#"]') !== null) return;
+    const heading = view.querySelector<HTMLElement>('h1, h2');
+    if (heading === null) return;
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+  }, [stepKey]);
   const dirtyCount = [
     panelId !== '',
     channelId !== '',
@@ -457,37 +474,39 @@ export function PanelBuilder({
 
   if (created !== undefined) {
     return (
-      <Card title="Saved">
-        <InlineAlert tone="hold" title="Saved - nothing is live yet">
-          <p className="text-sm">
-            <strong>{created.panelId}</strong> is configured. Publishing posts its message in
-            Discord and starts granting roles - a separate, confirmed action on its page.
-          </p>
-          {created.newlyAllowlistedRoleIds.length > 0 && (
-            <p className="mt-2 text-sm text-ink-muted">
-              Added to Bananasaurs&apos; managed-role scope:{' '}
-              {created.newlyAllowlistedRoleIds
-                .map((roleId) => `${roleName(roleId)} (${roleId})`)
-                .join(', ')}
-              .
+      <div ref={viewRef}>
+        <Card title="Saved">
+          <InlineAlert tone="hold" title="Saved - nothing is live yet">
+            <p className="text-sm">
+              <strong>{created.panelId}</strong> is configured. Publishing posts its message in
+              Discord and starts granting roles - a separate, confirmed action on its page.
             </p>
-          )}
-          <div className="mt-3 flex gap-2">
-            <Button variant="primary" onClick={() => onCreated(created.panelId)}>
-              Publish
-            </Button>
-            <Button
-              onClick={() => {
-                discard();
-                setCreated(undefined);
-                setChoice(undefined);
-              }}
-            >
-              Build another
-            </Button>
-          </div>
-        </InlineAlert>
-      </Card>
+            {created.newlyAllowlistedRoleIds.length > 0 && (
+              <p className="mt-2 text-sm text-ink-muted">
+                Added to Bananasaurs&apos; managed-role scope:{' '}
+                {created.newlyAllowlistedRoleIds
+                  .map((roleId) => `${roleName(roleId)} (${roleId})`)
+                  .join(', ')}
+                .
+              </p>
+            )}
+            <div className="mt-3 flex gap-2">
+              <Button variant="primary" onClick={() => onCreated(created.panelId)}>
+                Publish
+              </Button>
+              <Button
+                onClick={() => {
+                  discard();
+                  setCreated(undefined);
+                  setChoice(undefined);
+                }}
+              >
+                Build another
+              </Button>
+            </div>
+          </InlineAlert>
+        </Card>
+      </div>
     );
   }
 
@@ -496,40 +515,45 @@ export function PanelBuilder({
     // mixed form where a message-text field quietly does nothing for one
     // kind and an emoji field is required for another.
     return (
-      <Card title="New self-granted role setup">
-        <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
-          <Button onClick={() => setChoice('reaction')} className="grid h-auto gap-1 p-4 text-left">
-            <span className="text-sm font-medium">Reaction role</span>
-            <span className="text-sm text-ink-muted">
-              Members add an emoji reaction on a message that already exists. You attach it by
-              channel and message ID; each option is an emoji.
-            </span>
-          </Button>
-          <Button
-            onClick={() => {
-              setChoice('panel');
-              // The panel format select no longer offers reactions; land on
-              // a real option.
-              setFormat('button');
-            }}
-            className="grid h-auto gap-1 p-4 text-left"
-          >
-            <span className="text-sm font-medium">Role panel</span>
-            <span className="text-sm text-ink-muted">
-              The bot posts a new message with buttons or a dropdown. Best when the message should
-              say something specific.
-            </span>
-          </Button>
-        </div>
-        <div className="mt-3">
-          <Button onClick={cancel}>Cancel</Button>
-        </div>
-      </Card>
+      <div ref={viewRef}>
+        <Card title="New self-granted role setup">
+          <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+            <Button
+              onClick={() => setChoice('reaction')}
+              className="grid h-auto gap-1 p-4 text-left"
+            >
+              <span className="text-sm font-medium">Reaction role</span>
+              <span className="text-sm text-ink-muted">
+                Members add an emoji reaction on a message that already exists. You attach it by
+                channel and message ID; each option is an emoji.
+              </span>
+            </Button>
+            <Button
+              onClick={() => {
+                setChoice('panel');
+                // The panel format select no longer offers reactions; land on
+                // a real option.
+                setFormat('button');
+              }}
+              className="grid h-auto gap-1 p-4 text-left"
+            >
+              <span className="text-sm font-medium">Role panel</span>
+              <span className="text-sm text-ink-muted">
+                The bot posts a new message with buttons or a dropdown. Best when the message should
+                say something specific.
+              </span>
+            </Button>
+          </div>
+          <div className="mt-3">
+            <Button onClick={cancel}>Cancel</Button>
+          </div>
+        </Card>
+      </div>
     );
   }
 
   return (
-    <>
+    <div ref={viewRef}>
       {guard}
       <ConfirmDialog
         open={cancelPending}
@@ -904,6 +928,6 @@ export function PanelBuilder({
           </div>
         )}
       </Card>
-    </>
+    </div>
   );
 }

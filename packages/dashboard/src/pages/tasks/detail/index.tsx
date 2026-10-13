@@ -43,13 +43,24 @@ export function TaskDetailPage() {
   const detail = useResource('task', detailLoad);
   // Removing a step or report reloads the task, which remounts the sections;
   // the page keeps the heading to land on and focuses it once the data is back.
+  // The 'page-heading' sentinel lands on the page h1 instead of an id: the
+  // status actions unmount their own button on reload.
   const landOn = useRef('');
   useEffect(() => {
     if (detail.resource.state !== 'ready' || landOn.current === '') return;
-    const target = document.getElementById(landOn.current);
+    const target = landOn.current;
     landOn.current = '';
-    target?.focus();
-  }, [detail.resource.state]);
+    if (target === 'page-heading') {
+      const h1 = document.querySelector<HTMLElement>('main h1, h1');
+      h1?.setAttribute('tabindex', '-1');
+      h1?.focus();
+      return;
+    }
+    document.getElementById(target)?.focus();
+    // Depended on the whole resource, not just its state: an instant
+    // reload can skip committing the loading state (ready -> ready), and
+    // the landing must still happen.
+  }, [detail.resource]);
   const [notice, setNotice] = useState('');
   const [location, navigate] = useLocation();
   const search = useSearch();
@@ -198,12 +209,18 @@ function TaskDetail({
   const [actionBusy, setActionBusy] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  // Status actions whose button disappears when the reload lands (Approve,
+  // Send back, Mark done, Mark in progress, Mark not started): focus the
+  // page heading instead of leaving focus on <body>.
+  const UNMOUNTING_ACTIONS = ['approve', 'reject', 'complete', 'progress', 'notstarted'];
+
   const act = async (label: string, url: string, body: unknown) => {
     setActionBusy(label);
     setActionError('');
     try {
       const result = await session.writeOrThrow(url, body, 'POST');
       if (result === undefined) return;
+      if (UNMOUNTING_ACTIONS.includes(label)) onRemoved('page-heading');
       onReload();
     } catch (err) {
       if (
@@ -590,6 +607,7 @@ function TaskDetail({
             reminders={data.reminders}
             onReload={onReload}
             onStale={onStale}
+            onRemoved={onRemoved}
           />
         </TabPanel>
       </Tabs>

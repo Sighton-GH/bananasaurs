@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSession } from '../../../app/session.js';
 import { ApiError } from '../../../api.js';
 import { describeError } from '../../../api/describe-error.js';
@@ -17,12 +17,15 @@ export function TeamEditor({
   channels,
   roles,
   onChanged,
+  consumeInitialFocus,
 }: {
   team: SetupTeam;
   onClose: () => void;
   channels: GuildChannel[];
   roles: GuildRole[];
   onChanged: () => void;
+  /** True once when this mount follows the Edit click (parent-held). */
+  consumeInitialFocus: () => boolean;
 }) {
   const session = useSession();
   const toast = useToast();
@@ -72,6 +75,15 @@ export function TeamEditor({
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const removedRef = useRef(false);
+  // The editor opens from the team's Edit button; land in its first field.
+  // Only for the Edit click itself: reloads (save, delete) remount a
+  // still-open editor and must not yank focus back here.
+  const sectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (consumeInitialFocus()) {
+      sectionRef.current?.querySelector<HTMLElement>('input')?.focus();
+    }
+  }, [consumeInitialFocus]);
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -124,7 +136,7 @@ export function TeamEditor({
   };
 
   return (
-    <section className="grid gap-3 rounded-panel border border-line bg-panel p-4">
+    <section ref={sectionRef} className="grid gap-3 rounded-panel border border-line bg-panel p-4">
       <h2 className="text-section font-semibold">Edit {team.name}</h2>
       {team.issues.length > 0 && (
         <ul className="list-disc space-y-1 pl-5 text-body">
