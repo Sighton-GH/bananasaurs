@@ -1455,7 +1455,7 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     expect(logged).toContain('-# 🤖 MENTION · ANSWERED');
     expect(logged).toContain('**Question**\n> where is the handbook?');
     expect(logged).toContain('**Answer**\n> Top shelf.');
-    expect(logged).toContain('Tools: current_time ✓');
+    expect(logged).toContain('Tools: current\\_time ✓');
     expect(logged).toContain(`Behaviour: ${club.name}`);
     expect(JSON.parse(d.saved.at(-1)!)).toMatchObject({ stage: 'logged' });
   });

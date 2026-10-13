@@ -220,13 +220,26 @@ describe('history cards', () => {
   it('uses the owning case member for self-authorship', () => {
     const page = buildHistoryPage(
       U,
-      [{ caseId: CASE, memberId: U, openedAt: 0, violationCount: 0, escalationTier: 0, status: 'open' }],
+      [
+        {
+          caseId: CASE,
+          memberId: U,
+          openedAt: 0,
+          violationCount: 0,
+          escalationTier: 0,
+          status: 'open',
+        },
+      ],
       new Map([
         [
           CASE,
           [
             historyEvent({ memberId: 'different-member', actorId: U, actionTaken: 'purged' }),
-            historyEvent({ memberId: 'different-member', actorId: 'other-actor', actionTaken: 'purged' }),
+            historyEvent({
+              memberId: 'different-member',
+              actorId: 'other-actor',
+              actionTaken: 'purged',
+            }),
           ],
         ],
       ]),

@@ -214,10 +214,7 @@ const quoteBlock = (q: NonNullable<LogCardView['quote']>): string => {
 const changesBlock = (lines: readonly string[]): string =>
   [
     '```',
-    truncate(
-      lines.join('\n').replaceAll('```', 'ˋˋˋ'),
-      CHANGES_FINAL_MAX - CHANGES_FENCE_OVERHEAD,
-    ),
+    truncate(lines.join('\n').replaceAll('```', 'ˋˋˋ'), CHANGES_FINAL_MAX - CHANGES_FENCE_OVERHEAD),
     '```',
   ].join('\n');
 

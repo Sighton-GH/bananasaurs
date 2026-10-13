@@ -168,7 +168,6 @@ const recordUnauthorizedRefusal = (
   });
 };
 
-
 /** One page of a member's case history: at most `HISTORY_PAGE_SIZE` events, newest first. */
 export const HISTORY_PAGE_SIZE = 8;
 

@@ -111,122 +111,122 @@ describe('renderLogCard', () => {
     expect(t).toContain('```\nname: "a" → "bˋˋˋ"\n```');
   });
 
-const displaysOf = (c: { components: readonly unknown[] }): string[] => {
-  const out: string[] = [];
-  const walk = (v: unknown): void => {
-    if (Array.isArray(v)) return v.forEach(walk);
-    if (typeof v !== 'object' || v === null) return;
-    const o = v as Record<string, unknown>;
-    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
-    walk(o['components']);
+  const displaysOf = (c: { components: readonly unknown[] }): string[] => {
+    const out: string[] = [];
+    const walk = (v: unknown): void => {
+      if (Array.isArray(v)) return v.forEach(walk);
+      if (typeof v !== 'object' || v === null) return;
+      const o = v as Record<string, unknown>;
+      if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
+      walk(o['components']);
+    };
+    walk(c.components);
+    return out;
   };
-  walk(c.components);
-  return out;
-};
 
-/** Odd `||` means a cut inside a spoiler; odd ``` means a cut code fence. */
-const countOccurrences = (haystack: string, needle: string): number =>
-  haystack.split(needle).length - 1;
+  /** Odd `||` means a cut inside a spoiler; odd ``` means a cut code fence. */
+  const countOccurrences = (haystack: string, needle: string): number =>
+    haystack.split(needle).length - 1;
 
-const expectQuotedAndBalanced = (display: string, label: string): void => {
-  const lines = display.split('\n');
-  expect(lines[0]).toBe(`**${label}**`);
-  for (const line of lines.slice(1)) expect(line.startsWith('> ')).toBe(true);
-  expect(countOccurrences(display, '||') % 2).toBe(0);
-  expect(countOccurrences(display, '```') % 2).toBe(0);
-};
+  const expectQuotedAndBalanced = (display: string, label: string): void => {
+    const lines = display.split('\n');
+    expect(lines[0]).toBe(`**${label}**`);
+    for (const line of lines.slice(1)) expect(line.startsWith('> ')).toBe(true);
+    expect(countOccurrences(display, '||') % 2).toBe(0);
+    expect(countOccurrences(display, '```') % 2).toBe(0);
+  };
 
-const expectWithinBudget = (c: { components: readonly unknown[] }): void => {
-  expect(countText(c.components)).toBeLessThanOrEqual(4000);
-  expect(countComponents(c.components)).toBeLessThanOrEqual(40);
-};
+  const expectWithinBudget = (c: { components: readonly unknown[] }): void => {
+    expect(countText(c.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(c.components)).toBeLessThanOrEqual(40);
+  };
 
-describe('worst-case budget (P2 fix wave)', () => {
-  it('message_edit with 4,000 hostile chars before and after stays in budget', () => {
-    const view: LogCardView = {
-      kind: 'message_edit',
-      headline: `<@${U}> edited a message in <#${C}>`,
-      details: [`Before:\n${'*\n'.repeat(2000)}`],
-      quote: { label: 'Now reads', text: '*\n'.repeat(2000), spoiler: true },
-      at: AT,
-      memberId: U,
-      message: { channelId: C, messageId: M, exists: true },
-    };
-    expect(view.details?.[0]).toHaveLength(4008);
-    expect(view.quote?.text).toHaveLength(4000);
-    let rendered: ReturnType<typeof renderLogCard>;
-    expect(() => {
+  describe('worst-case budget (P2 fix wave)', () => {
+    it('message_edit with 4,000 hostile chars before and after stays in budget', () => {
+      const view: LogCardView = {
+        kind: 'message_edit',
+        headline: `<@${U}> edited a message in <#${C}>`,
+        details: [`Before:\n${'*\n'.repeat(2000)}`],
+        quote: { label: 'Now reads', text: '*\n'.repeat(2000), spoiler: true },
+        at: AT,
+        memberId: U,
+        message: { channelId: C, messageId: M, exists: true },
+      };
+      expect(view.details?.[0]).toHaveLength(4008);
+      expect(view.quote?.text).toHaveLength(4000);
+      let rendered: ReturnType<typeof renderLogCard>;
+      expect(() => {
+        rendered = renderLogCard(view, G);
+      }).not.toThrow();
       rendered = renderLogCard(view, G);
-    }).not.toThrow();
-    rendered = renderLogCard(view, G);
-    expectWithinBudget(rendered);
-    const displays = displaysOf(rendered);
-    expect(displays[0]?.length).toBeLessThanOrEqual(1000);
-    const quote = displays.find((d) => d.startsWith('**Now reads**')) ?? '';
-    expect(quote.length).toBeLessThanOrEqual(1500);
-    expectQuotedAndBalanced(quote, 'Now reads');
-  });
+      expectWithinBudget(rendered);
+      const displays = displaysOf(rendered);
+      expect(displays[0]?.length).toBeLessThanOrEqual(1000);
+      const quote = displays.find((d) => d.startsWith('**Now reads**')) ?? '';
+      expect(quote.length).toBeLessThanOrEqual(1500);
+      expectQuotedAndBalanced(quote, 'Now reads');
+    });
 
-  it('message_delete with 4,000 pipe characters stays in budget', () => {
-    const view: LogCardView = {
-      kind: 'message_delete',
-      headline: `Message by <@${U}> deleted in <#${C}>`,
-      quote: { label: 'It read', text: '|'.repeat(4000) },
-      at: AT,
-      memberId: U,
-      message: { channelId: C, messageId: M, exists: false },
-    };
-    let rendered: ReturnType<typeof renderLogCard>;
-    expect(() => {
+    it('message_delete with 4,000 pipe characters stays in budget', () => {
+      const view: LogCardView = {
+        kind: 'message_delete',
+        headline: `Message by <@${U}> deleted in <#${C}>`,
+        quote: { label: 'It read', text: '|'.repeat(4000) },
+        at: AT,
+        memberId: U,
+        message: { channelId: C, messageId: M, exists: false },
+      };
+      let rendered: ReturnType<typeof renderLogCard>;
+      expect(() => {
+        rendered = renderLogCard(view, G);
+      }).not.toThrow();
       rendered = renderLogCard(view, G);
-    }).not.toThrow();
-    rendered = renderLogCard(view, G);
-    expectWithinBudget(rendered);
-    const quote = displaysOf(rendered).find((d) => d.startsWith('**It read**')) ?? '';
-    expect(quote.length).toBeLessThanOrEqual(1500);
-    expectQuotedAndBalanced(quote, 'It read');
-  });
+      expectWithinBudget(rendered);
+      const quote = displaysOf(rendered).find((d) => d.startsWith('**It read**')) ?? '';
+      expect(quote.length).toBeLessThanOrEqual(1500);
+      expectQuotedAndBalanced(quote, 'It read');
+    });
 
-  it('a member update with 200 change lines of 100 characters stays in budget', () => {
-    const view: LogCardView = {
-      kind: 'member_roles_changed',
-      headline: `<@${U}> roles changed`,
-      changes: Array.from({ length: 200 }, (_, i) => `c${i} `.padEnd(100, 'x')),
-      at: AT,
-      memberId: U,
-    };
-    for (const line of view.changes ?? []) expect(line).toHaveLength(100);
-    let rendered: ReturnType<typeof renderLogCard>;
-    expect(() => {
+    it('a member update with 200 change lines of 100 characters stays in budget', () => {
+      const view: LogCardView = {
+        kind: 'member_roles_changed',
+        headline: `<@${U}> roles changed`,
+        changes: Array.from({ length: 200 }, (_, i) => `c${i} `.padEnd(100, 'x')),
+        at: AT,
+        memberId: U,
+      };
+      for (const line of view.changes ?? []) expect(line).toHaveLength(100);
+      let rendered: ReturnType<typeof renderLogCard>;
+      expect(() => {
+        rendered = renderLogCard(view, G);
+      }).not.toThrow();
       rendered = renderLogCard(view, G);
-    }).not.toThrow();
-    rendered = renderLogCard(view, G);
-    expectWithinBudget(rendered);
-    const changes = displaysOf(rendered).find((d) => d.startsWith('```')) ?? '';
-    expect(changes.length).toBeLessThanOrEqual(1300);
-    expect(changes.endsWith('```')).toBe(true);
-    expect(countOccurrences(changes, '```') % 2).toBe(0);
-  });
+      expectWithinBudget(rendered);
+      const changes = displaysOf(rendered).find((d) => d.startsWith('```')) ?? '';
+      expect(changes.length).toBeLessThanOrEqual(1300);
+      expect(changes.endsWith('```')).toBe(true);
+      expect(countOccurrences(changes, '```') % 2).toBe(0);
+    });
 
-  it('a 3,000-character headline with 20 detail lines of 500 characters stays in budget', () => {
-    const view: LogCardView = {
-      kind: 'member_nickname_changed',
-      headline: 'h'.repeat(3000),
-      details: Array.from({ length: 20 }, () => 'd'.repeat(500)),
-      at: AT,
-      memberId: U,
-    };
-    let rendered: ReturnType<typeof renderLogCard>;
-    expect(() => {
+    it('a 3,000-character headline with 20 detail lines of 500 characters stays in budget', () => {
+      const view: LogCardView = {
+        kind: 'member_nickname_changed',
+        headline: 'h'.repeat(3000),
+        details: Array.from({ length: 20 }, () => 'd'.repeat(500)),
+        at: AT,
+        memberId: U,
+      };
+      let rendered: ReturnType<typeof renderLogCard>;
+      expect(() => {
+        rendered = renderLogCard(view, G);
+      }).not.toThrow();
       rendered = renderLogCard(view, G);
-    }).not.toThrow();
-    rendered = renderLogCard(view, G);
-    expectWithinBudget(rendered);
-    expect(displaysOf(rendered)[0]?.length).toBeLessThanOrEqual(1000);
+      expectWithinBudget(rendered);
+      expect(displaysOf(rendered)[0]?.length).toBeLessThanOrEqual(1000);
+    });
   });
 
   it('uses each kind’s tone', () => {
-});
     const accent = (c: { components: readonly unknown[] }) =>
       (c.components[0] as { accent_color: number }).accent_color;
     expect(accent(renderLogCard({ kind: 'member_ban', headline: 'x', at: AT }, G))).toBe(0xd64545);
