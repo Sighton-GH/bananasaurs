@@ -62,7 +62,10 @@ const geminiResponseSchema = z.object({
  * Adjacent tool results are merged into one user turn: Gemini expects every
  * call of a parallel batch answered together.
  */
-const toContents = (messages: readonly GenerationMessage[]): unknown[] => {
+const toContents = (
+  messages: readonly GenerationMessage[],
+  caps: ModelCapabilities,
+): unknown[] => {
   const contents: { role: 'user' | 'model'; parts: unknown[] }[] = [];
   for (const message of messages) {
     if (message.role === 'tool') {
@@ -90,9 +93,13 @@ const toContents = (messages: readonly GenerationMessage[]): unknown[] => {
       parts: [
         { text: message.text },
         ...(message.role === 'user' && message.media !== undefined
-          ? message.media.map((m) => ({
-              inlineData: { mimeType: m.mediaType, data: m.dataBase64 },
-            }))
+          ? message.media
+              // The request's effective capabilities gate every part: an image
+              // or PDF the entry forbids is never sent.
+              .filter((m) => (m.kind === 'image' ? caps.image : caps.pdf))
+              .map((m) => ({
+                inlineData: { mimeType: m.mediaType, data: m.dataBase64 },
+              }))
           : []),
       ],
     });
@@ -447,7 +454,7 @@ export class GeminiProvider implements TextProvider {
             ? { thinkingBudget: request.thinkingBudget, includeThoughts: true }
             : undefined;
       const body = {
-        contents: toContents(request.messages),
+        contents: toContents(request.messages, capabilities),
         ...(request.tools !== undefined && request.tools.length > 0
           ? { tools: [{ functionDeclarations: request.tools }] }
           : {}),

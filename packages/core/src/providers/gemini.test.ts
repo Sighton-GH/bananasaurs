@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { GeminiProvider, listGeminiModels } from './gemini.js';
 import { ProviderError } from './errors.js';
+import { TEXT_AND_TOOLS_ONLY } from './model-capabilities.js';
 
 const ok = (value: unknown): Response =>
   new Response(JSON.stringify(value), {
@@ -105,6 +106,47 @@ describe('GeminiProvider', () => {
           ],
         },
       ],
+    });
+  });
+
+  it('drops an image the request capabilities forbid, sends one they allow', async () => {
+    const message = {
+      role: 'user' as const,
+      text: 'what is this?',
+      media: [{ kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' }],
+    };
+    const denied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      sse({
+        candidates: [{ content: { parts: [{ text: 'seen' }] }, finishReason: 'STOP' }],
+        modelVersion: 'm',
+      }),
+    );
+    await new GeminiProvider({ apiKey: 'secret', fetch: denied }).generateText({
+      model: 'gemini-3.8-flash',
+      capabilities: TEXT_AND_TOOLS_ONLY,
+      messages: [message],
+    });
+    const deniedBody = JSON.parse(denied.mock.calls[0]?.[1]?.body as string) as {
+      contents: { parts: unknown[] }[];
+    };
+    expect(deniedBody.contents[0]?.parts).toEqual([{ text: 'what is this?' }]);
+
+    const allowed = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      sse({
+        candidates: [{ content: { parts: [{ text: 'seen' }] }, finishReason: 'STOP' }],
+        modelVersion: 'm',
+      }),
+    );
+    await new GeminiProvider({ apiKey: 'secret', fetch: allowed }).generateText({
+      model: 'gemini-3.8-flash',
+      capabilities: { ...TEXT_AND_TOOLS_ONLY, image: true },
+      messages: [message],
+    });
+    const allowedBody = JSON.parse(allowed.mock.calls[0]?.[1]?.body as string) as {
+      contents: { parts: unknown[] }[];
+    };
+    expect(allowedBody.contents[0]?.parts).toContainEqual({
+      inlineData: { mimeType: 'image/png', data: 'aGk=' },
     });
   });
 
