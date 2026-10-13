@@ -16,11 +16,7 @@ import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
 import type { Modal } from '../ui/discord/kit.js';
 import { buildModCustomId } from './custom-ids.js';
 import { createModCardActionSubscriber, type ModCardActionDeps } from './card-actions.js';
-import type {
-  ModCommandCasePorts,
-  ModCommandDeps,
-  NoteEvidenceCasePorts,
-} from './commands.js';
+import type { ModCommandCasePorts, ModCommandDeps, NoteEvidenceCasePorts } from './commands.js';
 import type {
   ModConfirmationCasePorts,
   ModConfirmationDeps,

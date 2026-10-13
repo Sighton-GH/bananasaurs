@@ -92,7 +92,12 @@ export const createModCardActionSubscriber = (deps: ModCardActionDeps): Subscrib
         );
       } catch (err) {
         deps.logger.error(
-          safeLogFields({ component: 'mod-card-actions', guildId: deps.guildId, action: 'delete', err }),
+          safeLogFields({
+            component: 'mod-card-actions',
+            guildId: deps.guildId,
+            action: 'delete',
+            err,
+          }),
           'a log-card delete click failed',
         );
         await deps.responder.respond(
@@ -133,7 +138,12 @@ export const createModCardActionSubscriber = (deps: ModCardActionDeps): Subscrib
         await runDirectAction(deps.commands, { ...base, durationMinutes }, ref, 'timeout');
       } catch (err) {
         deps.logger.error(
-          safeLogFields({ component: 'mod-card-actions', guildId: deps.guildId, action: parsed.action, err }),
+          safeLogFields({
+            component: 'mod-card-actions',
+            guildId: deps.guildId,
+            action: parsed.action,
+            err,
+          }),
           'a log-card moderation form failed',
         );
         await deps.responder.respond(

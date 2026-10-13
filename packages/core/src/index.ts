@@ -414,10 +414,7 @@ export {
   type ParsedModConfirmCustomId,
   type PendingActionRowLike,
 } from './mod/confirmations.js';
-export {
-  createModCardActionSubscriber,
-  type ModCardActionDeps,
-} from './mod/card-actions.js';
+export { createModCardActionSubscriber, type ModCardActionDeps } from './mod/card-actions.js';
 export {
   emojiKeySchema,
   optionByEmoji,

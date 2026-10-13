@@ -36,7 +36,14 @@ describe('modOutcomeCard', () => {
   const base = { targetId: U, reason: 'spam **links**', interactionId: I };
 
   it('says what happened, in words, with the reason escaped', () => {
-    const t = text(modOutcomeCard({ ...base, action: 'timeout', durationMinutes: 60, outcome: { status: 'applied' } }));
+    const t = text(
+      modOutcomeCard({
+        ...base,
+        action: 'timeout',
+        durationMinutes: 60,
+        outcome: { status: 'applied' },
+      }),
+    );
     expect(t).toContain(`Timed out <@${U}> for 1 hour`);
     expect(t).toContain('Reason: spam \\*\\*links\\*\\*');
   });
@@ -47,7 +54,9 @@ describe('modOutcomeCard', () => {
     ['ban', `Banned <@${U}>`],
     ['unban', `Unbanned <@${U}>`],
   ] as const)('%s applied → %s', (action, words) => {
-    expect(text(modOutcomeCard({ ...base, action, outcome: { status: 'applied' } }))).toContain(words);
+    expect(text(modOutcomeCard({ ...base, action, outcome: { status: 'applied' } }))).toContain(
+      words,
+    );
   });
 
   it('dry run says nothing changed and what would have', () => {
@@ -57,35 +66,65 @@ describe('modOutcomeCard', () => {
   });
 
   it('a refusal reads from the catalogue, never the raw code, and carries a Ref', () => {
-    const t = text(modOutcomeCard({ ...base, action: 'kick', outcome: { status: 'refused', reason: 'role-above-bot' } }));
+    const t = text(
+      modOutcomeCard({
+        ...base,
+        action: 'kick',
+        outcome: { status: 'refused', reason: 'role-above-bot' },
+      }),
+    );
     expect(t).toContain('That member is above the bot');
     expect(t).not.toContain('role-above-bot');
     expect(t).toContain('-# Ref 23456789');
   });
 
   it('a Discord failure never shows the error name', () => {
-    const t = text(modOutcomeCard({ ...base, action: 'ban', outcome: { status: 'failed', code: 'DiscordApiError' } }));
+    const t = text(
+      modOutcomeCard({
+        ...base,
+        action: 'ban',
+        outcome: { status: 'failed', code: 'DiscordApiError' },
+      }),
+    );
     expect(t).toContain("Discord didn't accept that");
     expect(t).not.toContain('DiscordApiError');
   });
 
   it('never pings the target', () => {
-    expect(modOutcomeCard({ ...base, action: 'kick', outcome: { status: 'applied' } }).allowedMentions).toEqual({ parse: [] });
+    expect(
+      modOutcomeCard({ ...base, action: 'kick', outcome: { status: 'applied' } }).allowedMentions,
+    ).toEqual({ parse: [] });
   });
 });
 
 describe('warnOutcomeCard', () => {
   it('names the case and the count', () => {
-    const t = text(warnOutcomeCard({ targetId: U, reason: 'r', caseId: CASE, violationCount: 2, escalation: undefined }));
+    const t = text(
+      warnOutcomeCard({
+        targetId: U,
+        reason: 'r',
+        caseId: CASE,
+        violationCount: 2,
+        escalation: undefined,
+      }),
+    );
     expect(t).toContain(`Warned <@${U}>`);
     expect(t).toContain(`Case ${caseRef(CASE)} · warning 2`);
     expect(caseRef(CASE)).toBe('0f3c9a2e');
   });
   it('explains a refused escalation in words', () => {
     const t = text(
-      warnOutcomeCard({ targetId: U, reason: 'r', caseId: CASE, violationCount: 3, escalation: { status: 'refused', reason: 'killswitch' } }),
+      warnOutcomeCard({
+        targetId: U,
+        reason: 'r',
+        caseId: CASE,
+        violationCount: 3,
+        escalation: { status: 'refused', reason: 'killswitch' },
+      }),
     );
-    expect(t).toContain("This reached an escalation step, but its consequence didn't run: Moderation is paused.");
+    expect(t).toContain(
+      "This reached an escalation step, but its consequence didn't run: Moderation is paused.",
+    );
   });
 });
 
@@ -98,7 +137,17 @@ describe('confirm cards', () => {
     expect(JSON.stringify(c.components)).toContain('"style":4');
   });
   it('a purge preview states exact scope', () => {
-    const t = text(purgeConfirmCard({ channelId: C, total: 37, fresh: 30, old: 7, newestAtMs: 1_760_000_000_000, reason: 'spam', intentId: 'abc' }));
+    const t = text(
+      purgeConfirmCard({
+        channelId: C,
+        total: 37,
+        fresh: 30,
+        old: 7,
+        newestAtMs: 1_760_000_000_000,
+        reason: 'spam',
+        intentId: 'abc',
+      }),
+    );
     expect(t).toContain(`Delete 37 messages from <#${C}>?`);
     expect(t).toContain('Newest <t:1760000000:R>');
     expect(t).toContain('30 can go in bulk. 7 are older than 14 days and go one at a time.');
@@ -127,7 +176,13 @@ describe('moderator modals', () => {
 
 describe('delete cards', () => {
   it('the confirm card names the author and channel and links the message', () => {
-    const c = deleteConfirmCard({ guildId: '9', channelId: C, messageId: '2', authorId: U, intentId: 'abc' });
+    const c = deleteConfirmCard({
+      guildId: '9',
+      channelId: C,
+      messageId: '2',
+      authorId: U,
+      intentId: 'abc',
+    });
     expect(cardTexts(c.components)).toContain(`Delete this message by <@${U}> in <#${C}>?`);
     expect(cardTexts(c.components)).toContain(`https://discord.com/channels/9/${C}/2`);
     expect(cardCustomIds(c.components)).toEqual(['modconfirm:abc', 'modcancel:abc']);

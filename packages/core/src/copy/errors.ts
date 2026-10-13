@@ -195,7 +195,8 @@ export const ERROR_COPY = {
   },
   'mod.reason-required': {
     title: 'Add a reason',
-    detail: 'Every warning and timeout needs a reason. It goes in case history and Discord’s audit log.',
+    detail:
+      'Every warning and timeout needs a reason. It goes in case history and Discord’s audit log.',
     next: 'Open the form again and write one.',
     retryable: true,
     tone: 'hold',

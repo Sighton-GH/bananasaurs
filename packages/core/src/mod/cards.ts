@@ -1,9 +1,6 @@
 import { ERROR_COPY } from '../copy/errors.js';
 import { moderationRefusalCode, refFor } from '../copy/refusals.js';
-import type {
-  DeleteMessageOutcome,
-  ModerationOutcome,
-} from '../effects/moderation-gateway.js';
+import type { DeleteMessageOutcome, ModerationOutcome } from '../effects/moderation-gateway.js';
 import { card, type CardMessage } from '../ui/discord/card.js';
 import { errorCard, resultCard } from '../ui/discord/common-cards.js';
 import {
@@ -43,7 +40,11 @@ const ICON_FOR: Record<DirectModAction | 'ban', IconName> = {
 };
 
 /** What was done, as a sentence fragment that starts lower-case. */
-const didPhrase = (action: DirectModAction | 'ban', who: string, minutes: number | undefined): string => {
+const didPhrase = (
+  action: DirectModAction | 'ban',
+  who: string,
+  minutes: number | undefined,
+): string => {
   switch (action) {
     case 'timeout':
       return `timed out ${who} for ${durationLabel(minutes ?? 0)}`;
@@ -179,11 +180,21 @@ export const confirmRow = (intentId: string, confirmLabel: string): ActionRow =>
 
 const NOTHING_YET = subtext('Nothing has happened yet. The confirmation lasts 15 minutes.');
 
-export const banConfirmCard = (input: { targetId: string; reason: string; intentId: string }): CardMessage =>
+export const banConfirmCard = (input: {
+  targetId: string;
+  reason: string;
+  intentId: string;
+}): CardMessage =>
   card({
     tone: 'danger',
     children: [
-      text([`**${ICON.ban} Ban <@${input.targetId}>?**`, ...reasonLine(input.reason), NOTHING_YET].join('\n')),
+      text(
+        [
+          `**${ICON.ban} Ban <@${input.targetId}>?**`,
+          ...reasonLine(input.reason),
+          NOTHING_YET,
+        ].join('\n'),
+      ),
       separator(),
       confirmRow(input.intentId, 'Ban member'),
     ],
@@ -198,7 +209,9 @@ export const purgeConfirmCard = (input: {
   reason: string;
   intentId: string;
 }): CardMessage => {
-  const lines = [`**${ICON.bulkDelete} Delete ${input.total} messages from <#${input.channelId}>?**`];
+  const lines = [
+    `**${ICON.bulkDelete} Delete ${input.total} messages from <#${input.channelId}>?**`,
+  ];
   if (input.newestAtMs !== undefined) lines.push(`Newest ${ts(input.newestAtMs, 'R')}.`);
   lines.push(
     input.old === 0
@@ -208,7 +221,11 @@ export const purgeConfirmCard = (input: {
   lines.push(...reasonLine(input.reason), NOTHING_YET);
   return card({
     tone: 'danger',
-    children: [text(lines.join('\n')), separator(), confirmRow(input.intentId, `Delete ${input.total} messages`)],
+    children: [
+      text(lines.join('\n')),
+      separator(),
+      confirmRow(input.intentId, `Delete ${input.total} messages`),
+    ],
   });
 };
 
@@ -234,11 +251,21 @@ const reasonField = () =>
   label({
     label: 'Reason',
     description: 'Shown in case history and in Discord’s audit log.',
-    component: textInput({ customId: 'reason', style: 'paragraph', required: true, minLength: 1, maxLength: 500 }),
+    component: textInput({
+      customId: 'reason',
+      style: 'paragraph',
+      required: true,
+      minLength: 1,
+      maxLength: 500,
+    }),
   });
 
 export const warnModal = (userId: string): Modal =>
-  modal({ customId: buildModCustomId({ action: 'warn', userId }), title: 'Warn member', components: [reasonField()] });
+  modal({
+    customId: buildModCustomId({ action: 'warn', userId }),
+    title: 'Warn member',
+    components: [reasonField()],
+  });
 
 export const timeoutModal = (userId: string): Modal =>
   modal({
@@ -283,17 +310,35 @@ export const deleteConfirmCard = (input: {
     ],
   });
 
-export const deleteOutcomeCard = (outcome: DeleteMessageOutcome, interactionId: string): CardMessage => {
+export const deleteOutcomeCard = (
+  outcome: DeleteMessageOutcome,
+  interactionId: string,
+): CardMessage => {
   const ref = refFor(interactionId);
   switch (outcome.status) {
     case 'applied':
       return resultCard({ icon: 'deleted', title: 'Deleted the message', tone: 'ok' });
     case 'dry-run':
-      return resultCard({ icon: 'stop', title: 'Dry run is on, so nothing changed', detail: 'It would have deleted the message.', tone: 'hold' });
+      return resultCard({
+        icon: 'stop',
+        title: 'Dry run is on, so nothing changed',
+        detail: 'It would have deleted the message.',
+        tone: 'hold',
+      });
     case 'skipped':
       return outcome.reason === 'message-gone'
-        ? resultCard({ icon: 'done', title: 'That message was already gone', detail: 'Someone removed it before you confirmed. Nothing else changed.', tone: 'hold' })
-        : resultCard({ icon: 'done', title: 'Already done', detail: 'This exact action already ran, so it did not run twice.', tone: 'hold' });
+        ? resultCard({
+            icon: 'done',
+            title: 'That message was already gone',
+            detail: 'Someone removed it before you confirmed. Nothing else changed.',
+            tone: 'hold',
+          })
+        : resultCard({
+            icon: 'done',
+            title: 'Already done',
+            detail: 'This exact action already ran, so it did not run twice.',
+            tone: 'hold',
+          });
     case 'refused':
       return errorCard(moderationRefusalCode(outcome.reason), { ref });
     case 'failed':

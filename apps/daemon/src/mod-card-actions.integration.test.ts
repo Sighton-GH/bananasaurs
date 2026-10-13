@@ -17,6 +17,7 @@ import {
   type ModCommandDeps,
   type ModConfirmationDeps,
   type ModerationGatewayDeps,
+  type ModerationRefusalReason,
   type OutgoingMessage,
   type Snowflake,
 } from '@bananasaurs/core';
@@ -64,7 +65,10 @@ let scope: GuildScope;
 let discord: FakeDiscord;
 let pipeline: Pipeline;
 
-function buildWiring(): { modCommandDeps: ModCommandDeps; modConfirmationDeps: ModConfirmationDeps } {
+function buildWiring(): {
+  modCommandDeps: ModCommandDeps;
+  modConfirmationDeps: ModConfirmationDeps;
+} {
   const guildId = GUILD;
   const now = () => discord.now();
 
@@ -185,7 +189,12 @@ function buildWiring(): { modCommandDeps: ModCommandDeps; modConfirmationDeps: M
           actionTaken: input.actionTaken,
           escalationAction: input.escalationAction,
           actorId: input.actorId,
-          ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
+          // Same narrowing `guild.ts` applies: `core`'s `WarnCasePorts`
+          // widens this to a bare `string` (ADR 0014), and only
+          // `ModerationOutcome['reason']` values ever flow through here.
+          ...(input.refusalReason !== undefined && {
+            refusalReason: input.refusalReason as ModerationRefusalReason,
+          }),
         }),
     },
     noteEvidenceCases: {
