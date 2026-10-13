@@ -89,8 +89,7 @@ export function ModelOrderSection({
       ...(entry.tier === undefined ? {} : { tier: entry.tier }),
     })),
   );
-  const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
-  const [hasLoadedGeminiModels, setHasLoadedGeminiModels] = useState(false);
+  const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [saveError, setSaveError] = useState<unknown>(undefined);
@@ -127,10 +126,7 @@ export function ModelOrderSection({
         'POST',
       )
       .then((result) => {
-        if (live && result !== undefined) {
-          setGeminiModels(result.models);
-          setHasLoadedGeminiModels(true);
-        }
+        if (live && result !== undefined) setGeminiModels(result.models);
       })
       .catch(() => {
         // No list (no key yet, or the service refused it): the rows stay typed fields.
@@ -215,7 +211,8 @@ export function ModelOrderSection({
       </p>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-muted">
-          Model order rows will appear here. Add a key below, then add a row to choose what answers first.
+          Model order rows will appear here. Add a key below, then add a row to choose what answers
+          first.
         </p>
       ) : (
         <OrderedList
@@ -269,7 +266,7 @@ export function ModelOrderSection({
                       aria-label={`Key for row ${number}`}
                     />
                   </label>
-                  {key?.provider === 'gemini' && hasLoadedGeminiModels && geminiModels !== undefined ? (
+                  {key?.provider === 'gemini' ? (
                     <label className="grid min-w-[min(16rem,100%)] max-w-full flex-1 basis-64 gap-0.5 text-xs text-ink-muted">
                       Model for row {number}
                       <Select
@@ -357,11 +354,11 @@ export function ModelOrderSection({
                   )}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
-                  {saved?.listing?.listed === false && (
-                    <InlineAlert tone="danger" title="This model is no longer listed.">
-                      Requests to it will fail. Pick another model.
-                    </InlineAlert>
-                  )}
+                {saved?.listing?.listed === false && (
+                  <InlineAlert tone="danger" title="This model is no longer listed.">
+                    Requests to it will fail. Pick another model.
+                  </InlineAlert>
+                )}
                 {saved?.listing?.listed !== false && saved?.listing !== undefined && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     {saved.listing.image && <Badge>Reads images</Badge>}
@@ -463,7 +460,11 @@ export function ModelOrderSection({
           label="Model order"
         />
       )}
-      {error !== undefined && <InlineAlert tone="danger" title="The model order needs attention.">{error}</InlineAlert>}
+      {error !== undefined && (
+        <InlineAlert tone="danger" title="The model order needs attention.">
+          {error}
+        </InlineAlert>
+      )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           onClick={() =>

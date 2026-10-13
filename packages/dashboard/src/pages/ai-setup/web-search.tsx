@@ -201,7 +201,11 @@ function SearchKeyItem({
             checked={editEnabled}
             onChange={(e) => setEditEnabled(e.target.checked)}
           />
-          {editError !== undefined && <InlineAlert tone="danger" title="The key could not be saved.">{editError}</InlineAlert>}
+          {editError !== undefined && (
+            <InlineAlert tone="danger" title="The key could not be saved.">
+              {editError}
+            </InlineAlert>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" busy={busy} onClick={() => void saveEdit()}>
               Save key
@@ -490,7 +494,11 @@ export function WebSearchCard({
                   />
                 </Field>
               </div>
-              {addError !== undefined && <InlineAlert tone="danger" title="The key could not be added.">{addError}</InlineAlert>}
+              {addError !== undefined && (
+                <InlineAlert tone="danger" title="The key could not be added.">
+                  {addError}
+                </InlineAlert>
+              )}
               <div>
                 <Button variant="primary" type="submit" busy={adding}>
                   Add key
