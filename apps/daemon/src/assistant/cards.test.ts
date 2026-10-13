@@ -141,6 +141,12 @@ describe('renderAssistantReminderCard', () => {
     expect(countComponents(card.components)).toBeLessThanOrEqual(40);
   });
 
+  it('stays within budget for a 4,000-character hostile body', () => {
+    const card = renderAssistantReminderCard(reminder({ text: '*_~`|>#-'.repeat(500) }));
+    expect(countText(card.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(card.components)).toBeLessThanOrEqual(40);
+  });
+
   it('renders a hostile fenced body literally: neutralised, unbolded, unpinged, within budget', () => {
     const middle = `@everyone **x** ${'z'.repeat(2_976)}`;
     const body = `\`\`\`\n${middle}\n\`\`\``;
@@ -204,6 +210,12 @@ describe('renderEscalationCard', () => {
       .filter((line) => line.startsWith('> '))
       .join('\n');
     expect(quoted.replaceAll('> ', '').length).toBeLessThanOrEqual(1_500);
+  });
+
+  it('stays within budget for a 4,000-character hostile question', () => {
+    const card = renderEscalationCard({ ...input, question: '*_~`|>#-'.repeat(500) });
+    expect(countText(card.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(card.components)).toBeLessThanOrEqual(40);
   });
 
   it('shows the jump link only when messageId is defined', () => {

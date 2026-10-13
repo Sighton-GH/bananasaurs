@@ -529,6 +529,45 @@ describe('history cards', () => {
   });
 });
 
+describe('renderer caps after formatting', () => {
+  it('caps escaped moderation reasons and notes', () => {
+    const big = '*_~@<'.repeat(2000);
+    const outcome = modOutcomeCard({
+      action: 'kick',
+      targetId: U,
+      reason: big,
+      outcome: { status: 'applied' },
+      interactionId: I,
+    });
+    const note = noteOutcomeCard({ kind: 'note', targetId: U, content: big });
+    expect(countText(outcome.components)).toBeLessThanOrEqual(4000);
+    expect(countText(note.components)).toBeLessThanOrEqual(4000);
+    expect(text(outcome)).toContain('…');
+    expect(text(note)).toContain('…');
+  });
+
+  it('caps a case-history line after escaping its snippet', () => {
+    const line = describeCaseEvent(
+      {
+        eventId: 'evt-cap',
+        caseId: CASE,
+        ruleId: 'manual',
+        memberId: U,
+        at: 1_760_000_000_000,
+        matchedCategory: 'warn',
+        matchedSnippet: '*_~@<'.repeat(2000),
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        refusalReason: undefined,
+        actorId: '222222222222222222',
+      },
+      U,
+    );
+    expect(line.length).toBeLessThanOrEqual(600);
+    expect(line).toContain('…');
+  });
+});
+
 describe('delete cards', () => {
   it('the confirm card names the author and channel and links the message', () => {
     const c = deleteConfirmCard({

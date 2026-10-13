@@ -6,6 +6,7 @@ import { panelRefusalCode } from '../copy/refusals.js';
 import { card, toOutgoingMessage, type CardMessage } from '../ui/discord/card.js';
 import { errorCard } from '../ui/discord/common-cards.js';
 import { text } from '../ui/discord/kit.js';
+import { truncate } from '../ui/discord/text.js';
 import { isSelectCustomId, parseCustomId } from './components.js';
 import { needsFullReactionState } from './convergence.js';
 import { optionById, orderedOptions, type PanelConfig } from './model.js';
@@ -69,7 +70,7 @@ export const panelResultCard = (result: ConvergeMemberResult): CardMessage => {
     if (clamped !== undefined) {
       lines.push(`💡 You've reached this panel's limit, so not every choice was added.`);
     }
-    return card({ tone: 'ok', children: [text(lines.join('\n'))] });
+    return card({ tone: 'ok', children: [text(truncate(lines.join('\n'), 1_500))] });
   }
 
   // Nothing happened. Either there was nothing to do, or the gateway refused

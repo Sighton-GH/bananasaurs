@@ -11,7 +11,7 @@ import {
   text,
   type ActionRow,
 } from '../ui/discord/kit.js';
-import { subtext } from '../ui/discord/text.js';
+import { subtext, truncate } from '../ui/discord/text.js';
 import { MAX_PANEL_OPTIONS, orderedOptions, type PanelConfig, type PanelOption } from './model.js';
 
 /**
@@ -154,6 +154,7 @@ export const buildComponents = (panel: PanelConfig): readonly ActionRow[] => {
   return rows;
 };
 
+const PANEL_CONTENT_MAX = 1500;
 const PANEL_HINT = (panel: PanelConfig): string => {
   if (panel.component === 'select')
     return panel.behaviour === 'add_only'
@@ -182,7 +183,7 @@ export const renderPanelCard = (panel: PanelConfig): CardMessage =>
     art: ['bannerPanel'],
     children: [
       gallery([{ media: { url: artUrl('bannerPanel') }, description: ART.bannerPanel.alt }]),
-      text(panel.content ?? '**Pick your roles**'),
+      text(truncate(panel.content ?? '**Pick your roles**', PANEL_CONTENT_MAX)),
       text(subtext(PANEL_HINT(panel))),
       separator(),
       ...buildComponents(panel),

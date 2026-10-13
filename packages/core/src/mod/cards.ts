@@ -67,8 +67,28 @@ const didPhrase = (
 };
 
 const capitalise = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+const fitText = (raw: string, max: number, format: (value: string) => string): string => {
+  const bounded = truncate(raw, max);
+  const full = format(bounded);
+  if (full.length <= max) return full;
+  let low = 0;
+  let high = bounded.length;
+  let best = format('');
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const value = format(truncate(bounded, mid));
+    if (value.length <= max) {
+      best = value;
+      low = mid + 1;
+    } else high = mid - 1;
+  }
+  return best;
+};
+const REASON_LINE_MAX = 700;
 const reasonLine = (reason: string): string[] =>
-  reason.trim() === '' ? [] : [`Reason: ${escapeInline(reason)}`];
+  reason.trim() === ''
+    ? []
+    : [`Reason: ${fitText(reason, REASON_LINE_MAX - 'Reason: '.length, escapeInline)}`];
 
 /**
  * `resultCard`'s shape, but the title is already-safe text the caller built
@@ -175,7 +195,7 @@ export const noteOutcomeCard = (input: {
       input.kind === 'note'
         ? `Added a note to <@${input.targetId}>'s case`
         : `Added an evidence link to <@${input.targetId}>'s case`,
-    detail: escapeInline(input.content),
+    detail: fitText(input.content, 900, escapeInline),
     tone: 'ok',
   });
 
@@ -364,6 +384,7 @@ export const deleteOutcomeCard = (
  * 120 characters first, then escaped, so escaping cannot push it over.
  */
 const SNIPPET_MAX = 120;
+const EVENT_LINE_MAX = 350;
 
 /** The attempted action behind an escalation outcome, in words. */
 const escalationNoun = (event: HistoryCaseEvent): string => {
@@ -474,7 +495,11 @@ export const describeCaseEvent = (event: HistoryCaseEvent, caseMemberId: string)
   // A self-authored event is the case member acting as a moderator (a purge
   // they ran, a note they wrote), not something done to them — it reads with
   // the marker and no by-line at themself.
-  return `${ts(event.at, 'd')} **${eventWords(event)}**${selfAuthored ? ' (as a moderator)' : ''}${by}${snippet}`;
+  return fitText(
+    `${ts(event.at, 'd')} **${eventWords(event)}**${selfAuthored ? ' (as a moderator)' : ''}${by}${snippet}`,
+    EVENT_LINE_MAX,
+    (value) => value,
+  );
 };
 
 const pluralCount = (n: number, one: string, many: string): string =>

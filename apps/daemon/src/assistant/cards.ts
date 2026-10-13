@@ -13,6 +13,13 @@ import type { DeliverableReminder } from './reminder-delivery.js';
 import { neutraliseMassMentions } from './reminder-summary.js';
 
 const REMINDER_TEXT_MAX = 3_000;
+const ESCALATION_HEAD_MAX = 1_000;
+const ESCALATION_ANSWER_MAX = 1_500;
+
+const fitText = (raw: string, max: number): string => {
+  const value = truncate(raw, max);
+  return value.length <= max ? value : value.slice(0, max);
+};
 
 /**
  * An assistant reminder as a card (ADR 0141 decision 10).
@@ -89,9 +96,12 @@ export const renderEscalationCard = (input: {
   return card({
     tone: 'hold',
     children: [
-      text(head.join('\n')),
+      text(fitText(head.join('\n'), ESCALATION_HEAD_MAX)),
       text(
-        `**The assistant replied**\n${quote(truncate(input.answer.trim() || '(empty)', 1_500))}`,
+        fitText(
+          `**The assistant replied**\n${quote(input.answer.trim() || '(empty)')}`,
+          ESCALATION_ANSWER_MAX,
+        ),
       ),
       text(subtext(footer.join(' · '))),
     ],

@@ -230,6 +230,13 @@ const containerOf = (panel: PanelConfig): Container =>
   renderPanelCard(panel).components[0] as Container;
 
 describe('renderPanelCard', () => {
+  it('caps hostile owner content after formatting', () => {
+    const content = '*_~@<'.repeat(2000);
+    const card = renderPanelCard(panelWith({ content }));
+    const rendered = cardTexts(card.components).split('\n')[0] ?? '';
+    expect(rendered.length).toBeLessThanOrEqual(1500);
+    expect(rendered).toContain('…');
+  });
   it('posts one container whose first child is the panel banner', () => {
     const card = renderPanelCard(threeOptions());
     expect(card.components).toHaveLength(1);

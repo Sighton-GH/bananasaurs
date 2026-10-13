@@ -62,6 +62,11 @@ Checklist spot-checks: "Purging…" → `:699`–`:700`; "Cancelled" → `:449`�
 ## Fix wave (budget by construction, history self-authorship, cycle removal)
 
 - Fix wave task 1: `logging/cards.ts` caps final rendered strings — head text ≤1,000 chars, quote block (label + quoted lines) ≤1,500, changes block ≤1,300 including fences (content truncated, closing fence re-added). A cut spoiler is closed with `||` within budget, and a cut landing right after `> ` (whose space `truncate`'s trimEnd eats) rolls back to a `> …` line, so every quoted line keeps its prefix.
+- Fix wave task 3: shared `fitText` caps formatted task titles/team names/quotes at their renderer limits, so escaping cannot exceed the intended field budgets.
+- Fix wave task 3: moderation reason lines are capped at 700 final characters and note/evidence details at 900 final characters after escaping.
+- Fix wave task 3: case-history event lines are capped at 600 final characters after snippet escaping.
+- Fix wave task 3: managed-panel owner content is capped at 1,500 final characters before it reaches the card.
+- Fix wave task 3: common result-card titles/details use final-length fitting, preserving the 4,000-character card budget after escaping.
 
 ## Task 8
 

@@ -7,7 +7,6 @@ import { ICON, type IconName, type Tone } from './tokens.js';
 
 const QUOTE_MAX = 1500;
 
-/** Cut raw text, never escaped text, measuring the final formatted wire content. */
 const fitText = (raw: string, max: number, format: (value: string) => string): string => {
   const bounded = truncate(raw, max);
   const full = format(bounded);
