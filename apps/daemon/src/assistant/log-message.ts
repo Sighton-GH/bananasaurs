@@ -89,10 +89,7 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
     text(truncate(quote(clip(input.answer)), ANSWER_MAX)),
     ...(input.reason === undefined
       ? []
-      : [
-          text('**Reason**'),
-          text(truncate(quote(escapeText(clip(input.reason))), REASON_MAX)),
-        ]),
+      : [text('**Reason**'), text(truncate(quote(escapeText(clip(input.reason))), REASON_MAX))]),
     text(
       subtext(
         truncate(
@@ -101,7 +98,11 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
         ),
       ),
     ),
-    text(subtext(`Sources: ${sourceLines.length === 0 ? 'none' : clipLines(sourceLines, SOURCES_MAX)}`)),
+    text(
+      subtext(
+        `Sources: ${sourceLines.length === 0 ? 'none' : clipLines(sourceLines, SOURCES_MAX)}`,
+      ),
+    ),
     text(subtext(ts(input.at, 'R'))),
   ];
   return toOutgoingMessage(card({ tone: TONE[input.outcome], children }));
