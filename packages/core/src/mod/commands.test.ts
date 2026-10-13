@@ -612,9 +612,9 @@ describe('mod command subscriber', () => {
       expect(event.at).toBe(NOW_MS);
       const noteReply = calls.respond[0]?.message;
       expect(noteReply?.flags).toBe(32768);
-      expect(cardTexts(noteReply?.components ?? [])).toContain(
-        `Added a note to <@${TARGET}>'s case`,
-      );
+      const noteText = cardTexts(noteReply?.components ?? []);
+      expect(noteText).toContain(`Added a note to <@${TARGET}>'s case`);
+      expect(noteText).toContain('seen hanging around a raid server');
     });
 
     it('opens a non-counting case at count 0 when the member has no open case', async () => {
@@ -661,9 +661,9 @@ describe('mod command subscriber', () => {
       expect(event.matchedSnippet).toBe('https://example.com/screenshot.png');
       const evidenceReply = calls.respond[0]?.message;
       expect(evidenceReply?.flags).toBe(32768);
-      expect(cardTexts(evidenceReply?.components ?? [])).toContain(
-        `Added an evidence link to <@${TARGET}>'s case`,
-      );
+      const evidenceText = cardTexts(evidenceReply?.components ?? []);
+      expect(evidenceText).toContain(`Added an evidence link to <@${TARGET}>'s case`);
+      expect(evidenceText).toContain('https://example.com/screenshot.png');
     });
 
     it('also opens a non-counting case at count 0 when the member has no open case', async () => {
