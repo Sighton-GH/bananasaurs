@@ -499,6 +499,18 @@ describe('ModerationActionGateway', () => {
       expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
     });
 
+    it('refuses when the witness guild differs from the gateway guild: unauthorized, no claim, no REST call', async () => {
+      // The grant itself is valid (permissive store, authorized actor) — only
+      // the guild binding is wrong, so `preflight`'s guild-identity half must
+      // refuse before any claim is taken or REST call made.
+      const h = build({ deps: { guildId: parseGuildId('999999999999999999') } });
+      const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'unauthorized' });
+      expect(h.claimed.size).toBe(0);
+      expect(h.discord.callsFor('deleteMessage')).toHaveLength(0);
+    });
+
     it('refuses when the guild is unknown: guild-unknown', async () => {
       const h = build({ deps: { state: { read: () => undefined } } });
       const outcome = await h.gateway.deleteMessage(witnessFor(), deleteIntent());
