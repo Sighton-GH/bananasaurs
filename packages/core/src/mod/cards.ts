@@ -1,12 +1,27 @@
 import { ERROR_COPY } from '../copy/errors.js';
 import { moderationRefusalCode, refFor } from '../copy/refusals.js';
-import type { ModerationOutcome } from '../effects/moderation-gateway.js';
+import type {
+  DeleteMessageOutcome,
+  ModerationOutcome,
+} from '../effects/moderation-gateway.js';
 import { card, type CardMessage } from '../ui/discord/card.js';
 import { errorCard, resultCard } from '../ui/discord/common-cards.js';
-import { actionRow, button, separator, text, type ActionRow } from '../ui/discord/kit.js';
-import { escapeInline, subtext, ts } from '../ui/discord/text.js';
+import {
+  actionRow,
+  button,
+  label,
+  modal,
+  radioGroup,
+  separator,
+  text,
+  textInput,
+  type ActionRow,
+  type Modal,
+} from '../ui/discord/kit.js';
+import { escapeInline, jumpUrl, subtext, ts } from '../ui/discord/text.js';
 import { ICON, type IconName } from '../ui/discord/tokens.js';
 import { buildModCancelCustomId, buildModConfirmCustomId } from './confirmations.js';
+import { buildModCustomId } from './custom-ids.js';
 
 export type DirectModAction = 'timeout' | 'untimeout' | 'kick' | 'unban';
 
@@ -207,3 +222,81 @@ export const purgeQueuedCard = (channelId: string): CardMessage =>
 
 export const cancelledCard = (): CardMessage =>
   resultCard({ icon: 'done', title: 'Cancelled', detail: 'Nothing was done.', tone: 'neutral' });
+
+export const TIMEOUT_CHOICES = [
+  { minutes: 10, label: '10 minutes' },
+  { minutes: 60, label: '1 hour' },
+  { minutes: 1440, label: '1 day' },
+] as const;
+const DEFAULT_TIMEOUT_MINUTES = 60;
+
+const reasonField = () =>
+  label({
+    label: 'Reason',
+    description: 'Shown in case history and in Discord’s audit log.',
+    component: textInput({ customId: 'reason', style: 'paragraph', required: true, minLength: 1, maxLength: 500 }),
+  });
+
+export const warnModal = (userId: string): Modal =>
+  modal({ customId: buildModCustomId({ action: 'warn', userId }), title: 'Warn member', components: [reasonField()] });
+
+export const timeoutModal = (userId: string): Modal =>
+  modal({
+    customId: buildModCustomId({ action: 'timeout', userId }),
+    title: 'Time out member',
+    components: [
+      label({
+        label: 'How long',
+        component: radioGroup({
+          customId: 'minutes',
+          required: true,
+          options: TIMEOUT_CHOICES.map((c) => ({
+            value: String(c.minutes),
+            label: c.label,
+            ...(c.minutes === DEFAULT_TIMEOUT_MINUTES ? { default: true } : {}),
+          })),
+        }),
+      }),
+      reasonField(),
+    ],
+  });
+
+export const deleteConfirmCard = (input: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  authorId: string;
+  intentId: string;
+}): CardMessage =>
+  card({
+    tone: 'danger',
+    children: [
+      text(
+        [
+          `**${ICON.deleted} Delete this message by <@${input.authorId}> in <#${input.channelId}>?**`,
+          `[Open the message](${jumpUrl(input.guildId, input.channelId, input.messageId)})`,
+          NOTHING_YET,
+        ].join('\n'),
+      ),
+      separator(),
+      confirmRow(input.intentId, 'Delete message'),
+    ],
+  });
+
+export const deleteOutcomeCard = (outcome: DeleteMessageOutcome, interactionId: string): CardMessage => {
+  const ref = refFor(interactionId);
+  switch (outcome.status) {
+    case 'applied':
+      return resultCard({ icon: 'deleted', title: 'Deleted the message', tone: 'ok' });
+    case 'dry-run':
+      return resultCard({ icon: 'stop', title: 'Dry run is on, so nothing changed', detail: 'It would have deleted the message.', tone: 'hold' });
+    case 'skipped':
+      return outcome.reason === 'message-gone'
+        ? resultCard({ icon: 'done', title: 'That message was already gone', detail: 'Someone removed it before you confirmed. Nothing else changed.', tone: 'hold' })
+        : resultCard({ icon: 'done', title: 'Already done', detail: 'This exact action already ran, so it did not run twice.', tone: 'hold' });
+    case 'refused':
+      return errorCard(moderationRefusalCode(outcome.reason), { ref });
+    case 'failed':
+      return errorCard('mod.discord-error', { ref });
+  }
+};

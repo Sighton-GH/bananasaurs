@@ -3,9 +3,13 @@ import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
 import {
   banConfirmCard,
   caseRef,
+  deleteConfirmCard,
+  deleteOutcomeCard,
   durationLabel,
   modOutcomeCard,
   purgeConfirmCard,
+  timeoutModal,
+  warnModal,
   warnOutcomeCard,
 } from './cards.js';
 
@@ -98,5 +102,44 @@ describe('confirm cards', () => {
     expect(t).toContain(`Delete 37 messages from <#${C}>?`);
     expect(t).toContain('Newest <t:1760000000:R>');
     expect(t).toContain('30 can go in bulk. 7 are older than 14 days and go one at a time.');
+  });
+});
+
+describe('moderator modals', () => {
+  it('Warn asks for a required reason, up to 500 characters', () => {
+    const m = warnModal(U);
+    expect(m.custom_id).toBe(`bs.mod:warn:${U}`);
+    expect(m.title).toBe('Warn member');
+    const json = JSON.stringify(m.components);
+    expect(json).toContain('"custom_id":"reason"');
+    expect(json).toContain('"required":true');
+    expect(json).toContain('"max_length":500');
+  });
+  it('Timeout offers 10 minutes, 1 hour and 1 day, with 1 hour chosen', () => {
+    const m = timeoutModal(U);
+    expect(m.custom_id).toBe(`bs.mod:timeout:${U}`);
+    const radio = JSON.stringify(m.components);
+    expect(radio).toContain('"value":"10"');
+    expect(radio).toContain('"value":"60","label":"1 hour","default":true');
+    expect(radio).toContain('"value":"1440"');
+  });
+});
+
+describe('delete cards', () => {
+  it('the confirm card names the author and channel and links the message', () => {
+    const c = deleteConfirmCard({ guildId: '9', channelId: C, messageId: '2', authorId: U, intentId: 'abc' });
+    expect(cardTexts(c.components)).toContain(`Delete this message by <@${U}> in <#${C}>?`);
+    expect(cardTexts(c.components)).toContain(`https://discord.com/channels/9/${C}/2`);
+    expect(cardCustomIds(c.components)).toEqual(['modconfirm:abc', 'modcancel:abc']);
+  });
+  it.each([
+    [{ status: 'applied' } as const, 'Deleted the message'],
+    [{ status: 'skipped', reason: 'message-gone' } as const, 'That message was already gone'],
+    [{ status: 'skipped', reason: 'already-applied' } as const, 'Already done'],
+    [{ status: 'dry-run' } as const, 'Dry run is on, so nothing changed'],
+    [{ status: 'refused', reason: 'killswitch' } as const, 'Moderation is paused'],
+    [{ status: 'failed', code: 'DiscordApiError' } as const, "Discord didn't accept that"],
+  ])('%o → %s', (outcome, words) => {
+    expect(cardTexts(deleteOutcomeCard(outcome, I).components)).toContain(words);
   });
 });
