@@ -170,6 +170,51 @@ describe('select menus', () => {
       ?.components as StringSelect[];
     expect(selects[0]?.max_values).toBe(2);
   });
+
+  it('carries custom, unicode (single and ZWJ) and absent emoji on the wire', () => {
+    const selects = (
+      buildComponents(
+        panelWith({
+          component: 'select',
+          options: [
+            {
+              optionId: 'custom',
+              roleId: ROLE(1),
+              emojiKey: 'c:123456789012345678',
+              label: 'Custom',
+              position: 0,
+            },
+            {
+              optionId: 'single',
+              roleId: ROLE(2),
+              emojiKey: 'u:1f9e0',
+              label: 'Single',
+              position: 1,
+            },
+            {
+              optionId: 'zwj',
+              roleId: ROLE(3),
+              emojiKey: 'u:1f469-200d-1f4bb',
+              label: 'Zwj',
+              position: 2,
+            },
+            {
+              optionId: 'plain',
+              roleId: ROLE(4),
+              emojiKey: undefined,
+              label: 'Plain',
+              position: 3,
+            },
+          ],
+        }),
+      ) as ActionRow[]
+    )[0]?.components as StringSelect[];
+    const options = selects[0]?.options ?? [];
+    expect(options[0]?.emoji).toEqual({ id: '123456789012345678' });
+    expect(options[1]?.emoji).toEqual({ name: '🧠' });
+    expect(options[2]?.emoji).toEqual({ name: '👩‍💻' });
+    expect(options[3]).not.toHaveProperty('emoji');
+  });
 });
 
 const threeOptions = (): PanelConfig =>
