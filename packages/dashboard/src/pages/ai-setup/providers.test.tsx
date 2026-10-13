@@ -1371,12 +1371,12 @@ describe('ProvidersPage terms and web search', () => {
     await openTab('Web search');
     const card = await webCard();
     expect(within(card).getByText('Only the server owner can change web search.')).toBeTruthy();
-    expect((within(card).getByRole('radio', { name: 'Tavily' }) as HTMLInputElement).checked).toBe(
+    expect(within(card).getByRole<HTMLInputElement>('radio', { name: 'Tavily' }).checked).toBe(
       true,
     );
-    expect(Array.from(card.querySelectorAll('fieldset')).some((fieldset) => fieldset.disabled)).toBe(
-      true,
-    );
+    expect(
+      Array.from(card.querySelectorAll('fieldset')).some((fieldset) => fieldset.disabled),
+    ).toBe(true);
     expect(
       mock.mock.calls.some((c) => (c[0] as string).includes('/api/assistant/search-keys')),
     ).toBe(false);

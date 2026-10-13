@@ -108,7 +108,11 @@ export function AssistantKeysPaste({ onSaved }: { readonly onSaved?: () => void 
               {message}
             </span>
           )}
-          {error !== undefined && <InlineAlert tone="danger" title="Keys were not saved.">{error}</InlineAlert>}
+          {error !== undefined && (
+            <InlineAlert tone="danger" title="Keys were not saved.">
+              {error}
+            </InlineAlert>
+          )}
         </div>
       </div>
     </Card>

@@ -54,7 +54,11 @@ export function AssistantModelCheck({
           compares the expected versus first action. Nothing is posted.
         </span>
       </div>
-      {failure !== undefined && <InlineAlert tone="danger" title="The check could not run.">{failure}</InlineAlert>}
+      {failure !== undefined && (
+        <InlineAlert tone="danger" title="The check could not run.">
+          {failure}
+        </InlineAlert>
+      )}
       {outcome?.ok === false && (
         <InlineAlert tone="danger" title="The check was refused.">
           {REFUSAL[outcome.error ?? ''] ?? outcome.error ?? 'The check did not run.'}
@@ -69,7 +73,11 @@ export function AssistantModelCheck({
             { key: 'id', header: 'Test', cell: (r) => r.id },
             { key: 'expected', header: 'Wanted', cell: (r) => r.expectedFirstAction },
             { key: 'first', header: 'First action', cell: (r) => r.firstAction },
-            { key: 'result', header: 'Result', cell: (r) => (r.matches ? 'Match' : (r.error ?? 'Different')) },
+            {
+              key: 'result',
+              header: 'Result',
+              cell: (r) => (r.matches ? 'Match' : (r.error ?? 'Different')),
+            },
           ]}
         />
       )}

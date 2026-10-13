@@ -89,7 +89,7 @@ export function ModelOrderSection({
       ...(entry.tier === undefined ? {} : { tier: entry.tier }),
     })),
   );
-  const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[]>([]);
+  const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [saveError, setSaveError] = useState<unknown>(undefined);
@@ -266,7 +266,7 @@ export function ModelOrderSection({
                       aria-label={`Key for row ${number}`}
                     />
                   </label>
-                  {key?.provider === 'gemini' ? (
+                  {key?.provider === 'gemini' && geminiModels !== undefined ? (
                     <label className="grid min-w-[min(16rem,100%)] max-w-full flex-1 basis-64 gap-0.5 text-xs text-ink-muted">
                       Model for row {number}
                       <Select

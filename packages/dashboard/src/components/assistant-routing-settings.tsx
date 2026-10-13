@@ -360,7 +360,11 @@ export function AssistantRoutingSettings() {
             )}
           </div>
         </div>
-        {error !== undefined && <InlineAlert tone="danger" title="The setting could not be saved.">{error}</InlineAlert>}
+        {error !== undefined && (
+          <InlineAlert tone="danger" title="The setting could not be saved.">
+            {error}
+          </InlineAlert>
+        )}
       </div>
     </Card>
   );

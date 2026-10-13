@@ -277,7 +277,11 @@ export function KeysSection({
         <p className="text-xs text-ink-muted">
           Bananasaurs has a $0 spending limit, so only free models can be used.
         </p>
-        {addError !== undefined && <InlineAlert tone="danger" title="The key could not be added.">{addError}</InlineAlert>}
+        {addError !== undefined && (
+          <InlineAlert tone="danger" title="The key could not be added.">
+            {addError}
+          </InlineAlert>
+        )}
         <div>
           <Button variant="primary" type="submit" busy={adding}>
             Add key
