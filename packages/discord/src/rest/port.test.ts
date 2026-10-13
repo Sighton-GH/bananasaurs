@@ -2065,7 +2065,7 @@ describe('T15 thumbnail selection', () => {
     [
       'https://i.ytimg.com/thumb.png',
       'https://elsewhere.test/proxy.png',
-      'https://i.ytimg.com/thumb.png',
+      undefined,
     ],
   ])('chooses only a usable CDN proxy (%s, %s)', async (url, proxy_url, expected) => {
     const { port } = harness([
@@ -2083,5 +2083,55 @@ describe('T15 thumbnail selection', () => {
     expect(
       (await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl,
     ).toBe(expected);
+  });
+
+  it('omits the thumbnail when neither url nor proxy_url is allowlisted', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: '',
+          embeds: [
+            {
+              thumbnail: {
+                url: 'https://example.com/thumb.png',
+                proxy_url: 'https://example.com/proxy.png',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(
+      (await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl,
+    ).toBeUndefined();
+  });
+
+  it('keeps a media.discordapp.net proxy_url over a third-party url', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'sam' },
+          content: '',
+          embeds: [
+            {
+              thumbnail: {
+                url: 'https://example.com/thumb.png',
+                proxy_url: 'https://media.discordapp.net/proxy.png',
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(
+      (await port.fetchMessageContent(GUILD, CHANNEL, MESSAGE))?.embeds?.[0]?.thumbnailUrl,
+    ).toBe('https://media.discordapp.net/proxy.png');
   });
 });

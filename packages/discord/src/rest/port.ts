@@ -126,7 +126,7 @@ const toFetchedAttachments = (message: APIMessageWithMember): FetchedAttachment[
   }));
 
 /** Selection only; the byte fetcher still validates, pins DNS and checks redirects. */
-const usableThumbnailProxy = (raw: string | undefined): boolean => {
+const usableThumbnailUrl = (raw: string | undefined): boolean => {
   if (raw === undefined) return false;
   try {
     const url = validateResourceUrl(raw);
@@ -141,9 +141,14 @@ const usableThumbnailProxy = (raw: string | undefined): boolean => {
 
 const toFetchedEmbeds = (message: APIMessageWithMember): FetchedEmbed[] =>
   (message.embeds ?? []).map((e) => {
-    const thumbnailUrl = usableThumbnailProxy(e.thumbnail?.proxy_url)
+    // Proxy first, then the raw url — but only when the chosen URL is on an
+    // allowlisted CDN host. A third-party thumbnail is omitted entirely rather
+    // than becoming a candidate that takes an image slot and emits a refusal.
+    const thumbnailUrl = usableThumbnailUrl(e.thumbnail?.proxy_url)
       ? e.thumbnail?.proxy_url
-      : (e.thumbnail?.url ?? e.thumbnail?.proxy_url);
+      : usableThumbnailUrl(e.thumbnail?.url)
+        ? e.thumbnail?.url
+        : undefined;
     return {
       ...(e.title === undefined ? {} : { title: e.title }),
       ...(e.description === undefined ? {} : { description: e.description }),
