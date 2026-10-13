@@ -150,3 +150,18 @@ it('toOutgoingMessage loads each distinct art key in card order', () => {
     files.bannerPanel,
   ]);
 });
+
+describe('pingEveryone', () => {
+  it('allows @everyone/@here only when asked', () => {
+    expect(card({ tone: 'neutral', children: [text('x')] }).allowedMentions.parse).toEqual([]);
+    expect(
+      card({ tone: 'neutral', children: [text('x')], pingEveryone: true }).allowedMentions.parse,
+    ).toEqual(['everyone']);
+  });
+});
+
+it('toOutgoingMessage keeps an everyone ping the card asked for', () => {
+  const out = toOutgoingMessage(card({ tone: 'neutral', children: [text('x')], pingEveryone: true }));
+  expect(out.allowedMentions?.parse).toEqual(['everyone']);
+  expect(toOutgoingMessage(card({ tone: 'neutral', children: [text('x')] })).allowedMentions?.parse).toEqual([]);
+});
