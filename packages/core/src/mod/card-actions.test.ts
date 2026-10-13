@@ -446,6 +446,79 @@ describe('log-card modal submits', () => {
     expect(lastReplyTexts(harness)).toContain('Add a reason');
   });
 
+  it('a blank-reason Warn submit from a non-moderator is refused and recorded, and warns nobody', async () => {
+    const harness = buildHarness({ authorized: false });
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(submitEvent({ fields: { reason: '   ' } }));
+
+    expect(lastReplyTexts(harness)).toContain("You can't take moderation actions");
+    expect(harness.calls.warnRecordCaseEvent).toHaveLength(0);
+    expect(harness.calls.applyAction).toHaveLength(0);
+    expect(harness.calls.commandRecordCaseEvent).toHaveLength(1);
+    const event = harness.calls.commandRecordCaseEvent[0]!;
+    expect(event.memberId).toBe(TARGET);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.matchedCategory).toBe('warn');
+  });
+
+  it('a blank-reason Timeout submit from a non-moderator is refused and recorded, and calls no gateway', async () => {
+    const harness = buildHarness({ authorized: false });
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(
+      submitEvent({
+        customId: buildModCustomId({ action: 'timeout', userId: TARGET }),
+        fields: { minutes: '10', reason: '   ' },
+      }),
+    );
+
+    expect(lastReplyTexts(harness)).toContain("You can't take moderation actions");
+    expect(harness.calls.applyAction).toHaveLength(0);
+    expect(harness.calls.commandRecordCaseEvent).toHaveLength(1);
+    const event = harness.calls.commandRecordCaseEvent[0]!;
+    expect(event.memberId).toBe(TARGET);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.matchedCategory).toBe('timeout');
+  });
+
+  it('a 501-character reason from an authorised moderator gets the too-long card and acts on nothing', async () => {
+    const harness = buildHarness();
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(submitEvent({ fields: { reason: 'r'.repeat(501) } }));
+
+    expect(lastReplyTexts(harness)).toContain('Keep the reason shorter');
+    expect(harness.calls.applyAction).toHaveLength(0);
+    expect(harness.calls.warnRecordCaseEvent).toHaveLength(0);
+    expect(harness.calls.commandRecordCaseEvent).toHaveLength(0);
+  });
+
+  it('a 500-character reason is accepted and warns', async () => {
+    const harness = buildHarness();
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(submitEvent({ fields: { reason: 'r'.repeat(500) } }));
+
+    expect(harness.calls.warnRecordCaseEvent).toHaveLength(1);
+    expect(harness.calls.warnRecordCaseEvent[0]?.actionTaken).toBe('warned');
+    expect(lastReplyTexts(harness)).toContain(`Warned <@${TARGET}>`);
+  });
+
+  it('an over-long Warn submit from a non-moderator is refused and recorded, not validated', async () => {
+    const harness = buildHarness({ authorized: false });
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(submitEvent({ fields: { reason: 'r'.repeat(501) } }));
+
+    expect(lastReplyTexts(harness)).toContain("You can't take moderation actions");
+    expect(harness.calls.warnRecordCaseEvent).toHaveLength(0);
+    expect(harness.calls.commandRecordCaseEvent).toHaveLength(1);
+    expect(harness.calls.commandRecordCaseEvent[0]?.actionTaken).toBe('escalation_refused');
+  });
+
   it('a gateway failure on submit answers honestly instead of hanging the interaction', async () => {
     const harness = buildHarness({ applyActionError: new Error('boom') });
     const subscriber = createModCardActionSubscriber(harness.deps);
