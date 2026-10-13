@@ -430,3 +430,17 @@ Check, and note anything wrong:
 - [ ] Owner only: create a real task assigned to yourself in the test channel and check that your mention in its task card renders as your name, not a raw ID. This real-task check may ping you; do not add real IDs to the gallery samples.
 - [ ] Post a real task to yourself and check the push notification's preview text.
 - [ ] Press **I'm on it** on a sample card: the private reply says the task is closed.
+
+### P2 cards (ADR 0141)
+
+    npm run build && npm run smoke:cards -- --channel <test channel id> --p2
+
+- [ ] Log cards are compact: one eyebrow, one line, at most one quote. Buttons only on the message cards.
+- [ ] The case-history card's Older/Newer buttons answer privately (sample data is not real).
+- [ ] Live, in the test guild with a log route on message_create: press **Delete message** on a real
+      log card, confirm, and check the message is gone and `/mod history` shows "Message deleted".
+- [ ] Live: press **Timeout**, choose 10 minutes, submit; the member is timed out and the reply says so.
+- [ ] Live, as a member without the moderation permission: press **Warn**, submit; the reply says you
+      can't, and nothing happened to the target.
+- [ ] Republish a role panel posted before this release: it becomes a card with the banner, and its
+      buttons still work.

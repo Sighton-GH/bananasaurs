@@ -2,6 +2,12 @@
 
 **Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-10-12 (attachments, ADR 0149; assistant streaming, ADR 0148; daily digest, ADR 0150; provider key pools and routing, ADRs 0143–0144; assistant new abilities, ADRs 0145–0147; assistant capability truth, ADRs 0136–0137).
 
+**Log, moderation and panel cards (ADR 0141), 2026-10-13.** Log routes, automod matches, /mod replies,
+confirmations, case history, role panels, assistant reminders, escalations and the AI log are all
+Components V2 cards. Log cards for messages and automod carry Delete / Warn / Timeout buttons that run
+the /mod code path (no MCP equivalent). One error catalogue; refusals never show raw codes. No migration.
+Owner check: npm run smoke:cards -- --p2.
+
 ---
 
 **Attachments (Slice 4 of `docs/superpowers/specs/2026-10-09-assistant-harness-capability-design.md`) - built on `instinct/s4-t14`, not yet merged (ADR 0149, no migration).**
