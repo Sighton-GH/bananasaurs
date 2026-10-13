@@ -1278,16 +1278,19 @@ describe('onMatchRecorded (P2 Task 4)', () => {
     });
     const order: string[] = [];
     const seen: Parameters<NonNullable<AutomodSubscriberDeps['onMatchRecorded']>>[0][] = [];
-    const origRecord = deps.recordCaseEvent;
-    deps.recordCaseEvent = (input) => {
-      order.push('recordCaseEvent');
-      origRecord(input);
+    const hooked: AutomodSubscriberDeps = {
+      ...deps,
+      recordCaseEvent: (input) => {
+        order.push('recordCaseEvent');
+        deps.recordCaseEvent(input);
+      },
+      onMatchRecorded: (info) => {
+        order.push('onMatchRecorded');
+        seen.push(info);
+        return Promise.resolve();
+      },
     };
-    deps.onMatchRecorded = async (info) => {
-      order.push('onMatchRecorded');
-      seen.push(info);
-    };
-    await createAutomodSubscriber(deps).handle(messageCreate());
+    await createAutomodSubscriber(hooked).handle(messageCreate());
 
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({
@@ -1307,10 +1310,14 @@ describe('onMatchRecorded (P2 Task 4)', () => {
   it('on an On-mode match whose delete succeeds is called with deleted', async () => {
     const { deps } = buildHarness({ rules: [rule({ ruleId: 'rule-on-hook' })] });
     const seen: Parameters<NonNullable<AutomodSubscriberDeps['onMatchRecorded']>>[0][] = [];
-    deps.onMatchRecorded = async (info) => {
-      seen.push(info);
+    const hooked: AutomodSubscriberDeps = {
+      ...deps,
+      onMatchRecorded: (info) => {
+        seen.push(info);
+        return Promise.resolve();
+      },
     };
-    await createAutomodSubscriber(deps).handle(messageCreate());
+    await createAutomodSubscriber(hooked).handle(messageCreate());
 
     expect(seen).toHaveLength(1);
     expect(['deleted', 'deleted_and_escalated']).toContain(seen[0]?.actionTaken);
@@ -1324,10 +1331,11 @@ describe('onMatchRecorded (P2 Task 4)', () => {
       safetyState: WATCH,
       logger: capturing.logger,
     });
-    deps.onMatchRecorded = async () => {
-      throw new Error('log poster down');
+    const hooked: AutomodSubscriberDeps = {
+      ...deps,
+      onMatchRecorded: () => Promise.reject(new Error('log poster down')),
     };
-    await expect(createAutomodSubscriber(deps).handle(messageCreate())).resolves.toBeUndefined();
+    await expect(createAutomodSubscriber(hooked).handle(messageCreate())).resolves.toBeUndefined();
 
     expect(calls.recordCaseEvent).toHaveLength(1);
     const withComponent = capturing.lines
@@ -1339,12 +1347,14 @@ describe('onMatchRecorded (P2 Task 4)', () => {
   it('a message that matches no rule never calls it', async () => {
     const { deps } = buildHarness({ rules: [rule({ ruleId: 'rule-no-call' })] });
     let called = 0;
-    deps.onMatchRecorded = async () => {
-      called += 1;
+    const hooked: AutomodSubscriberDeps = {
+      ...deps,
+      onMatchRecorded: () => {
+        called += 1;
+        return Promise.resolve();
+      },
     };
-    await createAutomodSubscriber(deps).handle(
-      messageCreate({ content: 'nothing to see here' }),
-    );
+    await createAutomodSubscriber(hooked).handle(messageCreate({ content: 'nothing to see here' }));
 
     expect(called).toBe(0);
   });

@@ -380,7 +380,12 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
               });
             } catch (err) {
               deps.logger.error(
-                safeLogFields({ component: 'automod', guildId: event.guildId, ruleId: rule.ruleId, err }),
+                safeLogFields({
+                  component: 'automod',
+                  guildId: event.guildId,
+                  ruleId: rule.ruleId,
+                  err,
+                }),
                 'failed to post an automod match to the log; the match itself is recorded',
               );
             }
@@ -413,7 +418,10 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
           // Durably recorded, not merely logged — the same requirement ADR 0035
           // imposes on a refused escalation. A moderator reading the case sees
           // "this would have been deleted but was not, and why".
-          await record(deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId, blocked);
+          await record(
+            deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
+            blocked,
+          );
           deps.logger.warn(
             safeLogFields({
               component: 'automod',
@@ -522,7 +530,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // value per `ModerationOutcome` variant — the previous mapping wrote
         // `'deleted_and_escalated'` for a dry-run, a skip and a failure too,
         // recording a punishment that had not happened.
-        record(
+        await record(
           caseId,
           ESCALATION_ACTION_TAKEN[outcome.status],
           tier.action,

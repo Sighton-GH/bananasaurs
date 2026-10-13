@@ -317,10 +317,7 @@ export function formatWarn(
  * a refused delete, or a native Discord AutoMod observation — so the card
  * keeps offering Delete.
  */
-export function formatAutomodMatch(
-  info: AutomodMatchInfo,
-  includeContent: boolean,
-): LogCardView {
+export function formatAutomodMatch(info: AutomodMatchInfo, includeContent: boolean): LogCardView {
   const detail = automodMatchDetail(info.actionTaken);
   return {
     kind: 'automod_match',

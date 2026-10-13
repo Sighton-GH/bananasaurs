@@ -427,6 +427,8 @@ describe('formatAutomodMatch', () => {
     ruleKind: 'keyword_filter',
     memberId: AUTHOR,
     channelId: CHANNEL,
+    parentChannelId: undefined as string | undefined,
+    categoryId: undefined as string | undefined,
     messageId: MESSAGE,
     snippet: 'badword',
     at: AT,
@@ -435,9 +437,7 @@ describe('formatAutomodMatch', () => {
   it('a watch match names the rule, the member and the channel, spoilered', () => {
     const view = formatAutomodMatch({ ...base, actionTaken: 'would_delete' }, true);
     expect(view.kind).toBe('automod_match');
-    expect(view.headline).toBe(
-      `<@${AUTHOR}> matched a **keyword\\_filter** rule in <#${CHANNEL}>`,
-    );
+    expect(view.headline).toBe(`<@${AUTHOR}> matched a **keyword\\_filter** rule in <#${CHANNEL}>`);
     expect(view.details).toEqual(['Watch only — nothing was done.']);
     expect(view.quote).toEqual({ label: 'Matched', text: 'badword', spoiler: true });
     expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: true });
@@ -455,7 +455,7 @@ describe('formatAutomodMatch', () => {
     ['delete_blocked_killswitch', 'Not deleted: the kill switch is on.', true],
     ['delete_blocked_breaker', 'Not deleted: the safety breaker is open.', true],
     ['delete_blocked_dry_run', 'Not deleted: dry run is on.', true],
-    ["delete_failed", "Not deleted: Discord didn't accept the delete.", true],
+    ['delete_failed', "Not deleted: Discord didn't accept the delete.", true],
   ] as const)('%s → %s', (actionTaken, words, exists) => {
     const view = formatAutomodMatch({ ...base, actionTaken }, true);
     expect(view.details).toEqual([words]);
@@ -470,6 +470,8 @@ describe('formatAutomodMatch', () => {
   );
 
   it('omits the quote when the route has content off', () => {
-    expect(formatAutomodMatch({ ...base, actionTaken: 'would_delete' }, false).quote).toBeUndefined();
+    expect(
+      formatAutomodMatch({ ...base, actionTaken: 'would_delete' }, false).quote,
+    ).toBeUndefined();
   });
 });

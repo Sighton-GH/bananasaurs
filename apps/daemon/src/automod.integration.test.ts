@@ -112,18 +112,25 @@ const buildAutomodPorts = (): AutomodSubscriberDeps => {
   const automodGateway = automodGatewayFor(scope, discord, logger, () => discord.now());
   const automodAuth = automodAuthorization(scope);
   const logPoster = createLogPoster(loggingPortsForTest());
-  return automodPortsFor(scope, discord, automodGateway, automodAuth, logger, () => discord.now(), (info) =>
-    logPoster.post({
-      eventKind: 'automod_match',
-      fingerprint: `automod:${info.messageId}:${info.ruleId}`,
-      source: {
-        channelId: parseSnowflakeId(info.channelId),
-        parentChannelId:
-          info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
-        categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
-      },
-      view: (includeContent) => formatAutomodMatch(info, includeContent),
-    }),
+  return automodPortsFor(
+    scope,
+    discord,
+    automodGateway,
+    automodAuth,
+    logger,
+    () => discord.now(),
+    (info) =>
+      logPoster.post({
+        eventKind: 'automod_match',
+        fingerprint: `automod:${info.messageId}:${info.ruleId}`,
+        source: {
+          channelId: parseSnowflakeId(info.channelId),
+          parentChannelId:
+            info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
+          categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
+        },
+        view: (includeContent) => formatAutomodMatch(info, includeContent),
+      }),
   );
 };
 

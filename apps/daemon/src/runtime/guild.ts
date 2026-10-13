@@ -470,18 +470,25 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const logPoster = createLogPoster(loggingPorts);
   const automodGateway = automodGatewayFor(scope, discord, logger, now);
   const automodAuth = automodAuthorization(scope);
-  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now, (info) =>
-    logPoster.post({
-      eventKind: 'automod_match',
-      fingerprint: `automod:${info.messageId}:${info.ruleId}`,
-      source: {
-        channelId: parseSnowflakeId(info.channelId),
-        parentChannelId:
-          info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
-        categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
-      },
-      view: (includeContent) => formatAutomodMatch(info, includeContent),
-    }),
+  const automodPorts = automodPortsFor(
+    scope,
+    discord,
+    automodGateway,
+    automodAuth,
+    logger,
+    now,
+    (info) =>
+      logPoster.post({
+        eventKind: 'automod_match',
+        fingerprint: `automod:${info.messageId}:${info.ruleId}`,
+        source: {
+          channelId: parseSnowflakeId(info.channelId),
+          parentChannelId:
+            info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
+          categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
+        },
+        view: (includeContent) => formatAutomodMatch(info, includeContent),
+      }),
   );
 
   // ADR 0038, Task 5: native Discord AutoMod observability. Deliberately
