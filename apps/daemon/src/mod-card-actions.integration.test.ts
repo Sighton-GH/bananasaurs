@@ -493,5 +493,40 @@ describe('moderator buttons on log cards, end to end', () => {
     expect(discord.memberModerationState(TARGET)).toEqual({
       until: discord.now() + 600_000,
     });
+
+    // Exactly one timeout case event, by this moderator, with this reason.
+    const timeouts = caseEventsFor(TARGET).filter(
+      (e) => e.matchedCategory === 'timeout' && e.actionTaken === 'manual_applied',
+    );
+    expect(timeouts).toHaveLength(1);
+    expect(timeouts[0]?.actorId).toBe(MODERATOR);
+    expect(timeouts[0]?.matchedSnippet).toBe('raid');
+
+    // The gateway's dedupe claim for this submit exists.
+    expect(
+      pipelineRepo.recordFirstSight(scope, {
+        eventKind: 'mod-command-moderation-action',
+        fingerprint: `mod:${GUILD}:timeout:${submitId}`,
+        atMs: discord.now(),
+      }),
+    ).toBe(false);
+
+    // Exactly one timeout REST call.
+    expect(discord.restCalls('timeoutMember')).toHaveLength(1);
+
+    // Redelivering the same modal-submit event changes nothing.
+    await discord.emitModalSubmit({
+      channelId: CHANNEL,
+      userId: MODERATOR,
+      customId: `bs.mod:timeout:${TARGET}`,
+      fields: { minutes: '10', reason: 'raid' },
+      interactionId: submitId,
+    });
+    expect(discord.restCalls('timeoutMember')).toHaveLength(1);
+    expect(
+      caseEventsFor(TARGET).filter(
+        (e) => e.matchedCategory === 'timeout' && e.actionTaken === 'manual_applied',
+      ),
+    ).toHaveLength(1);
   });
 });
