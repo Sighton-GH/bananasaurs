@@ -14,6 +14,7 @@ import {
   createLoggingSubscriber,
   createLogPoster,
   createMemberUpdateSubscriber,
+  createModCardActionSubscriber,
   createModCommandSubscriber,
   createTaskCommandSubscriber,
   createModConfirmationSubscriber,
@@ -1350,6 +1351,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     }),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
+    createModCardActionSubscriber({
+      guildId,
+      commands: modCommandDeps,
+      confirmations: modConfirmationDeps,
+      responder: modCommandDeps.responder,
+      now,
+      logger,
+    }),
 
     // Assistant skills route only through mentions; one service handles routing and jobs (B2).
     createAssistantCommandSubscriber({

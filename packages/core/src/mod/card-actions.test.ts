@@ -1,4 +1,4 @@
-import { vi, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import type { AuthzStore } from '../authz.js';
 import type { ModerationGatewayPort } from '../automod/subscriber.js';
@@ -140,6 +140,7 @@ function buildHarness(
     deferUpdate: async (ref) => {
       calls.deferUpdate.push({ ref });
     },
+    editOriginal: async () => undefined,
   };
 
   const fetchInvokerRoleIds = async (userId: Snowflake): Promise<readonly Snowflake[]> => {
