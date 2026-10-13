@@ -45,7 +45,7 @@ describe('assistantLogMessage (ADR 0065)', () => {
     expect(texts).toContain('When is the battery order arriving?');
     expect(texts).toContain('**Answer**');
     expect(texts).toContain('It ships Friday.');
-    expect(texts).toContain('Tools: search_archive ✓, web_search ✗');
+    expect(texts).toContain('Tools: search\\_archive ✓, web\\_search ✗');
     expect(texts).toContain('Sources: [Handbook](https://example.com/handbook)');
     expect(texts).toContain('Model: gemini-2.5-flash (backup model) · 1.2 s');
     expect(texts).toContain('<t:1790191800:R>');
@@ -131,6 +131,46 @@ describe('assistantLogMessage (ADR 0065)', () => {
     expect(texts).toContain('@​everyone is \\*\\*late\\*\\*');
     expect(texts).toContain('@​everyone did it');
     expect(texts).toContain('Join **like this**.');
+  });
+
+  it('renders provider metadata inertly: escaped model and tool names, encoded source URLs', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'answered',
+        answer: 'an answer',
+        trace: {
+          latencyMs: 1,
+          model: '**bold** @everyone',
+          tools: [{ name: '`sneaky` tool', ok: true }],
+          sources: [{ title: '**x** report', url: 'https://example.com/a)b c' }],
+          web: true,
+        },
+      }),
+    );
+    expect(texts).toContain('Tools: \\`sneaky\\` tool ✓');
+    expect(texts).toContain('Model: \\*\\*bold\\*\\* @​everyone');
+    expect(texts).not.toContain('**bold**');
+    expect(texts).toContain('[\\*\\*x\\*\\* report](https://example.com/a%29b%20c)');
+  });
+
+  it('shows a source with a non-http(s) URL as plain escaped title, never a link', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'answered',
+        answer: 'an answer',
+        trace: {
+          latencyMs: 1,
+          tools: [],
+          sources: [{ title: '**click** me', url: 'javascript:alert(1)' }],
+          web: true,
+        },
+      }),
+    );
+    expect(texts).toContain('Sources: \\*\\*click\\*\\* me');
+    expect(texts).not.toContain('javascript:');
+    expect(texts).not.toContain('](javascript:');
   });
 
   it('escapes the behaviour name', () => {

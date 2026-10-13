@@ -51,9 +51,34 @@ const quote = (body: string): string =>
     .map((line) => `> ${line}`)
     .join('\n');
 
+/**
+ * A source URL is only linked when it is really a web page: anything else (a
+ * `javascript:` payload, a bare word) renders as plain escaped text, never a
+ * link. Parentheses, whitespace and angle brackets are percent-encoded so the
+ * Markdown link cannot break out of its parens.
+ */
+const safeSourceUrl = (raw: string): string | undefined => {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+  return raw.replace(/[()\s<>]/g, (char) => encodeURIComponent(char));
+};
+
+/** The model name, tool names, source titles and URLs are provider- or
+ * web-controlled, so every one is escaped; the link is only a link when the
+ * URL survives `safeSourceUrl`. */
+const sourceLine = (source: { readonly title: string; readonly url: string }): string => {
+  const title = escapeInline(source.title.replace(/[[\]]/g, ''));
+  const url = safeSourceUrl(source.url);
+  return url === undefined ? title : `[${title}](${url})`;
+};
+
 /** Whole lines only, so a link is never cut in half. */
-const clipLines = (lines: readonly string[], max = 1_000): string => {
-  const kept: string[] = [];
+const clipLines = (lines: readonly string[], max = 1_000): string => {  const kept: string[] = [];
   let length = 0;
   for (const line of lines) {
     const extra = (kept.length === 0 ? 0 : 1) + line.length;
@@ -71,9 +96,7 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
   const trace = input.trace;
   const tools = trace?.tools ?? [];
   const sources = trace?.sources ?? [];
-  const sourceLines = sources.map(
-    (source) => `[${source.title.replace(/[[\]]/g, '')}](${source.url})`,
-  );
+  const sourceLines = sources.map((source) => sourceLine(source));
   const children = [
     text(
       subtext(
@@ -93,7 +116,7 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
     text(
       subtext(
         truncate(
-          `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,
+          `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${escapeInline(tool.name)} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model === undefined ? 'none' : escapeInline(trace.model)}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,
           TOOLS_MAX,
         ),
       ),
