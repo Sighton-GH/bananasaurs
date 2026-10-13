@@ -87,6 +87,35 @@ describe('renderLogCard', () => {
     expect(t).toContain('> ||bad||');
   });
 
+  it('keeps repaired quote truncation within the exact cap', () => {
+    const nonSpoilerText = ['a'.repeat(391), ...Array.from({ length: 368 }, () => 'a'), 'b'.repeat(500)].join(
+      '\n',
+    );
+    const spoilerText = ['a'.repeat(384), ...Array.from({ length: 368 }, () => 'a'), 'b'.repeat(500)].join('\n');
+    const display = (view: LogCardView): string =>
+      displaysOf(renderLogCard({ ...edit, quote: view.quote }, G)).find((d) =>
+        d.startsWith('**Cut**'),
+      ) ?? '';
+    const nonSpoiler = display({
+      kind: 'message_edit',
+      headline: 'x',
+      quote: { label: 'Cut', text: nonSpoilerText },
+      at: AT,
+    });
+    const spoiler = display({
+      kind: 'message_edit',
+      headline: 'x',
+      quote: { label: 'Cut', text: spoilerText, spoiler: true },
+      at: AT,
+    });
+
+    expect(nonSpoiler.length).toBeLessThanOrEqual(1500);
+    expect(nonSpoiler.endsWith('> …')).toBe(true);
+    expect(spoiler.length).toBeLessThanOrEqual(1500);
+    expect(spoiler.endsWith('> …||')).toBe(true);
+    expect((spoiler.match(/\|\|/g) ?? []).length % 2).toBe(0);
+  });
+
   it('caps hostile content and stays in budget', () => {
     const c = renderLogCard(
       { ...edit, quote: { label: 'Now reads', text: '```'.repeat(2000) } },

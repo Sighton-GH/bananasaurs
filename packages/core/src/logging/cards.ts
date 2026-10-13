@@ -194,7 +194,7 @@ const quoteBlock = (q: NonNullable<LogCardView['quote']>): string => {
   // trimEnd can eat the space of a `> ` prefix when the cut lands right
   // after it (leaving a bare `>` line), and a cut spoiler needs its closing
   // `||` re-added.
-  const budget = QUOTE_FINAL_MAX - (q.spoiler === true ? 3 : 1);
+  const budget = QUOTE_FINAL_MAX - 3 - (q.spoiler === true ? 2 : 0);
   let out = truncate(full, budget);
   const lines = out.split('\n');
   const last = lines[lines.length - 1] ?? '';
