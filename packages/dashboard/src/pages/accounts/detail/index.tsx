@@ -169,7 +169,8 @@ export function AccountEditPage() {
               onSelectTab={selectTab}
               draft={store[account.username]}
               onDraftChange={(patch) => update(account.username, caps, patch)}
-              onSaved={() => {                // A successful save reconciles only its own account: drop its
+              onSaved={() => {
+                // A successful save reconciles only its own account: drop its
                 // entry (the server has the change) and reload the baseline
                 // only when the route still shows that account. A late
                 // completion for another account must not disturb the view,
