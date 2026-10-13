@@ -560,7 +560,7 @@ export const historyCard = (page: HistoryPage): CardMessage => {
       ].join('\n'),
     ),
     separator(),
-    ...page.events.map((e) => text(describeCaseEvent(e, e.memberId))),
+    ...page.events.map((e) => text(describeCaseEvent(e, e.caseMemberId ?? e.memberId))),
   ];
   if (page.pageCount > 1) {
     const buttons: Button[] = [];

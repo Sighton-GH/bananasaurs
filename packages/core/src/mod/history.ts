@@ -63,6 +63,7 @@ export interface HistoryCase {
 export interface HistoryCaseEvent {
   readonly eventId: string;
   readonly caseId: string;
+  readonly caseMemberId?: string;
   readonly ruleId: string;
   readonly memberId: string;
   readonly at: number;
@@ -248,7 +249,12 @@ export const buildHistoryPage = (
   eventsByCase: ReadonlyMap<string, readonly HistoryCaseEvent[]>,
   page: number,
 ): HistoryPage => {
-  const all = cases.flatMap((caseRow) => eventsByCase.get(caseRow.caseId) ?? []);
+  const all = cases.flatMap((caseRow) =>
+    (eventsByCase.get(caseRow.caseId) ?? []).map((event) => ({
+      ...event,
+      caseMemberId: caseRow.memberId,
+    })),
+  );
   all.sort((a, b) => b.at - a.at || (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0));
   const pageCount = Math.max(1, Math.ceil(all.length / HISTORY_PAGE_SIZE));
   const clamped = Math.min(Math.max(page, 0), pageCount - 1);
