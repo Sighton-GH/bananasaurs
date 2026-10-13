@@ -319,11 +319,11 @@ export const deleteConfirmCard = (input: {
       confirmRow(input.intentId, 'Delete message'),
     ],
   });
+
 export const deleteOutcomeCard = (
   outcome: DeleteMessageOutcome,
   interactionId: string,
 ): CardMessage => {
-
   const ref = refFor(interactionId);
   switch (outcome.status) {
     case 'applied':
@@ -403,7 +403,8 @@ const DELETE_BLOCKED_WORDS: Readonly<Record<string, string>> = {
 };
 
 const manualWords = (event: HistoryCaseEvent): string => {
-  if (event.escalationAction === 'timeout' || event.matchedCategory === 'timeout') return 'Timed out';
+  if (event.escalationAction === 'timeout' || event.matchedCategory === 'timeout')
+    return 'Timed out';
   if (event.escalationAction === 'kick' || event.matchedCategory === 'kick') return 'Kicked';
   if (event.escalationAction === 'ban' || event.matchedCategory === 'ban') return 'Banned';
   if (event.escalationAction === 'unban' || event.matchedCategory === 'unban') return 'Unbanned';
@@ -465,8 +466,7 @@ const eventWords = (event: HistoryCaseEvent): string => {
 
 export const describeCaseEvent = (event: HistoryCaseEvent, caseMemberId: string): string => {
   const selfAuthored = isSelfAuthored(event, caseMemberId);
-  const by =
-    selfAuthored || event.actorId === undefined ? '' : ` by <@${event.actorId}>`;
+  const by = selfAuthored || event.actorId === undefined ? '' : ` by <@${event.actorId}>`;
   const snippet =
     event.matchedSnippet.trim() === ''
       ? ''
@@ -542,14 +542,22 @@ export const historyCard = (page: HistoryPage): CardMessage => {
     if (page.page > 0)
       buttons.push(
         button({
-          customId: buildModCustomId({ action: 'history', userId: page.targetId, page: page.page - 1 }),
+          customId: buildModCustomId({
+            action: 'history',
+            userId: page.targetId,
+            page: page.page - 1,
+          }),
           label: '← Newer',
         }),
       );
     if (page.page < page.pageCount - 1)
       buttons.push(
         button({
-          customId: buildModCustomId({ action: 'history', userId: page.targetId, page: page.page + 1 }),
+          customId: buildModCustomId({
+            action: 'history',
+            userId: page.targetId,
+            page: page.page + 1,
+          }),
           label: 'Older →',
         }),
       );

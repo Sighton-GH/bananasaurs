@@ -140,9 +140,9 @@ const authorizeInvoker = async (
  * `recordCaseEvent(..., actionTaken: 'escalation_refused', refusalReason:
  * 'unauthorized')` shape). `matchedSnippet` is `''`: unlike a refused
  * timeout/kick/warn, `/mod history` carries no `reason` option to put there
- * — `describeEvent` below already treats an empty snippet as "nothing to
- * show" for any event, so this renders identically to how a reason-less
- * refusal would.
+ * — `describeCaseEvent` (`./cards.js`) already treats an empty snippet as
+ * "nothing to show" for any event, so this renders identically to how a
+ * reason-less refusal would.
  */
 const recordUnauthorizedRefusal = (
   deps: HistoryDeps,
@@ -215,8 +215,7 @@ const kindOf = (event: HistoryCaseEvent): string | undefined => {
         return 'timeouts';
       if (event.escalationAction === 'kick' || event.matchedCategory === 'kick') return 'kicks';
       if (event.escalationAction === 'ban' || event.matchedCategory === 'ban') return 'bans';
-      if (event.escalationAction === 'unban' || event.matchedCategory === 'unban')
-        return 'unbans';
+      if (event.escalationAction === 'unban' || event.matchedCategory === 'unban') return 'unbans';
       return undefined;
     }
     case 'deleted':
@@ -293,7 +292,11 @@ export const showHistoryPage = async (
 
   const authResult = await authorizeInvoker(deps, input.actorId);
   if (!authResult.ok) {
-    recordUnauthorizedRefusal(deps, { targetId: input.targetId, actorId: input.actorId, now: nowMs });
+    recordUnauthorizedRefusal(deps, {
+      targetId: input.targetId,
+      actorId: input.actorId,
+      now: nowMs,
+    });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-commands',
@@ -332,7 +335,11 @@ export const showHistoryPage = async (
   const message =
     cases.length === 0
       ? toOutgoingMessage(
-          resultCard({ icon: 'history', title: `No case history for <@${input.targetId}>`, tone: 'neutral' }),
+          resultCard({
+            icon: 'history',
+            title: `No case history for <@${input.targetId}>`,
+            tone: 'neutral',
+          }),
         )
       : toOutgoingMessage(
           historyCard(

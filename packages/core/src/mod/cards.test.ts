@@ -283,16 +283,27 @@ describe('history cards', () => {
     { actionTaken: 'delete_blocked_killswitch', words: 'Delete blocked: the kill switch is on' },
     { actionTaken: 'delete_blocked_breaker', words: 'Delete blocked: the safety breaker is open' },
     { actionTaken: 'delete_blocked_dry_run', words: 'Delete blocked: dry run is on' },
-    { actionTaken: 'delete_blocked_guild_unknown', words: "Delete blocked: the server isn't set up" },
+    {
+      actionTaken: 'delete_blocked_guild_unknown',
+      words: "Delete blocked: the server isn't set up",
+    },
     { actionTaken: 'delete_failed', words: "Delete didn't go through" },
     {
       actionTaken: 'escalation_refused',
-      over: { escalationAction: 'timeout', refusalReason: 'role-above-bot', matchedCategory: 'timeout' },
+      over: {
+        escalationAction: 'timeout',
+        refusalReason: 'role-above-bot',
+        matchedCategory: 'timeout',
+      },
       words: 'Timeout refused: That member is above the bot',
     },
     {
       actionTaken: 'escalation_refused',
-      over: { escalationAction: 'timeout', refusalReason: 'unauthorized', matchedCategory: 'timeout' },
+      over: {
+        escalationAction: 'timeout',
+        refusalReason: 'unauthorized',
+        matchedCategory: 'timeout',
+      },
       words: 'Timeout refused: Not allowed',
     },
     {
@@ -318,10 +329,26 @@ describe('history cards', () => {
     },
     { actionTaken: 'purged', over: { matchedCategory: 'purge' }, words: 'Ran a purge' },
     { actionTaken: 'purge_refused', over: { matchedCategory: 'purge' }, words: 'Purge refused' },
-    { actionTaken: 'purge_failed', over: { matchedCategory: 'purge' }, words: "Purge didn't go through" },
-    { actionTaken: 'native_blocked', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod blocked a message' },
-    { actionTaken: 'native_alerted', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod sent an alert' },
-    { actionTaken: 'native_timeout', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod timed them out' },
+    {
+      actionTaken: 'purge_failed',
+      over: { matchedCategory: 'purge' },
+      words: "Purge didn't go through",
+    },
+    {
+      actionTaken: 'native_blocked',
+      over: { matchedCategory: 'automod' },
+      words: 'Discord AutoMod blocked a message',
+    },
+    {
+      actionTaken: 'native_alerted',
+      over: { matchedCategory: 'automod' },
+      words: 'Discord AutoMod sent an alert',
+    },
+    {
+      actionTaken: 'native_timeout',
+      over: { matchedCategory: 'automod' },
+      words: 'Discord AutoMod timed them out',
+    },
     {
       actionTaken: 'native_blocked_interaction',
       over: { matchedCategory: 'automod' },
@@ -329,12 +356,15 @@ describe('history cards', () => {
     },
   ];
 
-  it.each(WORD_CASES.map((c) => [c.actionTaken, c.words] as const))('%s reads %s', (actionTaken, words) => {
-    const found = WORD_CASES.find((c) => c.actionTaken === actionTaken && c.words === words)!;
-    const line = describeCaseEvent(historyEvent({ actionTaken, ...found.over }), U);
-    expect(line).toContain(words);
-    if (actionTaken.includes('_')) expect(line).not.toContain(actionTaken);
-  });
+  it.each(WORD_CASES.map((c) => [c.actionTaken, c.words] as const))(
+    '%s reads %s',
+    (actionTaken, words) => {
+      const found = WORD_CASES.find((c) => c.actionTaken === actionTaken && c.words === words)!;
+      const line = describeCaseEvent(historyEvent({ actionTaken, ...found.over }), U);
+      expect(line).toContain(words);
+      if (actionTaken.includes('_')) expect(line).not.toContain(actionTaken);
+    },
+  );
 
   it('an unknown future action is humanised, never shown raw', () => {
     expect(describeCaseEvent(historyEvent({ actionTaken: 'some_future_action' }), U)).toContain(
@@ -407,7 +437,11 @@ describe('history cards', () => {
       status: 'open' as const,
     };
     const events = Array.from({ length: n }, (_, i) =>
-      historyEvent({ eventId: `evt-${i}`, matchedSnippet: `s${i}`, at: 1_760_000_000_000 - i * 1_000 }),
+      historyEvent({
+        eventId: `evt-${i}`,
+        matchedSnippet: `s${i}`,
+        at: 1_760_000_000_000 - i * 1_000,
+      }),
     );
     return buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), page);
   };
@@ -441,7 +475,12 @@ describe('history cards', () => {
       }),
       historyEvent({ eventId: 'e', actionTaken: 'deleted', matchedCategory: 'spam' }),
       historyEvent({ eventId: 'f', actionTaken: 'deleted', matchedCategory: 'spam' }),
-      historyEvent({ eventId: 'g', actionTaken: 'note', matchedCategory: 'note', matchedSnippet: 'n' }),
+      historyEvent({
+        eventId: 'g',
+        actionTaken: 'note',
+        matchedCategory: 'note',
+        matchedSnippet: 'n',
+      }),
     ];
     const t = text(historyCard(buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), 0)));
     expect(t).toContain('3 warnings · 1 timeout · 2 automod deletes · 1 note');
@@ -465,7 +504,11 @@ describe('history cards', () => {
       status: 'open' as const,
     };
     const events = Array.from({ length: 8 }, (_, i) =>
-      historyEvent({ eventId: `evt-${i}`, matchedSnippet: 'z'.repeat(500), at: 1_760_000_000_000 - i }),
+      historyEvent({
+        eventId: `evt-${i}`,
+        matchedSnippet: 'z'.repeat(500),
+        at: 1_760_000_000_000 - i,
+      }),
     );
     const c = historyCard(buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), 0));
     expect(countText(c.components)).toBeLessThanOrEqual(4000);

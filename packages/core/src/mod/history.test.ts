@@ -3,7 +3,7 @@ import { pino } from 'pino';
 import type { AuthzStore } from '../authz.js';
 import type { SlashCommandEvent } from '../discord/events.js';
 import type { InteractionRef, OutgoingMessage, Snowflake } from '../discord/port.js';
-import { parseGuildId } from '../ids.js';
+import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import { countComponents, countText } from '../ui/discord/budget.js';
 import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
@@ -161,10 +161,18 @@ describe('buildHistoryPage', () => {
     const caseA = openCase({ caseId: 'case-A' });
     const caseB = openCase({ caseId: 'case-B' });
     const eventsA = Array.from({ length: 12 }, (_, i) =>
-      event({ eventId: `evt-A-${String(i).padStart(2, '0')}`, caseId: 'case-A', at: NOW_MS - i * 2_000 }),
+      event({
+        eventId: `evt-A-${String(i).padStart(2, '0')}`,
+        caseId: 'case-A',
+        at: NOW_MS - i * 2_000,
+      }),
     );
     const eventsB = Array.from({ length: 8 }, (_, i) =>
-      event({ eventId: `evt-B-${String(i).padStart(2, '0')}`, caseId: 'case-B', at: NOW_MS - 1_000 - i * 2_000 }),
+      event({
+        eventId: `evt-B-${String(i).padStart(2, '0')}`,
+        caseId: 'case-B',
+        at: NOW_MS - 1_000 - i * 2_000,
+      }),
     );
     const byCase = new Map([
       ['case-A', eventsA],
@@ -192,7 +200,10 @@ describe('buildHistoryPage', () => {
   it('clamps the page: -1 shows the newest page, 99 shows the oldest', () => {
     const oneCase = openCase();
     const byCase = new Map([
-      ['case-1', Array.from({ length: 9 }, (_, i) => event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 }))],
+      [
+        'case-1',
+        Array.from({ length: 9 }, (_, i) => event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 })),
+      ],
     ]);
     expect(buildHistoryPage(TARGET, [oneCase], byCase, -1).page).toBe(0);
     const clamped = buildHistoryPage(TARGET, [oneCase], byCase, 99);
@@ -215,23 +226,114 @@ describe('buildHistoryPage', () => {
   it('counts every event by readable kind across all pages', () => {
     const oneCase = openCase();
     const kinds: HistoryCaseEvent[] = [
-      event({ eventId: 'e1', actionTaken: 'warned', escalationAction: undefined, matchedCategory: 'warn' }),
-      event({ eventId: 'e2', actionTaken: 'warned', escalationAction: undefined, matchedCategory: 'warn' }),
-      event({ eventId: 'e3', actionTaken: 'warned', escalationAction: undefined, matchedCategory: 'warn' }),
-      event({ eventId: 'e4', actionTaken: 'manual_applied', escalationAction: 'timeout', matchedCategory: 'timeout' }),
-      event({ eventId: 'e5', actionTaken: 'manual_applied', escalationAction: 'kick', matchedCategory: 'kick' }),
-      event({ eventId: 'e6', actionTaken: 'manual_applied', escalationAction: 'ban', matchedCategory: 'ban' }),
-      event({ eventId: 'e7', actionTaken: 'manual_applied', escalationAction: 'unban', matchedCategory: 'unban' }),
-      event({ eventId: 'e8', actionTaken: 'deleted', escalationAction: undefined, matchedCategory: 'spam' }),
-      event({ eventId: 'e9', actionTaken: 'deleted_and_escalated', escalationAction: 'timeout', matchedCategory: 'spam' }),
-      event({ eventId: 'e10', actionTaken: 'native_blocked', escalationAction: undefined, matchedCategory: 'automod' }),
-      event({ eventId: 'e11', actionTaken: 'note', escalationAction: undefined, matchedCategory: 'note', matchedSnippet: 'a note' }),
-      event({ eventId: 'e12', actionTaken: 'note', escalationAction: undefined, matchedCategory: 'note', matchedSnippet: 'another' }),
-      event({ eventId: 'e13', actionTaken: 'evidence_added', escalationAction: undefined, matchedCategory: 'evidence', matchedSnippet: 'https://example.com/x.png' }),
-      event({ eventId: 'e14', actionTaken: 'escalation_refused', escalationAction: 'timeout', refusalReason: 'unauthorized', matchedCategory: 'timeout' }),
-      event({ eventId: 'e15', actionTaken: 'escalation_refused', escalationAction: undefined, refusalReason: 'unauthorized', matchedCategory: 'history', matchedSnippet: '' }),
-      event({ eventId: 'e16', actionTaken: 'would_delete', escalationAction: undefined, matchedCategory: 'spam' }),
-      event({ eventId: 'e17', actionTaken: 'purged', escalationAction: undefined, matchedCategory: 'purge' }),
+      event({
+        eventId: 'e1',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e2',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e3',
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        matchedCategory: 'warn',
+      }),
+      event({
+        eventId: 'e4',
+        actionTaken: 'manual_applied',
+        escalationAction: 'timeout',
+        matchedCategory: 'timeout',
+      }),
+      event({
+        eventId: 'e5',
+        actionTaken: 'manual_applied',
+        escalationAction: 'kick',
+        matchedCategory: 'kick',
+      }),
+      event({
+        eventId: 'e6',
+        actionTaken: 'manual_applied',
+        escalationAction: 'ban',
+        matchedCategory: 'ban',
+      }),
+      event({
+        eventId: 'e7',
+        actionTaken: 'manual_applied',
+        escalationAction: 'unban',
+        matchedCategory: 'unban',
+      }),
+      event({
+        eventId: 'e8',
+        actionTaken: 'deleted',
+        escalationAction: undefined,
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e9',
+        actionTaken: 'deleted_and_escalated',
+        escalationAction: 'timeout',
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e10',
+        actionTaken: 'native_blocked',
+        escalationAction: undefined,
+        matchedCategory: 'automod',
+      }),
+      event({
+        eventId: 'e11',
+        actionTaken: 'note',
+        escalationAction: undefined,
+        matchedCategory: 'note',
+        matchedSnippet: 'a note',
+      }),
+      event({
+        eventId: 'e12',
+        actionTaken: 'note',
+        escalationAction: undefined,
+        matchedCategory: 'note',
+        matchedSnippet: 'another',
+      }),
+      event({
+        eventId: 'e13',
+        actionTaken: 'evidence_added',
+        escalationAction: undefined,
+        matchedCategory: 'evidence',
+        matchedSnippet: 'https://example.com/x.png',
+      }),
+      event({
+        eventId: 'e14',
+        actionTaken: 'escalation_refused',
+        escalationAction: 'timeout',
+        refusalReason: 'unauthorized',
+        matchedCategory: 'timeout',
+      }),
+      event({
+        eventId: 'e15',
+        actionTaken: 'escalation_refused',
+        escalationAction: undefined,
+        refusalReason: 'unauthorized',
+        matchedCategory: 'history',
+        matchedSnippet: '',
+      }),
+      event({
+        eventId: 'e16',
+        actionTaken: 'would_delete',
+        escalationAction: undefined,
+        matchedCategory: 'spam',
+      }),
+      event({
+        eventId: 'e17',
+        actionTaken: 'purged',
+        escalationAction: undefined,
+        matchedCategory: 'purge',
+      }),
     ];
     const page = buildHistoryPage(TARGET, [oneCase], new Map([['case-1', kinds]]), 0);
     expect(page.countsByKind).toEqual({
@@ -265,7 +367,12 @@ describe('showHistoryPage', () => {
       const { deps, calls } = buildHarness({ authorized: false });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -283,7 +390,12 @@ describe('showHistoryPage', () => {
       const { deps, calls } = buildHarness({ authorized: false });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -304,7 +416,12 @@ describe('showHistoryPage', () => {
       const { deps, calls } = buildHarness({ authorized: false });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 1, interactionId: 'interaction-9' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 1,
+          interactionId: 'interaction-9',
+        },
         REF,
         'edit',
       );
@@ -322,7 +439,12 @@ describe('showHistoryPage', () => {
       const { deps, calls } = buildHarness({ authorized: true, cases: [] });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -344,7 +466,12 @@ describe('showHistoryPage', () => {
       });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -388,7 +515,12 @@ describe('showHistoryPage', () => {
       });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: selfMemberId, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(selfMemberId),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -406,7 +538,12 @@ describe('showHistoryPage', () => {
       const { deps, calls } = buildHarness({ authorized: true, cases: [first, second] });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -427,7 +564,12 @@ describe('showHistoryPage', () => {
       });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 0, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 0,
+          interactionId: 'interaction-1',
+        },
         REF,
         'reply',
       );
@@ -455,7 +597,12 @@ describe('showHistoryPage', () => {
       });
       await showHistoryPage(
         deps,
-        { actorId: MODERATOR, targetId: TARGET, page: 1, interactionId: 'interaction-1' },
+        {
+          actorId: MODERATOR,
+          targetId: parseSnowflakeId(TARGET),
+          page: 1,
+          interactionId: 'interaction-1',
+        },
         REF,
         'edit',
       );
@@ -489,18 +636,19 @@ describe('showHistoryPage', () => {
 
     it('page buttons point at the neighbouring pages, and a single page has none', () => {
       const oneCase = openCase();
-      const many = Array.from({ length: 20 }, (_, i) => event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 }));
+      const many = Array.from({ length: 20 }, (_, i) =>
+        event({ eventId: `evt-${i}`, at: NOW_MS - i * 1_000 }),
+      );
       const byCase = new Map([['case-1', many]]);
-      expect(cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 0)).components)).toEqual([
-        `bs.mod:history:${TARGET}:1`,
-      ]);
-      expect(cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 1)).components)).toEqual([
-        `bs.mod:history:${TARGET}:0`,
-        `bs.mod:history:${TARGET}:2`,
-      ]);
-      expect(cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 2)).components)).toEqual([
-        `bs.mod:history:${TARGET}:1`,
-      ]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 0)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:1`]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 1)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:0`, `bs.mod:history:${TARGET}:2`]);
+      expect(
+        cardCustomIds(historyCard(buildHistoryPage(TARGET, [oneCase], byCase, 2)).components),
+      ).toEqual([`bs.mod:history:${TARGET}:1`]);
       const single = buildHistoryPage(TARGET, [oneCase], new Map([['case-1', [event()]]]), 0);
       expect(cardCustomIds(historyCard(single).components)).toEqual([]);
     });
