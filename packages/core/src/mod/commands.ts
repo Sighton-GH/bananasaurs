@@ -19,12 +19,7 @@ import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { toOutgoingMessage, type CardMessage } from '../ui/discord/card.js';
 import { errorCard } from '../ui/discord/common-cards.js';
-import {
-  modOutcomeCard,
-  noteOutcomeCard,
-  warnOutcomeCard,
-  type DirectModAction,
-} from './cards.js';
+import { modOutcomeCard, noteOutcomeCard, warnOutcomeCard, type DirectModAction } from './cards.js';
 import { handleBanPreview, handlePurgePreview, type ModConfirmationDeps } from './confirmations.js';
 import { handleHistory, type HistoryDeps } from './history.js';
 import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';

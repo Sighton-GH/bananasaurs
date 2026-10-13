@@ -454,9 +454,7 @@ describe('mod command subscriber', () => {
       expect(event.at).toBe(NOW_MS);
       const untimeoutReply = calls.respond[0]?.message;
       expect(untimeoutReply?.flags).toBe(32768);
-      expect(cardTexts(untimeoutReply?.components ?? [])).toContain(
-        `Ended <@${TARGET}>'s timeout`,
-      );
+      expect(cardTexts(untimeoutReply?.components ?? [])).toContain(`Ended <@${TARGET}>'s timeout`);
     });
 
     it('unban calls the gateway once and records manual_applied with escalation_action unban', async () => {
