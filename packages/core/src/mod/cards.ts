@@ -247,6 +247,9 @@ export const TIMEOUT_CHOICES = [
 ] as const;
 const DEFAULT_TIMEOUT_MINUTES = 60;
 
+/** Longest moderation reason Discord's audit log and case history accept. Server-enforced in `card-actions.ts`; the modal only hints. */
+export const MOD_REASON_MAX = 500;
+
 const reasonField = () =>
   label({
     label: 'Reason',
@@ -256,7 +259,7 @@ const reasonField = () =>
       style: 'paragraph',
       required: true,
       minLength: 1,
-      maxLength: 500,
+      maxLength: MOD_REASON_MAX,
     }),
   });
 

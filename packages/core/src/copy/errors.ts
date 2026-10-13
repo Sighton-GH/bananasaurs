@@ -202,6 +202,14 @@ export const ERROR_COPY = {
     tone: 'hold',
     audience: 'moderator',
   },
+  'mod.reason-too-long': {
+    title: 'Keep the reason shorter',
+    detail: 'A reason can be up to 500 characters. It goes in case history and Discord’s audit log.',
+    next: 'Open the form again and shorten it.',
+    retryable: true,
+    tone: 'hold',
+    audience: 'moderator',
+  },
   'confirm.expired': {
     title: 'This confirmation expired',
     detail: 'A confirmation lasts 15 minutes.',
