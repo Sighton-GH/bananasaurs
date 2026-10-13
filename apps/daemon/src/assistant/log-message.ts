@@ -42,7 +42,9 @@ const quote = (body: string): string =>
   body
     .split('\n')
     .map((line) => `> ${line}`)
-    .join('\n');/** Whole lines only, so a link is never cut in half. */
+    .join('\n');
+
+/** Whole lines only, so a link is never cut in half. */
 const clipLines = (lines: readonly string[], max = 1_000): string => {
   const kept: string[] = [];
   let length = 0;
