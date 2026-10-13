@@ -1,5 +1,17 @@
 import { z } from 'zod';
-import type { OutgoingMessage } from '../discord/port.js';
+import { ART, artUrl } from '../ui/discord/art.js';
+import { card, type CardMessage } from '../ui/discord/card.js';
+import {
+  actionRow,
+  button,
+  gallery,
+  selectRow,
+  separator,
+  stringSelect,
+  text,
+  type ActionRow,
+} from '../ui/discord/kit.js';
+import { subtext } from '../ui/discord/text.js';
 import { MAX_PANEL_OPTIONS, orderedOptions, type PanelConfig, type PanelOption } from './model.js';
 
 /**
@@ -73,33 +85,34 @@ export const isSelectCustomId = (parsed: ParsedCustomId): boolean => parsed.opti
 
 // --- rendering ---------------------------------------------------------------
 
-/**
- * Discord's component shapes, as plain data.
- *
- * `core` may not import discord.js (ADR 0014), so these are the wire shapes
- * rather than builder objects. The adapter passes them straight through, which
- * is also what makes a panel's rendering assertable in a test with no client.
- */
-const ACTION_ROW = 1;
-const BUTTON = 2;
-const STRING_SELECT = 3;
-/** Discord's "secondary" style: grey, which suits a role toggle. */
-const BUTTON_STYLE_SECONDARY = 2;
 /** Five buttons to a row, five rows to a message. */
 const BUTTONS_PER_ROW = 5;
 
-const emojiForComponent = (option: PanelOption): Record<string, unknown> | undefined => {
-  if (option.emojiKey === undefined) return undefined;
-  if (option.emojiKey.startsWith('c:')) return { id: option.emojiKey.slice(2) };
+/**
+ * The emoji for one option, as a spreadable fragment: absent, `{ id }` for a
+ * custom emoji, or the characters for a unicode one.
+ */
+const emojiFor = (option: PanelOption): { readonly emoji?: string | { readonly id: string } } => {
+  if (option.emojiKey === undefined) return {};
+  if (option.emojiKey.startsWith('c:')) return { emoji: { id: option.emojiKey.slice(2) } };
   // `u:1f9e0-200d-…` back to the characters Discord expects on the wire.
   const codepoints = option.emojiKey
     .slice(2)
     .split('-')
     .map((hex) => Number.parseInt(hex, 16));
-  return { name: String.fromCodePoint(...codepoints) };
+  return { emoji: String.fromCodePoint(...codepoints) };
 };
 
-export const buildComponents = (panel: PanelConfig): readonly unknown[] => {
+/** A select option's wire emoji: the kit's `SelectOption` takes `{ name }`, not bare characters. */
+const selectEmojiFor = (
+  option: PanelOption,
+): { readonly emoji?: { readonly name: string } | { readonly id: string } } => {
+  const { emoji } = emojiFor(option);
+  if (emoji === undefined) return {};
+  return typeof emoji === 'string' ? { emoji: { name: emoji } } : { emoji };
+};
+
+export const buildComponents = (panel: PanelConfig): readonly ActionRow[] => {
   const options = orderedOptions(panel);
   if (options.length > MAX_PANEL_OPTIONS) {
     throw new Error(`panel ${panel.panelId} has more options than Discord will render`);
@@ -107,47 +120,71 @@ export const buildComponents = (panel: PanelConfig): readonly unknown[] => {
 
   if (panel.component === 'select') {
     return [
-      {
-        type: ACTION_ROW,
-        components: [
-          {
-            type: STRING_SELECT,
-            custom_id: buildSelectCustomId(panel.panelId),
-            // `min_values: 0` is what lets a member clear their choice. Without
-            // it a single-choice panel is a one-way door.
-            min_values: 0,
-            max_values: panel.behaviour === 'single_choice' ? 1 : options.length,
-            options: options.map((option) => ({
-              label: option.label ?? option.optionId,
-              value: option.optionId,
-              ...(emojiForComponent(option) ? { emoji: emojiForComponent(option) } : {}),
-            })),
-          },
-        ],
-      },
+      selectRow(
+        stringSelect({
+          customId: buildSelectCustomId(panel.panelId),
+          // `minValues: 0` is what lets a member clear their choice. Without
+          // it a single-choice panel is a one-way door.
+          minValues: 0,
+          maxValues: panel.behaviour === 'single_choice' ? 1 : options.length,
+          options: options.map((option) => ({
+            label: option.label ?? option.optionId,
+            value: option.optionId,
+            ...selectEmojiFor(option),
+          })),
+        }),
+      ),
     ];
   }
 
-  const rows: unknown[] = [];
+  const rows: ActionRow[] = [];
   for (let i = 0; i < options.length; i += BUTTONS_PER_ROW) {
-    rows.push({
-      type: ACTION_ROW,
-      components: options.slice(i, i + BUTTONS_PER_ROW).map((option) => ({
-        type: BUTTON,
-        style: BUTTON_STYLE_SECONDARY,
-        custom_id: buildCustomId(panel.panelId, option.optionId),
-        label: option.label ?? option.optionId,
-        ...(emojiForComponent(option) ? { emoji: emojiForComponent(option) } : {}),
-      })),
-    });
+    rows.push(
+      actionRow(
+        options.slice(i, i + BUTTONS_PER_ROW).map((option) =>
+          button({
+            customId: buildCustomId(panel.panelId, option.optionId),
+            label: option.label ?? option.optionId,
+            ...emojiFor(option),
+          }),
+        ),
+      ),
+    );
   }
   return rows;
 };
 
-export const renderPanelMessage = (
-  panel: PanelConfig,
-  content: string | undefined,
-): OutgoingMessage => ({
-  content: content ?? `Pick your roles.`,
-  components: buildComponents(panel),
-});
+const PANEL_HINT = (panel: PanelConfig): string => {
+  if (panel.component === 'select')
+    return panel.behaviour === 'add_only'
+      ? 'Choose from the menu.'
+      : 'Choose from the menu. Clear your choice to remove the role.';
+  switch (panel.behaviour) {
+    case 'toggle':
+      return 'Press a role to add it. Press it again to remove it.';
+    case 'add_only':
+      return "Press a role to add it. This panel doesn't remove roles.";
+    case 'remove_only':
+      return 'Press a role to remove it.';
+    case 'single_choice':
+      return 'Pick one. Picking another swaps it.';
+  }
+};
+
+/**
+ * A managed panel as a card (ADR 0141 decision 10). The owner's text is
+ * posted as written: it is their Markdown, and `allowedMentions` stops any
+ * mention in it from pinging.
+ */
+export const renderPanelCard = (panel: PanelConfig): CardMessage =>
+  card({
+    tone: 'accent',
+    art: ['bannerPanel'],
+    children: [
+      gallery([{ media: { url: artUrl('bannerPanel') }, description: ART.bannerPanel.alt }]),
+      text(panel.content ?? '**Pick your roles**'),
+      text(subtext(PANEL_HINT(panel))),
+      separator(),
+      ...buildComponents(panel),
+    ],
+  });

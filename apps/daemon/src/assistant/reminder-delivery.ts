@@ -4,6 +4,7 @@ import {
   parseGuildId,
   ReminderDeliveryError,
   safeLogFields,
+  toOutgoingMessage,
   type AccessDecision,
   type DiscordPort,
   type Logger,
@@ -15,6 +16,7 @@ import {
 import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
 import { filterSendPings, resolveSendTarget } from '../mcp/targets.js';
 import { channelAccessFor } from '../channels/access.js';
+import { renderAssistantReminderCard } from './cards.js';
 import { neutraliseMassMentions } from './reminder-summary.js';
 
 /**
@@ -22,7 +24,7 @@ import { neutraliseMassMentions } from './reminder-summary.js';
  * on the row (`packages/storage`'s `StoredReminder`), while `core`'s pass
  * only knows the base shape — so the adapter reads it as an optional field.
  */
-type DeliverableReminder = Reminder & { readonly origin?: string };
+export type DeliverableReminder = Reminder & { readonly origin?: string };
 
 /**
  * The composition half of reminder delivery (Release 3,
@@ -92,22 +94,19 @@ export const classifyReminderSendError = (error: unknown): ReminderDeliveryError
 };
 
 /**
- * Renders one reminder for its destination channel.
- *
- * The pings line lists exactly the stored, permission-checked targets (ADR
- * 0086 decision 6): `@everyone`, `@here`, `<@&role>` per stored role and
- * `<@user>` per stored member, in that order — omitted when there are no
- * pings. `allowedMentions` lists exactly those stored ids, and the rendered
- * text and context neutralise `@everyone`/`@here`, so text typed into the
- * reminder can never ping. The "Set by" line names
- * the creator without pinging them — their id reaches `users` only when it
- * is already in `mentions.userIds`.
+ * Renders one `style='message'` reminder for its destination channel (ADR
+ * 0145 "scheduled style"): the owner's own words as plain text with only
+ * the ping line. The pings line lists exactly the stored,
+ * permission-checked targets, in `@everyone`, `@here`, role, member order —
+ * omitted when there are no pings. `allowedMentions` lists exactly those
+ * stored ids, and the rendered text neutralises `@everyone`/`@here`, so
+ * text typed into the reminder can never ping.
  *
  * `origin='mcp'` rows never carry `@everyone`/`@here` (Task 1's insert
  * guard); the render path asserts it too, so a row that somehow carries
  * them is refused here rather than posted.
  */
-export const renderReminder = (
+const renderMessageReminder = (
   reminder: DeliverableReminder,
 ): { content: string; allowedMentions: NonNullable<OutgoingMessage['allowedMentions']> } => {
   if (reminder.origin === 'mcp' && (reminder.mentions.everyone || reminder.mentions.here))
@@ -119,43 +118,12 @@ export const renderReminder = (
   for (const userId of reminder.mentions.userIds) pings.push(`<@${userId}>`);
   const pingsLine = pings.join(' ');
   // Only the code-built pings line may carry live ping tokens: neutralise
-  // `@everyone`/`@here` (any case) in the member-written text and context,
-  // and collapse the context to one subtext line so it cannot break out of
-  // `-# `.
+  // `@everyone`/`@here` (any case) in the member-written text.
   const safeText = neutraliseMassMentions(reminder.text);
-  const collapsedContext =
-    reminder.context === undefined ? undefined : reminder.context.replace(/\s+/g, ' ').trim();
-  const safeContext =
-    collapsedContext === undefined || collapsedContext === ''
-      ? undefined
-      : neutraliseMassMentions(collapsedContext);
-  const contextLine = safeContext === undefined ? undefined : `-# ${safeContext}`;
-  if (reminder.style === 'message') {
-    const fixed = pingsLine === '' ? 0 : pingsLine.length + 1;
-    const body = safeText.slice(0, Math.max(0, 2_000 - fixed));
-    return {
-      content: pingsLine === '' ? body : `${pingsLine}\n${body}`,
-      allowedMentions: reminderAllowedMentions(reminder),
-    };
-  }
-  const setByLine = `-# Set by <@${reminder.creatorId}>`;
-  // Everything except the reminder text itself. The 2,000-character cap
-  // truncates the text, never the pings.
-  const fixedLength =
-    (pingsLine === '' ? 0 : pingsLine.length + 1) +
-    '⏰ '.length +
-    1 +
-    (contextLine === undefined ? 0 : contextLine.length + 1) +
-    setByLine.length;
-  const text = safeText.slice(0, Math.max(0, 2_000 - fixedLength));
-  const lines = [
-    ...(pingsLine === '' ? [] : [pingsLine]),
-    `⏰ ${text}`,
-    ...(contextLine === undefined ? [] : [contextLine]),
-    setByLine,
-  ];
+  const fixed = pingsLine === '' ? 0 : pingsLine.length + 1;
+  const body = safeText.slice(0, Math.max(0, 2_000 - fixed));
   return {
-    content: lines.join('\n'),
+    content: pingsLine === '' ? body : `${pingsLine}\n${body}`,
     allowedMentions: reminderAllowedMentions(reminder),
   };
 };
@@ -198,7 +166,8 @@ export interface McpDeliveryRecheck {
  * Sends one reminder to its destination channel.
  *
  * Pings are allowed now, but only the stored, permission-checked targets
- * (ADR 0086 decision 6): `renderReminder` puts exactly the stored ids in
+ * (ADR 0086 decision 6): `renderAssistantReminderCard` (and the
+ * `style='message'` renderer) put exactly the stored ids in
  * `allowedMentions`, so text typed into the reminder can never ping. The
  * text is capped at creation (1,500 characters) and the render is capped
  * at Discord's 2,000 regardless.
@@ -295,11 +264,19 @@ export const createReminderDelivery = (
     }
     if (row.origin === 'assistant') {
       try {
-        const rendered = renderReminder(row);
-        await discord.sendMessage(guildId, reminder.destinationId, {
-          content: rendered.content,
-          allowedMentions: rendered.allowedMentions,
-        });
+        if (row.style === 'message') {
+          const rendered = renderMessageReminder(row);
+          await discord.sendMessage(guildId, reminder.destinationId, {
+            content: rendered.content,
+            allowedMentions: rendered.allowedMentions,
+          });
+        } else {
+          await discord.sendMessage(
+            guildId,
+            reminder.destinationId,
+            toOutgoingMessage(renderAssistantReminderCard(row)),
+          );
+        }
       } catch (error) {
         throw classifyReminderSendError(error);
       }

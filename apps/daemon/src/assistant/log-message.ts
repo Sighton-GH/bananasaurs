@@ -1,4 +1,14 @@
-import type { OutgoingMessage } from '@bananasaurs/core';
+import {
+  card,
+  escapeInline,
+  escapeText,
+  subtext,
+  text,
+  toOutgoingMessage,
+  truncate,
+  ts,
+  type OutgoingMessage,
+} from '@bananasaurs/core';
 import type { InvocationTrace } from './commands.js';
 
 /**
@@ -20,16 +30,29 @@ export interface AssistantLogInput {
   readonly at: number;
 }
 
-const FIELD_MAX = 1_024;
-const COLOURS = { answered: 0x2e7d32, refused: 0xb26a00, failed: 0xc62828 } as const;
+const TONE = { answered: 'ok', refused: 'hold', failed: 'danger' } as const;
 
-const clip = (text: string, max = FIELD_MAX): string => {
+/** Final quoted/escaped length of each Text Display, so the card fits the 4,000-char budget. */
+const QUESTION_MAX = 1_000;
+const ANSWER_MAX = 1_000;
+const REASON_MAX = 600;
+const SOURCES_MAX = 600;
+const TOOLS_MAX = 300;
+
+const clip = (text: string, max = 1_000): string => {
   const value = text.trim() === '' ? '(empty)' : text;
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 };
 
+/** Every line quoted, so a multi-line question or answer stays inside the quote. */
+const quote = (body: string): string =>
+  body
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');
+
 /** Whole lines only, so a link is never cut in half. */
-const clipLines = (lines: readonly string[], max = FIELD_MAX): string => {
+const clipLines = (lines: readonly string[], max = 1_000): string => {
   const kept: string[] = [];
   let length = 0;
   for (const line of lines) {
@@ -48,48 +71,39 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
   const trace = input.trace;
   const tools = trace?.tools ?? [];
   const sources = trace?.sources ?? [];
-  const fields = [
-    {
-      name: 'Asked by',
-      value: `<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`,
-      inline: true,
-    },
-    { name: 'Behaviour', value: clip(input.behaviourName, 256), inline: true },
-    { name: 'Question', value: clip(input.question) },
-    { name: 'Answer', value: clip(input.answer) },
-    {
-      name: 'Tools',
-      value:
-        tools.length === 0
-          ? 'none'
-          : clip(tools.map((t) => `${t.name} ${t.ok ? '✓' : '✗'}`).join(', ')),
-    },
-    {
-      name: 'Sources',
-      value:
-        sources.length === 0
-          ? 'none'
-          : clipLines(sources.map((s) => `[${s.title.replace(/[[\]]/g, '')}](${s.url})`)),
-    },
-    ...(trace?.model === undefined
+  const sourceLines = sources.map(
+    (source) => `[${source.title.replace(/[[\]]/g, '')}](${source.url})`,
+  );
+  const children = [
+    text(
+      subtext(
+        `🤖 ${input.source === 'mention' ? 'MENTION' : `/${input.command}`} · ${input.outcome.toUpperCase()}`,
+      ),
+    ),
+    text(
+      `${`<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`} · Behaviour: ${truncate(escapeInline(input.behaviourName), 100)}`,
+    ),
+    text('**Question**'),
+    text(truncate(quote(escapeText(clip(input.question))), QUESTION_MAX)),
+    text('**Answer**'),
+    text(truncate(quote(clip(input.answer)), ANSWER_MAX)),
+    ...(input.reason === undefined
       ? []
-      : [
-          {
-            name: 'Model',
-            value: `${trace.model}${trace.usedFallback === true ? ' (backup model)' : ''} · ${(trace.latencyMs / 1_000).toFixed(1)} s`,
-          },
-        ]),
-    ...(input.reason === undefined ? [] : [{ name: 'Reason', value: clip(input.reason) }]),
+      : [text('**Reason**'), text(truncate(quote(escapeText(clip(input.reason))), REASON_MAX))]),
+    text(
+      subtext(
+        truncate(
+          `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,
+          TOOLS_MAX,
+        ),
+      ),
+    ),
+    text(
+      subtext(
+        `Sources: ${sourceLines.length === 0 ? 'none' : clipLines(sourceLines, SOURCES_MAX)}`,
+      ),
+    ),
+    text(subtext(ts(input.at, 'R'))),
   ];
-  return {
-    embeds: [
-      {
-        title: `${input.source === 'mention' ? 'Mention' : `/${input.command}`} · ${input.outcome}`,
-        color: COLOURS[input.outcome],
-        fields,
-        timestamp: new Date(input.at).toISOString(),
-      },
-    ],
-    allowedMentions: { parse: [] },
-  };
+  return toOutgoingMessage(card({ tone: TONE[input.outcome], children }));
 };

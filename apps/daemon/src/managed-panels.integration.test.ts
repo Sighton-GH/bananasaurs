@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
+  cardCustomIds,
+  cardTexts,
   createInteractionSubscriber,
   EffectGateway,
   panelDefinitionSchema,
@@ -11,6 +13,7 @@ import {
   RateLimiter,
   type EffectGatewayDeps,
   type InteractionSubscriberDeps,
+  type OutgoingMessage,
   type PanelDefinition,
 } from '@bananasaurs/core';
 import {
@@ -27,6 +30,7 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
+import { cardOut } from './cards/art.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from './panels/wiring.js';
 
 /**
@@ -154,6 +158,7 @@ const setUpPanel = async (def: PanelDefinition) => {
     discord,
     logger,
     setPanelMessage: (panelId, id) => panelRepo.setPanelMessage(scope, panelId, id, discord.now()),
+    toMessage: cardOut,
   });
   messageId = ref.messageId;
 
@@ -179,7 +184,10 @@ const click = (customId: string, values?: readonly string[]) =>
   });
 
 const replyText = (interactionId: string): string =>
-  discord.interactionReplies(interactionId)[0]?.content ?? '';
+  cardTexts(discord.interactionReplies(interactionId)[0]?.components ?? []);
+
+const replyFlags = (interactionId: string): number | undefined =>
+  discord.interactionReplies(interactionId)[0]?.flags;
 
 beforeEach(() => {
   t = openMigratedTestDatabase();
@@ -208,11 +216,31 @@ afterEach(() => {
 describe('a button becomes a role', () => {
   beforeEach(async () => setUpPanel(definition()));
 
+  it('posts the panel as a card with the V2 flag and the panel banner', async () => {
+    const sent = discord.restCalls('sendMessage');
+    expect(sent).toHaveLength(1);
+    const message = sent[0]?.args[2] as OutgoingMessage;
+    expect(message.flags).toBe(32768);
+    expect(message.files?.map((f) => f.name)).toEqual(['banner-panel.png']);
+    const container = message.components?.[0] as { components: readonly unknown[] };
+    expect(container.components[0]).toMatchObject({
+      type: 12,
+      items: [{ media: { url: 'attachment://banner-panel.png' } }],
+    });
+    // The custom ids are unchanged, so a click still converges.
+    expect(cardCustomIds(message.components ?? [])).toEqual([
+      'bs.panel:roles:alpha',
+      'bs.panel:roles:beta',
+      'bs.panel:roles:gamma',
+    ]);
+  });
+
   it('grants the role and says so, only to the member who clicked', async () => {
     const id = await click('bs.panel:roles:alpha');
 
     expect(discord.memberRoles(MEMBER)).toEqual([ROLE_A]);
     expect(discord.wasEphemeral(id)).toBe(true);
+    expect(replyFlags(id)).toBe(32768);
     expect(replyText(id)).toContain(`<@&${ROLE_A}>`);
     expect(replyText(id)).toContain('You now have');
   });
@@ -359,14 +387,14 @@ describe('the member is never told something untrue', () => {
 
     expect(discord.memberRoles(MEMBER)).toEqual([]);
     expect(replyText(id)).not.toContain('You now have');
-    expect(replyText(id)).toContain('could not change your roles');
+    expect(replyText(id)).toContain("Couldn't change your roles");
   });
 
   it('says the panel is off when it is disabled', async () => {
     panelRepo.setPanelStatus(scope, 'roles', 'disabled_by_owner', 'testing', 0);
     const id = await click('bs.panel:roles:alpha');
 
-    expect(replyText(id)).toContain('switched off');
+    expect(replyText(id)).toContain('This panel is switched off');
     expect(discord.memberRoles(MEMBER)).toEqual([]);
   });
 
@@ -375,6 +403,7 @@ describe('the member is never told something untrue', () => {
     const id = await click('bs.panel:roles:alpha');
 
     expect(discord.wasDeferred(id)).toBe(true);
-    expect(replyText(id)).toContain('Something went wrong');
+    expect(replyFlags(id)).toBe(32768);
+    expect(replyText(id)).toContain("Couldn't handle that");
   });
 });
