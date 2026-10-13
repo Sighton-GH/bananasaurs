@@ -19,6 +19,7 @@ import {
 import { buildHistoryPage, type HistoryCaseEvent } from './history.js';
 
 const U = '333333333333333333';
+const GUILD = '999999999999999999';
 const C = '111111111111111111';
 const I = '1234567890123456789';
 const CASE = '0f3c9a2e-1111-4222-8333-444455556666';
@@ -146,6 +147,64 @@ describe('warnOutcomeCard', () => {
     );
     expect(t).toContain(
       "This reached an escalation step, but its consequence didn't run: Moderation is paused.",
+    );
+  });
+});
+
+describe('worst-case card budgets', () => {
+  const hostileReason = '*_~@<\\n'.repeat(100);
+
+  const expectWithinBudget = (render: () => { components: readonly unknown[] }): void => {
+    let rendered: { components: readonly unknown[] } | undefined;
+    expect(() => {
+      rendered = render();
+    }).not.toThrow();
+    expect(rendered).toBeDefined();
+    expect(countText(rendered!.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(rendered!.components)).toBeLessThanOrEqual(40);
+  };
+
+  it('keeps a refused escalation warning within budget', () => {
+    expectWithinBudget(() =>
+      warnOutcomeCard({
+        targetId: U,
+        reason: hostileReason.slice(0, 500),
+        caseId: CASE,
+        violationCount: 100,
+        escalation: { status: 'refused', reason: 'killswitch' },
+      }),
+    );
+  });
+
+  it('keeps a ban confirmation within budget', () => {
+    expectWithinBudget(() =>
+      banConfirmCard({ targetId: U, reason: hostileReason.slice(0, 500), intentId: 'i'.repeat(100) }),
+    );
+  });
+
+  it('keeps a maximum purge confirmation within budget', () => {
+    expectWithinBudget(() =>
+      purgeConfirmCard({
+        channelId: C,
+        total: 100,
+        fresh: 100,
+        old: 100,
+        newestAtMs: 1_760_000_000_000,
+        reason: hostileReason.slice(0, 500),
+        intentId: 'i'.repeat(100),
+      }),
+    );
+  });
+
+  it('keeps a delete confirmation within budget', () => {
+    expectWithinBudget(() =>
+      deleteConfirmCard({
+        guildId: GUILD,
+        channelId: C,
+        messageId: '2'.repeat(100),
+        authorId: U,
+        intentId: 'i'.repeat(100),
+      }),
     );
   });
 });

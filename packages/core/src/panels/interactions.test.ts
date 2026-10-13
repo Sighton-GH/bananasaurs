@@ -4,6 +4,7 @@ import { panelRefusalCode } from '../copy/refusals.js';
 import type { InteractionEvent } from '../discord/events.js';
 import type { DiscordMember, InteractionRef, OutgoingMessage } from '../discord/port.js';
 import { toOutgoingMessage } from '../ui/discord/card.js';
+import { countComponents, countText } from '../ui/discord/budget.js';
 import { errorCard } from '../ui/discord/common-cards.js';
 import { cardTexts } from '../ui/discord/inspect.js';
 import { TONE_ACCENT } from '../ui/discord/tokens.js';
@@ -80,6 +81,25 @@ describe('panelResultCard', () => {
     expect(t).toContain('Roles updated');
     expect(t).toContain(`You now have <@&${ROLE_A}>.`);
     expect(t).toContain(`Removed <@&${ROLE_R}>.`);
+  });
+
+  it('keeps 25 hostile grants and revokes within budget', () => {
+    const appliedChanges: readonly AppliedChange[] = [
+      ...Array.from({ length: 25 }, (_, i) => ({
+        roleId: parseSnowflakeId(String(100000000000000000 + i)),
+        action: 'grant' as const,
+      })),
+      ...Array.from({ length: 25 }, (_, i) => ({
+        roleId: parseSnowflakeId(String(200000000000000100 + i)),
+        action: 'revoke' as const,
+      })),
+    ];
+    let card: ReturnType<typeof panelResultCard> | undefined;
+    expect(() => {
+      card = panelResultCard(resultWith(planWith({}), { applied: 50, appliedChanges }));
+    }).not.toThrow();
+    expect(countText(card!.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(card!.components)).toBeLessThanOrEqual(40);
   });
 
   it('says when the panel limit clamped a choice', () => {
