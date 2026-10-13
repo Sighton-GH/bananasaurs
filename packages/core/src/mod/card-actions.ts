@@ -7,7 +7,13 @@ import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { toOutgoingMessage } from '../ui/discord/card.js';
 import { errorCard } from '../ui/discord/common-cards.js';
-import { deleteConfirmCard, MOD_REASON_MAX, TIMEOUT_CHOICES, timeoutModal, warnModal } from './cards.js';
+import {
+  deleteConfirmCard,
+  MOD_REASON_MAX,
+  TIMEOUT_CHOICES,
+  timeoutModal,
+  warnModal,
+} from './cards.js';
 import { runDirectAction, runWarn, type ModCommandDeps } from './commands.js';
 import {
   authorizeForCard,
@@ -119,7 +125,8 @@ export const createModCardActionSubscriber = (deps: ModCardActionDeps): Subscrib
       }
       const reason = (event.fields['reason'] ?? '').trim();
       try {
-        const reasonInvalid = reason === '' ? 'blank' : reason.length > MOD_REASON_MAX ? 'too-long' : undefined;
+        const reasonInvalid =
+          reason === '' ? 'blank' : reason.length > MOD_REASON_MAX ? 'too-long' : undefined;
         if (reasonInvalid !== undefined) {
           // Authorise before validating: an unauthorised submit must be
           // refused and recorded on the target's case whatever its reason,
@@ -131,7 +138,9 @@ export const createModCardActionSubscriber = (deps: ModCardActionDeps): Subscrib
             await deps.responder.respond(
               ref,
               toOutgoingMessage(
-                errorCard(reasonInvalid === 'blank' ? 'mod.reason-required' : 'mod.reason-too-long'),
+                errorCard(
+                  reasonInvalid === 'blank' ? 'mod.reason-required' : 'mod.reason-too-long',
+                ),
               ),
             );
             return;

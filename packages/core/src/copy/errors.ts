@@ -204,7 +204,8 @@ export const ERROR_COPY = {
   },
   'mod.reason-too-long': {
     title: 'Keep the reason shorter',
-    detail: 'A reason can be up to 500 characters. It goes in case history and Discord’s audit log.',
+    detail:
+      'A reason can be up to 500 characters. It goes in case history and Discord’s audit log.',
     next: 'Open the form again and shorten it.',
     retryable: true,
     tone: 'hold',
