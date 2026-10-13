@@ -852,7 +852,7 @@ describe('assistant mention failure path', () => {
     expect(h.send).toHaveBeenCalledWith(
       channelId,
       expect.objectContaining({
-        content: expect.stringContaining('could not complete'),
+        content: expect.stringContaining("couldn't finish that answer"),
       }),
     );
   });
@@ -968,7 +968,7 @@ describe('assistant mention failure path', () => {
     expect(h.send).toHaveBeenCalledWith(
       channelId,
       expect.objectContaining({
-        content: expect.stringContaining('no longer available'),
+        content: expect.stringContaining('switched off or removed'),
       }),
     );
   });
@@ -1437,9 +1437,8 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
   };
   const logPosts = (send: ReturnType<typeof setup>['send']) =>
     send.mock.calls.filter(([channel]) => channel === LOG);
-  type LogEmbed = { title: string; fields: { name: string; value: string }[] };
-  const embed = (call: [string, unknown]) =>
-    (call[1] as { embeds: LogEmbed[] }).embeds[0] as LogEmbed;
+  const card = (call: [string, unknown]): string =>
+    cardTexts((call[1] as OutgoingMessage).components ?? []);
 
   it('posts one log after the answer, with the trace, and marks the stage', async () => {
     const d = setup(
@@ -1452,16 +1451,12 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     );
     await d.run(1, null);
     expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([channelId, LOG]);
-    const logged = embed(logPosts(d.send)[0]!);
-    expect(logged.title).toBe('Mention · answered');
-    expect(logged.fields).toEqual(
-      expect.arrayContaining([
-        { name: 'Question', value: 'where is the handbook?' },
-        { name: 'Answer', value: 'Top shelf.' },
-        { name: 'Tools', value: 'current_time ✓' },
-        { name: 'Behaviour', value: club.name, inline: true },
-      ]),
-    );
+    const logged = card(logPosts(d.send)[0]!);
+    expect(logged).toContain('-# 🤖 MENTION · ANSWERED');
+    expect(logged).toContain('**Question**\n> where is the handbook?');
+    expect(logged).toContain('**Answer**\n> Top shelf.');
+    expect(logged).toContain('Tools: current_time ✓');
+    expect(logged).toContain(`Behaviour: ${club.name}`);
     expect(JSON.parse(d.saved.at(-1)!)).toMatchObject({ stage: 'logged' });
   });
 
@@ -1483,7 +1478,7 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
       JSON.stringify({ stage: 'answered', result: { ok: false, content: 'Refused.' } }),
     );
     expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([LOG]);
-    expect(embed(logPosts(d.send)[0]!).title).toBe('Mention · refused');
+    expect(card(logPosts(d.send)[0]!)).toContain('-# 🤖 MENTION · REFUSED');
   });
 
   it('posts nothing when no log channel is set', async () => {
@@ -1503,13 +1498,11 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
       return undefined;
     });
     await expect(d.run(4, null)).resolves.toBeUndefined();
-    const logged = embed(logPosts(d.send)[0]!);
-    expect(logged.title).toBe('Mention · failed');
+    const logged = card(logPosts(d.send)[0]!);
+    expect(logged).toContain('-# 🤖 MENTION · FAILED');
     // Hard rule 4: the log channel gets the fixed sentence, never the
     // provider's text.
-    expect(logged.fields).toEqual(
-      expect.arrayContaining([{ name: 'Reason', value: PROVIDER_FAILURE_LOG_REASON }]),
-    );
+    expect(logged).toContain(`**Reason**\n> ${PROVIDER_FAILURE_LOG_REASON}`);
   });
 });
 

@@ -3735,7 +3735,9 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     const turns = h.turnsOf(convId!);
     const failureTurn = turns.find((turn) => turn.turnId === `turn_${key}_a`);
     expect(failureTurn?.traceId).toBe(`trace_${key}_a1`);
-    expect(failureTurn?.text).toBe("I couldn't finish that answer, so nothing was done. Try again in a minute.");
+    expect(failureTurn?.text).toBe(
+      "I couldn't finish that answer, so nothing was done. Try again in a minute.",
+    );
     expect(h.sent).toHaveLength(1);
     expect(conversationRepo.lookupMessage(scope3(), '829000000000000001')?.conversationId).toBe(
       convId,

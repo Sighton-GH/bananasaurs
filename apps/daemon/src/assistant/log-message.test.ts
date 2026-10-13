@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  cardTexts,
-  countComponents,
-  countText,
-  TONE_ACCENT,
-} from '@bananasaurs/core';
+import { cardTexts, countComponents, countText, TONE_ACCENT } from '@bananasaurs/core';
 import { assistantLogMessage } from './log-message.js';
 
 const base = {
@@ -18,12 +13,6 @@ const base = {
   at: Date.UTC(2026, 8, 23, 19, 30),
 };
 
-type Embed = {
-  title: string;
-  color: number;
-  fields: { name: string; value: string; inline?: boolean }[];
-  timestamp: string;
-};
 const textsOf = (message: ReturnType<typeof assistantLogMessage>): string =>
   cardTexts(message.components ?? []);
 
@@ -201,7 +190,11 @@ describe('assistantLogMessage (ADR 0065)', () => {
     const sourcesLine = texts.split('\n-# Sources: ')[1]?.split('\n-# <t:')[0] ?? '';
     expect(reasonPart.replace(/^> /, '')).toHaveLength(1_000);
     expect(sourcesLine.length).toBeLessThanOrEqual(1_000);
-    expect(countComponents(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? [])).toBeLessThanOrEqual(40);
-    expect(countText(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? [])).toBeLessThanOrEqual(4_000);
+    expect(
+      countComponents(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? []),
+    ).toBeLessThanOrEqual(40);
+    expect(
+      countText(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? []),
+    ).toBeLessThanOrEqual(4_000);
   });
 });

@@ -815,7 +815,8 @@ export const assistantInvokeHandler = (deps: {
           const behaviours = await deps.service.behavioursForGuild(deps.guildId);
           const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
           if (behaviour === undefined || !behaviour.enabled) {
-            const text = 'That assistant behaviour was switched off or removed, so nothing was done.';
+            const text =
+              'That assistant behaviour was switched off or removed, so nothing was done.';
             if (deps.conversations !== undefined) {
               const key = payload.invocationId;
               const traceId = `trace_${key}`;

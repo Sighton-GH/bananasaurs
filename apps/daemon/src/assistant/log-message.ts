@@ -57,7 +57,9 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
   const trace = input.trace;
   const tools = trace?.tools ?? [];
   const sources = trace?.sources ?? [];
-  const sourceLines = sources.map((source) => `[${source.title.replace(/[\[\]]/g, '')}](${source.url})`);
+  const sourceLines = sources.map(
+    (source) => `[${source.title.replace(/[[\]]/g, '')}](${source.url})`,
+  );
   const children = [
     text(
       subtext(
@@ -68,12 +70,12 @@ export const assistantLogMessage = (input: AssistantLogInput): OutgoingMessage =
       `${`<@${input.userId}>${input.channelId === undefined ? '' : ` in <#${input.channelId}>`}`} · Behaviour: ${escapeInline(input.behaviourName)}`,
     ),
     text('**Question**'),
-    text(`> ${truncate(escapeText(input.question), 1_000)}`),
+    text(`> ${truncate(escapeText(clip(input.question, 1_000)), 1_000)}`),
     text('**Answer**'),
-    text(`> ${truncate(input.answer, 1_000)}`),
+    text(`> ${truncate(clip(input.answer, 1_000), 1_000)}`),
     ...(input.reason === undefined
       ? []
-      : [text('**Reason**'), text(`> ${truncate(escapeText(input.reason), 1_000)}`)]),
+      : [text('**Reason**'), text(`> ${truncate(escapeText(clip(input.reason, 1_000)), 1_000)}`)]),
     text(
       subtext(
         `Tools: ${tools.length === 0 ? 'none' : tools.map((tool) => `${tool.name} ${tool.ok ? '✓' : '✗'}`).join(', ')} · Model: ${trace?.model ?? 'none'}${trace?.usedFallback === true ? ' (backup model)' : ''} · ${((trace?.latencyMs ?? 0) / 1_000).toFixed(1)} s`,

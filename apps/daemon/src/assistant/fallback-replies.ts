@@ -5,8 +5,7 @@
  */
 
 /** Every assistant model is busy, rate-limited or timed out: try again in a minute. */
-export const BUSY_REPLY =
-  'The AI is busy right now, so nothing was done. Try again in a minute.';
+export const BUSY_REPLY = 'The AI is busy right now, so nothing was done. Try again in a minute.';
 
 /** Midnight UTC after `nowMs`, when a `:free` daily allowance resets. */
 export const nextUtcMidnight = (nowMs: number): number => {
