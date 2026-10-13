@@ -77,10 +77,12 @@ interface Harness {
     commandRecordCaseEvent: Parameters<ModCommandCasePorts['recordCaseEvent']>[0][];
     warnRecordCaseEvent: Parameters<WarnCasePorts['recordCaseEvent']>[0][];
     confirmRecordCaseEvent: Parameters<ModConfirmationCasePorts['recordCaseEvent']>[0][];
+    historyRecordCaseEvent: Parameters<HistoryCasePorts['recordCaseEvent']>[0][];
     defer: { ref: InteractionRef; options: { ephemeral: boolean } }[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
     showModal: { ref: InteractionRef; modal: Modal }[];
     deferUpdate: { ref: InteractionRef }[];
+    editOriginal: { ref: InteractionRef; message: OutgoingMessage }[];
     fetchInvokerRoleIds: Snowflake[];
   };
   pendingRows: Map<string, PendingActionRowLike>;
@@ -92,6 +94,7 @@ function buildHarness(
     applyActionResult?: ModerationOutcome;
     deleteMessageResult?: DeleteMessageOutcome;
     applyActionError?: Error;
+    historyEvents?: { eventId: string; at: number }[];
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -100,10 +103,12 @@ function buildHarness(
     commandRecordCaseEvent: [],
     warnRecordCaseEvent: [],
     confirmRecordCaseEvent: [],
+    historyRecordCaseEvent: [],
     defer: [],
     respond: [],
     showModal: [],
     deferUpdate: [],
+    editOriginal: [],
     fetchInvokerRoleIds: [],
   };
   const pendingRows = new Map<string, PendingActionRowLike>();
@@ -136,7 +141,9 @@ function buildHarness(
     deferUpdate: async (ref) => {
       calls.deferUpdate.push({ ref });
     },
-    editOriginal: async () => undefined,
+    editOriginal: async (ref, message) => {
+      calls.editOriginal.push({ ref, message });
+    },
   };
 
   const fetchInvokerRoleIds = async (userId: Snowflake): Promise<readonly Snowflake[]> => {
@@ -209,10 +216,34 @@ function buildHarness(
   };
 
   const historyCases: HistoryCasePorts = {
-    listCasesForMember: () => [],
-    listCaseEvents: () => [],
+    listCasesForMember: () => [
+      {
+        caseId: 'case-1',
+        memberId: TARGET,
+        openedAt: NOW_MS - 10_000,
+        violationCount: 1,
+        escalationTier: 0,
+        status: 'open',
+      },
+    ],
+    listCaseEvents: () =>
+      (opts.historyEvents ?? [{ eventId: 'evt-0', at: NOW_MS }]).map((e, i) => ({
+        eventId: e.eventId,
+        caseId: 'case-1',
+        ruleId: 'manual',
+        memberId: TARGET,
+        at: e.at,
+        matchedCategory: 'warn',
+        matchedSnippet: `marker-${i}`,
+        actionTaken: 'warned',
+        escalationAction: undefined,
+        refusalReason: undefined,
+        actorId: MODERATOR,
+      })),
     openOrResolveCase: () => ({ caseId: 'case-1', violationCount: 0 }),
-    recordCaseEvent: () => {},
+    recordCaseEvent: (input) => {
+      calls.historyRecordCaseEvent.push(input);
+    },
   };
 
   const commands: ModCommandDeps = {
@@ -534,5 +565,76 @@ describe('log-card modal submits', () => {
     const reply = lastReplyTexts(harness);
     expect(reply).toContain("Couldn't finish that");
     expect(reply).toContain('-# Ref ');
+  });
+});
+
+describe('history page clicks', () => {
+  const historyEvents = Array.from({ length: 9 }, (_, i) => ({
+    eventId: `evt-${i}`,
+    at: NOW_MS - i * 1_000,
+  }));
+
+  it('an authorised page click defers the update, then replaces the card with the asked page, writing no case event', async () => {
+    const harness = buildHarness({ historyEvents });
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(
+      clickEvent({ customId: buildModCustomId({ action: 'history', userId: TARGET, page: 1 }) }),
+    );
+
+    expect(harness.calls.deferUpdate).toEqual([
+      { ref: { interactionId: 'click-1', token: 'click-token-1' } },
+    ]);
+    expect(harness.calls.defer).toHaveLength(0);
+    expect(harness.calls.respond).toHaveLength(0);
+    expect(harness.calls.editOriginal).toHaveLength(1);
+    expect(harness.calls.editOriginal[0]?.ref).toEqual({
+      interactionId: 'click-1',
+      token: 'click-token-1',
+    });
+    const t = cardTexts(harness.calls.editOriginal[0]?.message.components ?? []);
+    expect(t).toContain('-# 📂 CASE HISTORY');
+    expect(t).toContain('Page 2 of 2');
+    expect(t).toContain('marker-8');
+    expect(harness.calls.historyRecordCaseEvent).toHaveLength(0);
+    expect(harness.calls.commandRecordCaseEvent).toHaveLength(0);
+  });
+
+  it('a page click from a moderator who lost moderation.act refuses privately, records, and never edits the card', async () => {
+    const harness = buildHarness({ authorized: false, historyEvents });
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(
+      clickEvent({ customId: buildModCustomId({ action: 'history', userId: TARGET, page: 1 }) }),
+    );
+
+    expect(harness.calls.deferUpdate).toEqual([
+      { ref: { interactionId: 'click-1', token: 'click-token-1' } },
+    ]);
+    expect(harness.calls.editOriginal).toHaveLength(0);
+    expect(harness.calls.respond).toHaveLength(1);
+    expect(lastReplyTexts(harness)).toContain("You can't take moderation actions");
+    expect(harness.calls.historyRecordCaseEvent).toHaveLength(1);
+    const refusal = harness.calls.historyRecordCaseEvent[0]!;
+    expect(refusal.memberId).toBe(TARGET);
+    expect(refusal.actionTaken).toBe('escalation_refused');
+    expect(refusal.refusalReason).toBe('unauthorized');
+    expect(refusal.matchedCategory).toBe('history');
+  });
+
+  it('a failing page render answers honestly instead of hanging the interaction', async () => {
+    const harness = buildHarness({ historyEvents });
+    harness.deps.commands.history.cases.listCasesForMember = () => {
+      throw new Error('boom');
+    };
+    const subscriber = createModCardActionSubscriber(harness.deps);
+
+    await subscriber.handle(
+      clickEvent({ customId: buildModCustomId({ action: 'history', userId: TARGET, page: 1 }) }),
+    );
+
+    expect(harness.calls.editOriginal).toHaveLength(0);
+    expect(harness.calls.respond).toHaveLength(1);
+    expect(lastReplyTexts(harness)).toContain("Couldn't finish that");
   });
 });

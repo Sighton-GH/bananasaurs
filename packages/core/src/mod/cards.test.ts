@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { countComponents, countText } from '../ui/discord/budget.js';
 import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
 import {
   banConfirmCard,
   caseRef,
   deleteConfirmCard,
   deleteOutcomeCard,
+  describeCaseEvent,
   durationLabel,
+  historyCard,
   modOutcomeCard,
   noteOutcomeCard,
   purgeConfirmCard,
@@ -13,6 +16,7 @@ import {
   warnModal,
   warnOutcomeCard,
 } from './cards.js';
+import { buildHistoryPage, type HistoryCaseEvent } from './history.js';
 
 const U = '333333333333333333';
 const C = '111111111111111111';
@@ -209,6 +213,276 @@ describe('moderator modals', () => {
     expect(radio).toContain('"value":"10"');
     expect(radio).toContain('"value":"60","label":"1 hour","default":true');
     expect(radio).toContain('"value":"1440"');
+  });
+});
+
+describe('history cards', () => {
+  const MOD = '222222222222222222';
+  const CASE = 'case-1';
+
+  const historyEvent = (over: Partial<HistoryCaseEvent> = {}): HistoryCaseEvent => ({
+    eventId: 'evt-1',
+    caseId: CASE,
+    ruleId: 'manual',
+    memberId: U,
+    at: 1_760_000_000_000,
+    matchedCategory: 'warn',
+    matchedSnippet: '',
+    actionTaken: 'warned',
+    escalationAction: undefined,
+    refusalReason: undefined,
+    actorId: MOD,
+    ...over,
+  });
+
+  /** Every `ModCaseActionTaken` value on 2026-10-10 (23), in readable words — never a raw code. */
+  const WORD_CASES: { actionTaken: string; over?: Partial<HistoryCaseEvent>; words: string }[] = [
+    { actionTaken: 'warned', words: 'Warned' },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: 'timeout', matchedCategory: 'timeout' },
+      words: 'Timed out',
+    },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: 'kick', matchedCategory: 'kick' },
+      words: 'Kicked',
+    },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: 'ban', matchedCategory: 'ban' },
+      words: 'Banned',
+    },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: 'unban', matchedCategory: 'unban' },
+      words: 'Unbanned',
+    },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: undefined, matchedCategory: 'untimeout' },
+      words: 'Timeout ended',
+    },
+    {
+      actionTaken: 'manual_applied',
+      over: { escalationAction: undefined, matchedCategory: 'kick' },
+      words: 'Kicked',
+    },
+    { actionTaken: 'deleted', words: 'Message deleted' },
+    {
+      actionTaken: 'deleted_and_escalated',
+      over: { escalationAction: 'timeout' },
+      words: 'Message deleted',
+    },
+    {
+      actionTaken: 'deleted',
+      over: { ruleId: 'rule-1', matchedCategory: 'spam' },
+      words: 'Message deleted by automod',
+    },
+    { actionTaken: 'would_delete', words: 'Automod match (watch only)' },
+    { actionTaken: 'delete_blocked_killswitch', words: 'Delete blocked: the kill switch is on' },
+    { actionTaken: 'delete_blocked_breaker', words: 'Delete blocked: the safety breaker is open' },
+    { actionTaken: 'delete_blocked_dry_run', words: 'Delete blocked: dry run is on' },
+    { actionTaken: 'delete_blocked_guild_unknown', words: "Delete blocked: the server isn't set up" },
+    { actionTaken: 'delete_failed', words: "Delete didn't go through" },
+    {
+      actionTaken: 'escalation_refused',
+      over: { escalationAction: 'timeout', refusalReason: 'role-above-bot', matchedCategory: 'timeout' },
+      words: 'Timeout refused: That member is above the bot',
+    },
+    {
+      actionTaken: 'escalation_refused',
+      over: { escalationAction: 'timeout', refusalReason: 'unauthorized', matchedCategory: 'timeout' },
+      words: 'Timeout refused: Not allowed',
+    },
+    {
+      actionTaken: 'escalation_failed',
+      over: { escalationAction: 'kick', matchedCategory: 'kick' },
+      words: "Kick didn't go through",
+    },
+    {
+      actionTaken: 'escalation_dry_run',
+      over: { escalationAction: 'ban', matchedCategory: 'ban' },
+      words: 'Ban (dry run)',
+    },
+    {
+      actionTaken: 'escalation_skipped',
+      over: { escalationAction: 'unban', matchedCategory: 'unban' },
+      words: 'Unban (already done)',
+    },
+    { actionTaken: 'note', over: { matchedCategory: 'note' }, words: 'Note' },
+    {
+      actionTaken: 'evidence_added',
+      over: { matchedCategory: 'evidence' },
+      words: 'Evidence',
+    },
+    { actionTaken: 'purged', over: { matchedCategory: 'purge' }, words: 'Ran a purge' },
+    { actionTaken: 'purge_refused', over: { matchedCategory: 'purge' }, words: 'Purge refused' },
+    { actionTaken: 'purge_failed', over: { matchedCategory: 'purge' }, words: "Purge didn't go through" },
+    { actionTaken: 'native_blocked', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod blocked a message' },
+    { actionTaken: 'native_alerted', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod sent an alert' },
+    { actionTaken: 'native_timeout', over: { matchedCategory: 'automod' }, words: 'Discord AutoMod timed them out' },
+    {
+      actionTaken: 'native_blocked_interaction',
+      over: { matchedCategory: 'automod' },
+      words: 'Discord AutoMod blocked an interaction',
+    },
+  ];
+
+  it.each(WORD_CASES.map((c) => [c.actionTaken, c.words] as const))('%s reads %s', (actionTaken, words) => {
+    const found = WORD_CASES.find((c) => c.actionTaken === actionTaken && c.words === words)!;
+    const line = describeCaseEvent(historyEvent({ actionTaken, ...found.over }), U);
+    expect(line).toContain(words);
+    if (actionTaken.includes('_')) expect(line).not.toContain(actionTaken);
+  });
+
+  it('an unknown future action is humanised, never shown raw', () => {
+    expect(describeCaseEvent(historyEvent({ actionTaken: 'some_future_action' }), U)).toContain(
+      'Some future action',
+    );
+  });
+
+  it('a full line names the time, the words, the actor and the snippet', () => {
+    const line = describeCaseEvent(
+      historyEvent({
+        actionTaken: 'manual_applied',
+        escalationAction: 'timeout',
+        matchedCategory: 'timeout',
+        matchedSnippet: 'raid',
+        at: 1_760_000_000_000,
+      }),
+      U,
+    );
+    expect(line).toBe(`<t:1760000000:d> **Timed out** by <@${MOD}> — "raid"`);
+  });
+
+  it('a refusal line carries the catalogue title, not the code', () => {
+    const line = describeCaseEvent(
+      historyEvent({
+        actionTaken: 'escalation_refused',
+        escalationAction: 'timeout',
+        matchedCategory: 'timeout',
+        refusalReason: 'role-above-bot',
+      }),
+      U,
+    );
+    expect(line).toContain('**Timeout refused: That member is above the bot**');
+    expect(line).toContain(`by <@${MOD}>`);
+    expect(line).not.toContain('role-above-bot');
+  });
+
+  it('self-authored events read as moderator actions, with no by-line at themself', () => {
+    const line = describeCaseEvent(
+      historyEvent({ actionTaken: 'purged', matchedCategory: 'purge', actorId: U }),
+      U,
+    );
+    expect(line).toContain('**Ran a purge** (as a moderator)');
+    expect(line).not.toContain(`by <@${U}>`);
+    expect(line).not.toMatch(/was purged/i);
+  });
+
+  it('the snippet is escaped inline and capped at 120 characters', () => {
+    const snippet = `**x** @everyone ${'y'.repeat(500)}`;
+    const line = describeCaseEvent(historyEvent({ matchedSnippet: snippet }), U);
+    expect(line).toContain('\\*\\*x\\*\\*');
+    expect(line).not.toContain(snippet);
+    expect(line).toContain('…');
+  });
+
+  it('an event with no actor and no snippet has neither', () => {
+    const line = describeCaseEvent(
+      historyEvent({ actionTaken: 'would_delete', actorId: undefined, matchedSnippet: '' }),
+      U,
+    );
+    expect(line).toBe('<t:1760000000:d> **Automod match (watch only)**');
+  });
+
+  const pageOf = (n: number, page = 0) => {
+    const oneCase = {
+      caseId: 'case-1',
+      memberId: U,
+      openedAt: 1_760_000_000_000 - 10_000,
+      violationCount: 3,
+      escalationTier: 1,
+      status: 'open' as const,
+    };
+    const events = Array.from({ length: n }, (_, i) =>
+      historyEvent({ eventId: `evt-${i}`, matchedSnippet: `s${i}`, at: 1_760_000_000_000 - i * 1_000 }),
+    );
+    return buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), page);
+  };
+
+  it('shows the eyebrow, the member header, the counts and the footer', () => {
+    const t = text(historyCard(pageOf(1)));
+    expect(t).toContain('-# 📂 CASE HISTORY');
+    expect(t).toContain(`**<@${U}>** · 1 case · 1 event`);
+    expect(t).toContain('1 warning');
+    expect(t).toContain('-# Page 1 of 1 · Case case-1 (open, 3 violations, tier 1)');
+  });
+
+  it('counts pluralise in a fixed order and leave out zero kinds', () => {
+    const oneCase = {
+      caseId: 'case-1',
+      memberId: U,
+      openedAt: 1_760_000_000_000 - 10_000,
+      violationCount: 3,
+      escalationTier: 1,
+      status: 'open' as const,
+    };
+    const events = [
+      historyEvent({ eventId: 'a', actionTaken: 'warned' }),
+      historyEvent({ eventId: 'b', actionTaken: 'warned' }),
+      historyEvent({ eventId: 'c', actionTaken: 'warned' }),
+      historyEvent({
+        eventId: 'd',
+        actionTaken: 'manual_applied',
+        escalationAction: 'timeout',
+        matchedCategory: 'timeout',
+      }),
+      historyEvent({ eventId: 'e', actionTaken: 'deleted', matchedCategory: 'spam' }),
+      historyEvent({ eventId: 'f', actionTaken: 'deleted', matchedCategory: 'spam' }),
+      historyEvent({ eventId: 'g', actionTaken: 'note', matchedCategory: 'note', matchedSnippet: 'n' }),
+    ];
+    const t = text(historyCard(buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), 0)));
+    expect(t).toContain('3 warnings · 1 timeout · 2 automod deletes · 1 note');
+    expect(t).not.toContain('kick');
+  });
+
+  it('is neutral, pings nobody and carries no art', () => {
+    const c = historyCard(pageOf(1));
+    expect((c.components[0] as { accent_color: number }).accent_color).toBe(0x64748b);
+    expect(c.allowedMentions).toEqual({ parse: [] });
+    expect(c.art).toEqual([]);
+  });
+
+  it('a full page of 500-character snippets stays in budget', () => {
+    const oneCase = {
+      caseId: 'case-1',
+      memberId: U,
+      openedAt: 1_760_000_000_000 - 10_000,
+      violationCount: 3,
+      escalationTier: 1,
+      status: 'open' as const,
+    };
+    const events = Array.from({ length: 8 }, (_, i) =>
+      historyEvent({ eventId: `evt-${i}`, matchedSnippet: 'z'.repeat(500), at: 1_760_000_000_000 - i }),
+    );
+    const c = historyCard(buildHistoryPage(U, [oneCase], new Map([['case-1', events]]), 0));
+    expect(countText(c.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(c.components)).toBeLessThanOrEqual(40);
+  });
+
+  it('shortens a long case list with an and-more tail', () => {
+    const cases = Array.from({ length: 12 }, (_, i) => ({
+      caseId: `case-${String(i).padStart(2, '0')}-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+      memberId: U,
+      openedAt: 1_760_000_000_000 - 10_000,
+      violationCount: 1,
+      escalationTier: 0,
+      status: 'open' as const,
+    }));
+    const t = text(historyCard(buildHistoryPage(U, cases, new Map(), 0)));
+    expect(t).toContain('more cases');
   });
 });
 

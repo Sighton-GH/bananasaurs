@@ -742,7 +742,9 @@ describe('mod command subscriber', () => {
       const subscriber = createModCommandSubscriber(deps);
       await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
 
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        "You can't take moderation actions",
+      );
       expect(calls.historyListCasesForMember).toHaveLength(0);
 
       // history's own refusal port records it — an unauthorized probe of a
@@ -801,11 +803,11 @@ describe('mod command subscriber', () => {
 
       expect(calls.historyListCasesForMember).toEqual([TARGET]);
       expect(calls.historyListCaseEvents).toEqual(['case-1']);
-      const content = calls.respond[0]?.message.content ?? '';
-      expect(content).toContain('case-1');
-      expect(content).toContain('warned');
-      expect(content).toContain(MODERATOR);
-      expect(content).toContain('violations: 2');
+      const historyCardText = cardTexts(calls.respond[0]?.message.components ?? []);
+      expect(historyCardText).toContain('case-1');
+      expect(historyCardText).toContain('Warned');
+      expect(historyCardText).toContain(MODERATOR);
+      expect(historyCardText).toContain('2 violations');
       // A successful read writes nothing — reading is not an action.
       expect(calls.historyOpenOrResolveCase).toHaveLength(0);
       expect(calls.historyRecordCaseEvent).toHaveLength(0);
