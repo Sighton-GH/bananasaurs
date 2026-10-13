@@ -434,7 +434,9 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain('Cancelled');
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'Cancelled',
+    );
     expect(harness.pendingActions.peek(intentId)).toBeUndefined();
   });
 
@@ -596,7 +598,9 @@ describe('/mod purge preview', () => {
     expect(respondMessage.flags).toBe(32768);
     const previewText = cardTexts(respondMessage.components ?? []);
     expect(previewText).toContain(`Delete 5 messages from <#${CHANNEL}>?`);
-    expect(previewText).toContain('3 can go in bulk. 2 are older than 14 days and go one at a time.');
+    expect(previewText).toContain(
+      '3 can go in bulk. 2 are older than 14 days and go one at a time.',
+    );
     expect(harness.pendingActions.rows.size).toBe(1);
   });
 

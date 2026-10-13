@@ -553,8 +553,11 @@ const resolveIntentForClick = (
 };
 
 /** Every reply this module sends is a card. */
-const reply = (responder: SlashResponder, ref: InteractionRef, message: CardMessage): Promise<void> =>
-  responder.respond(ref, toOutgoingMessage(message));
+const reply = (
+  responder: SlashResponder,
+  ref: InteractionRef,
+  message: CardMessage,
+): Promise<void> => responder.respond(ref, toOutgoingMessage(message));
 
 const RESOLUTION_CODE = {
   expired: 'confirm.expired',
@@ -578,7 +581,11 @@ const respondBanOutcome = (
   reason: string,
   interactionId: string,
 ): Promise<void> =>
-  reply(responder, ref, modOutcomeCard({ action: 'ban', targetId, outcome, reason, interactionId }));
+  reply(
+    responder,
+    ref,
+    modOutcomeCard({ action: 'ban', targetId, outcome, reason, interactionId }),
+  );
 
 /** One value per `ModerationOutcome` variant — mirrors `commands.ts`'s `ACTION_TAKEN_FOR`. */
 const BAN_ACTION_TAKEN: Record<
