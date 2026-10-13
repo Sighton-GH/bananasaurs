@@ -72,7 +72,13 @@ const luhnValid = (digits: string): boolean => {
  */
 const isCardNumber = (candidate: string): boolean => {
   const digits = candidate.replace(/[ -]/gu, '');
-  return digits.length >= 13 && digits.length <= 19 && /^[2-6]/u.test(digits) && luhnValid(digits);
+  // 17-19 digits with no separator is a Discord snowflake (17-20 digits, in
+  // mentions like <@id> and in tool results), not a card: an older account's
+  // 18-digit id can start with 2-6 and pass Luhn. Contiguous cards are 13-16.
+  const maxDigits = digits.length === candidate.length ? 16 : 19;
+  return (
+    digits.length >= 13 && digits.length <= maxDigits && /^[2-6]/u.test(digits) && luhnValid(digits)
+  );
 };
 const matchesCardNumber = (text: string): boolean => {
   CARD_CANDIDATE_PATTERN.lastIndex = 0;

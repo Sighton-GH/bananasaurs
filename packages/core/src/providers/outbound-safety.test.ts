@@ -130,6 +130,23 @@ describe('scanOutboundRequest false-positive regressions (review finding 2)', ()
     expect(scanOutboundRequest(request(binary))).toEqual({ safe: true, findings: [] });
   });
 
+  // A conversation was refused for every turn after someone was mentioned:
+  // the mention's 18-digit snowflake started with 2 and passed Luhn, and it
+  // sat in the history. Snowflakes are 17-20 digits written without
+  // separators; contiguous cards are 13-16.
+  it.each([
+    ['a user mention', 'I ship you with <@250000000000000001>'],
+    ['a nickname mention', 'ask <@!250000000000000001>'],
+    ['a role mention', 'ping <@&310000000000000003>'],
+    ['a channel mention', 'see <#310000000000000003>'],
+    ['a custom emoji', 'nice <:banana:250000000000000001> <a:dance:310000000000000003>'],
+    ['a slash-command mention', 'run </ask:250000000000000001>'],
+    ['a bare 18-digit id', 'member 250000000000000001 joined'],
+    ['a bare 17-digit id', 'channel 41000000000000004 archived'],
+  ] as const)('allows a Luhn-valid snowflake in %s', (_name, text) => {
+    expect(scanOutboundRequest(request(text))).toEqual({ safe: true, findings: [] });
+  });
+
   it.each([
     ['Mastercard 2-series', '2223 0031 2200 3222'],
     ['Amex', '3782 822463 10005'],
@@ -147,6 +164,10 @@ describe('scanOutboundRequest false-positive regressions (review finding 2)', ()
 describe('redactEvidenceText card numbers', () => {
   it('leaves binary bytes alone', () => {
     const text = '01110111 00100000 01100001 01100011';
+    expect(redactEvidenceText(text)).toEqual({ text, detectors: [] });
+  });
+  it('leaves mentions and bare snowflakes alone', () => {
+    const text = 'thanks <@250000000000000001>, see <#310000000000000003> or 250000000000000001';
     expect(redactEvidenceText(text)).toEqual({ text, detectors: [] });
   });
   it('still redacts a card number', () => {
