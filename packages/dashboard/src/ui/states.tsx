@@ -145,8 +145,9 @@ export function NotFound({
   readonly backHref?: string;
   readonly backLabel?: string;
 }): ReactElement {
+  const title = `${what.slice(0, 1).toUpperCase()}${what.slice(1)} doesn't exist or was deleted`;
   return (
-    <InlineAlert tone="info" title={`${what} doesn't exist or was deleted`}>
+    <InlineAlert tone="info" title={title}>
       <Link href={backHref}>{backLabel}</Link>
     </InlineAlert>
   );

@@ -159,6 +159,16 @@ describe('Forbidden', () => {
 });
 
 describe('NotFound', () => {
+  it('starts the title with a capital letter when what is lowercase', () => {
+    render(<NotFound what="the AI setup" backHref="/assistant" />);
+    expect(screen.getByText("The AI setup doesn't exist or was deleted")).toBeTruthy();
+  });
+
+  it('capitalizes a single lowercase word', () => {
+    render(<NotFound what="skill" backHref="/assistant/skills" />);
+    expect(screen.getByText("Skill doesn't exist or was deleted")).toBeTruthy();
+  });
+
   it('says what is missing and links back, with Go back by default', () => {
     render(<NotFound what="This task" backHref="/tasks" />);
     expect(screen.getByText("This task doesn't exist or was deleted")).toBeTruthy();
