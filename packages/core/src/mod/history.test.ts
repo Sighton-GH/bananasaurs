@@ -413,7 +413,9 @@ describe('showHistoryPage', () => {
 
       const t = replyTexts(calls);
       expect(t).toContain('2 cases');
-      expect(t.indexOf('case-open')).toBeLessThan(t.indexOf('case-closed'));
+      expect(t).toContain('Case case-ope');
+      expect(t).toContain('Case case-clo');
+      expect(t.indexOf('case-ope')).toBeLessThan(t.indexOf('case-clo'));
     });
 
     it('writes nothing — a successful read records no case event', async () => {

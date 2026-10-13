@@ -22,6 +22,7 @@ import {
   type ModConfirmationDeps,
 } from './confirmations.js';
 import { parseModCustomId } from './custom-ids.js';
+import { showHistoryPage } from './history.js';
 
 /**
  * Delete, Warn and Timeout on log cards (ADR 0141 decisions 4–7). A shortcut
@@ -46,8 +47,40 @@ export const createModCardActionSubscriber = (deps: ModCardActionDeps): Subscrib
   async handle(event) {
     if (event.kind === 'interaction') {
       const parsed = parseModCustomId(event.customId);
-      if (parsed === undefined || parsed.action === 'history') return; // history: Task 8
+      if (parsed === undefined) return;
       const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
+
+      if (parsed.action === 'history') {
+        await deps.responder.deferUpdate(ref);
+        try {
+          await showHistoryPage(
+            deps.commands.history,
+            {
+              actorId: event.userId,
+              targetId: parseSnowflakeId(parsed.userId),
+              page: parsed.page,
+              interactionId: event.interactionId,
+            },
+            ref,
+            'edit',
+          );
+        } catch (err) {
+          deps.logger.error(
+            safeLogFields({
+              component: 'mod-card-actions',
+              guildId: deps.guildId,
+              action: 'history',
+              err,
+            }),
+            'a case-history page click failed',
+          );
+          await deps.responder.respond(
+            ref,
+            toOutgoingMessage(errorCard('mod.unavailable', { ref: refFor(event.interactionId) })),
+          );
+        }
+        return;
+      }
 
       if (parsed.action === 'warn' || parsed.action === 'timeout') {
         try {
