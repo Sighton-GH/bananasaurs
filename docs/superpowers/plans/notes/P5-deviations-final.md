@@ -25,4 +25,5 @@
 
 ## D1 remaining
 
-_PENDING_
+- `components/assistant-chain-pools.tsx:31` — `JSON.stringify` creates the local draft synchronization signature; it is not rendered data.
+- `pages/ai-setup/index.tsx:111` — `JSON.stringify` creates the local chain synchronization signature; it is not rendered data.
