@@ -514,6 +514,7 @@ const parseToolArguments = (raw: string | undefined): unknown => {
 const toWireMessage = (
   message: GenerationMessage,
   providerId: 'openrouter' | 'nvidia-nim',
+  caps: ModelCapabilities,
 ): unknown => {
   if (message.role === 'tool') {
     if (message.toolCallId === undefined)
@@ -539,7 +540,12 @@ const toWireMessage = (
       })),
     };
   }
-  const media = message.role === 'user' ? (message.media ?? []) : [];
+  // The request's effective capabilities gate every part: an image or PDF
+  // the entry forbids is never sent.
+  const media =
+    message.role === 'user'
+      ? (message.media ?? []).filter((m) => (m.kind === 'image' ? caps.image : caps.pdf))
+      : [];
   if (media.length === 0) return { role: message.role, content: message.text };
   return {
     role: message.role,
@@ -648,18 +654,20 @@ export class OpenAiCompatibleProvider implements TextProvider {
       timers.push(setTimeout(abortTimeout, this.maxCallMs)); // hard ceiling
       const firstByteTimer = setTimeout(abortTimeout, this.timeoutMs); // time to first byte
       timers.push(firstByteTimer);
-      // Built before the fetch try block so a malformed tool turn keeps its
-      // own error kind instead of being re-wrapped as an outage.
-      const hasPdf = request.messages.some(
-        (m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'),
-      );
+      // A PDF the entry capabilities forbid is never sent, so the
+      // `file-parser` plugin rides only on a PDF that actually goes out.
+      const hasPdf =
+        capabilities.pdf &&
+        request.messages.some(
+          (m) => m.role === 'user' && (m.media ?? []).some((x) => x.kind === 'pdf'),
+        );
       const body = JSON.stringify({
         model: request.model,
         messages: [
           ...(request.systemInstruction
             ? [{ role: 'system', content: request.systemInstruction }]
             : []),
-          ...request.messages.map((message) => toWireMessage(message, this.id)),
+          ...request.messages.map((message) => toWireMessage(message, this.id, capabilities)),
         ],
         ...(request.tools !== undefined && request.tools.length > 0
           ? {

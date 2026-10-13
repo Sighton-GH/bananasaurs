@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GenerateTextRequest } from './contracts.js';
 import { ProviderError } from './errors.js';
 import { createNvidiaNimProvider, createOpenRouterProvider } from './openai-compatible.js';
+import { TEXT_AND_TOOLS_ONLY } from './model-capabilities.js';
 
 const sse = (...payloads: unknown[]): Response =>
   new Response(
@@ -22,6 +23,7 @@ describe('OpenAI-compatible providers', () => {
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
       model: 'free-model',
+      capabilities: { ...TEXT_AND_TOOLS_ONLY, pdf: true },
       messages: [
         {
           role: 'user',
@@ -37,11 +39,74 @@ describe('OpenAI-compatible providers', () => {
     expect(body.plugins).toEqual([{ id: 'file-parser', pdf: { engine: 'native' } }]);
   });
 
+  it('drops an image the request capabilities forbid, sends one they allow', async () => {
+    const message = {
+      role: 'user' as const,
+      text: 'read this',
+      media: [
+        { kind: 'image' as const, mediaType: 'image/png', dataBase64: 'aGk=', name: 'c.png' },
+      ],
+    };
+    const denied = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    await createOpenRouterProvider({ apiKey: 'secret', fetch: denied }).generateText({
+      model: 'free-model',
+      capabilities: TEXT_AND_TOOLS_ONLY,
+      messages: [message],
+    });
+    const deniedBody = JSON.parse(denied.mock.calls[0]?.[1]?.body as string) as {
+      messages: { role: string; content: unknown }[];
+    };
+    expect(deniedBody.messages.at(-1)).toEqual({ role: 'user', content: 'read this' });
+
+    const allowed = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    await createOpenRouterProvider({ apiKey: 'secret', fetch: allowed }).generateText({
+      model: 'free-model',
+      capabilities: { ...TEXT_AND_TOOLS_ONLY, image: true },
+      messages: [message],
+    });
+    const allowedBody = JSON.parse(allowed.mock.calls[0]?.[1]?.body as string) as {
+      messages: { role: string; content: unknown }[];
+    };
+    expect(allowedBody.messages.at(-1)?.content).toContainEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/png;base64,aGk=' },
+    });
+  });
+
+  it('omits the file-parser plugin when the capabilities forbid the PDF', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
+    await createOpenRouterProvider({ apiKey: 'secret', fetch }).generateText({
+      model: 'free-model',
+      capabilities: TEXT_AND_TOOLS_ONLY,
+      messages: [
+        {
+          role: 'user',
+          text: 'read this',
+          media: [
+            {
+              kind: 'pdf' as const,
+              mediaType: 'application/pdf',
+              dataBase64: 'amVm',
+              name: 'r.pdf',
+            },
+          ],
+        },
+      ],
+    });
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {
+      plugins?: unknown;
+      messages: { role: string; content: unknown }[];
+    };
+    expect(body.plugins).toBeUndefined();
+    expect(body.messages.at(-1)).toEqual({ role: 'user', content: 'read this' });
+  });
+
   it('sends images as data-url parts and PDFs as file parts with the native plugin (ADR 0149)', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response());
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
       model: 'google/gemma-4-31b-it:free',
+      capabilities: { ...TEXT_AND_TOOLS_ONLY, image: true, pdf: true },
       messages: [
         {
           role: 'user',
@@ -86,6 +151,7 @@ describe('OpenAI-compatible providers', () => {
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       await provider.generateText({
         model: 'free-model',
+        capabilities: { ...TEXT_AND_TOOLS_ONLY, pdf: true },
         messages: [
           {
             role: 'user',
@@ -112,6 +178,7 @@ describe('OpenAI-compatible providers', () => {
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
     await provider.generateText({
       model: 'free-model',
+      capabilities: { ...TEXT_AND_TOOLS_ONLY, image: true },
       messages: [
         {
           role: 'user',

@@ -1313,6 +1313,95 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.inputs[0]?.channelContext).toContain('(skipped: at most 1 images per message)');
   });
 
+  it('caps total attachment bytes per question across the quote and the current message', async () => {
+    const h = harness(() => ({ ok: true, content: 'answer' }), fakeAccess({}));
+    h.attachmentCaps.mockReturnValue({
+      textMaxBytes: 100,
+      textMaxChars: 24_000,
+      textMaxCount: 1,
+      imageMaxBytes: 64,
+      imageMaxCount: 1,
+      pdfMaxBytes: 64,
+      pdfMaxCount: 1,
+    });
+    // The one-message maximum: the whole question may not fetch more than this.
+    const budget = 64 * 1 + 64 * 1 + 100 * 1;
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: '111111111111111111',
+      authorName: 'Sam L',
+      content: 'files',
+      attachments: [
+        {
+          attachmentId: '1',
+          fileName: 'note.txt',
+          contentType: 'text/plain',
+          sizeBytes: 10,
+          url: 'https://cdn.discordapp.com/attachments/1/2/note.txt',
+        },
+        {
+          attachmentId: '2',
+          fileName: 'chart.png',
+          contentType: 'image/png',
+          sizeBytes: 10,
+          url: 'https://cdn.discordapp.com/attachments/1/2/chart.png',
+        },
+        {
+          attachmentId: '3',
+          fileName: 'report.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: 10,
+          url: 'https://cdn.discordapp.com/attachments/1/2/report.pdf',
+        },
+      ],
+      embeds: [],
+    });
+    // Every fetch returns exactly the bytes it was allowed, with valid magic.
+    let fetchedBytes = 0;
+    h.fetchAttachmentBytes.mockImplementation(async (url: string, maxBytes: number) => {
+      if (url.endsWith('.pdf')) {
+        const bytes = new Uint8Array([
+          ...Buffer.from('%PDF-1.7', 'utf8'),
+          ...new Array(Math.max(0, maxBytes - 8)).fill(0),
+        ]);
+        fetchedBytes += bytes.byteLength;
+        return { ok: true as const, bytes, mediaType: 'application/pdf' };
+      }
+      if (url.endsWith('.png')) {
+        const bytes = new Uint8Array([
+          0x89,
+          0x50,
+          0x4e,
+          0x47,
+          0x0d,
+          0x0a,
+          0x1a,
+          0x0a,
+          ...new Array(Math.max(0, maxBytes - 8)).fill(0),
+        ]);
+        fetchedBytes += bytes.byteLength;
+        return { ok: true as const, bytes, mediaType: 'image/png' };
+      }
+      const bytes = Buffer.from('a'.repeat(maxBytes));
+      fetchedBytes += bytes.byteLength;
+      return { ok: true as const, bytes, mediaType: 'text/plain' };
+    });
+    await h.run(
+      mention({
+        invocationId: 'inv-att-budget',
+        messageId: '810000000000000029',
+        referencedMessageId: '840000000000000003',
+      }),
+    );
+    // Both messages carry the maximum, but the run fetches at most one maximum.
+    expect(fetchedBytes).toBeLessThanOrEqual(budget);
+    // The quote spends the budget, so the current message's files are skipped...
+    expect(h.inputs[0]?.channelContext).toContain(
+      '(skipped: the attachment limit for this question is used up)',
+    );
+    // ...and only the quote's media reaches the provider.
+    expect(h.inputs[0]?.media).toHaveLength(2);
+  });
+
   it.each([
     { real: 4, thumbs: 1, kept: 4 },
     { real: 2, thumbs: 3, kept: 4 },

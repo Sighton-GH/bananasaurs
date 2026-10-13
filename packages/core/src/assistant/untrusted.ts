@@ -14,6 +14,7 @@ export const escapeUntrustedClose = (content: string): string =>
 /** Neutralises every structural marker the request uses, for any untrusted body. */
 export const neutraliseMarkers = (content: string): string =>
   escapeUntrustedClose(content)
+    .replace(/\[UNTRUSTED/gi, '[untrusted-text')
     .replace(/\[\/CURRENT MESSAGE/gi, '[/current-message')
     .replace(/\[CURRENT MESSAGE/gi, '[current-message');
 
