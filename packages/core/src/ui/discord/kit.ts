@@ -143,7 +143,10 @@ export const button = (options: {
     label: options.label,
     ...(options.emoji === undefined
       ? {}
-      : { emoji: typeof options.emoji === 'string' ? { name: options.emoji } : { id: options.emoji.id } }),
+      : {
+          emoji:
+            typeof options.emoji === 'string' ? { name: options.emoji } : { id: options.emoji.id },
+        }),
     ...(options.disabled === true ? { disabled: true } : {}),
   };
 };

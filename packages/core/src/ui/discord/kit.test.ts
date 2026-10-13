@@ -56,7 +56,9 @@ describe('card kit constructors', () => {
   });
 
   it('takes a custom emoji by id', () => {
-    expect(button({ customId: 'a', label: 'A', emoji: { id: '123' } }).emoji).toEqual({ id: '123' });
+    expect(button({ customId: 'a', label: 'A', emoji: { id: '123' } }).emoji).toEqual({
+      id: '123',
+    });
     expect(button({ customId: 'a', label: 'A', emoji: '🔧' }).emoji).toEqual({ name: '🔧' });
   });
 

@@ -84,6 +84,7 @@ import {
 } from '@bananasaurs/storage';
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
+import { cardOut } from '../cards/art.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { mcpBulkRoleHandler } from '../jobs/mcp-bulk-role.js';
 import {
@@ -1642,6 +1643,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
     setPanelMessage: (panelId: string, messageId: string) =>
       panelRepo.setPanelMessage(scope, panelId, messageId, now()),
+    toMessage: cardOut,
   };
 
   const ops: GuildOperations = {

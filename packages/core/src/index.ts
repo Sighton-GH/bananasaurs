@@ -472,12 +472,12 @@ export {
   CUSTOM_ID_PREFIX,
   isSelectCustomId,
   parseCustomId,
-  renderPanelMessage,
+  renderPanelCard,
   type ParsedCustomId,
 } from './panels/components.js';
 export {
   createInteractionSubscriber,
-  describeResult,
+  panelResultCard,
   selectionAfterClick,
   type InteractionSubscriberDeps,
   type PanelResponder,

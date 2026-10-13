@@ -1,7 +1,8 @@
 import type { DiscordMessageRef, OutgoingMessage, Snowflake } from '../discord/port.js';
 import type { GuildId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
-import { renderPanelMessage } from './components.js';
+import type { CardMessage } from '../ui/discord/card.js';
+import { renderPanelCard } from './components.js';
 import type { PanelConfig } from './model.js';
 
 /**
@@ -30,6 +31,8 @@ export interface PublishDeps {
   readonly logger: Logger;
   /** Records the message id so reactions and interactions can find the panel. */
   setPanelMessage(panelId: string, messageId: Snowflake): void;
+  /** Turns the rendered card into a port message, attaching the banner art. */
+  toMessage(card: CardMessage): OutgoingMessage;
 }
 
 export async function postManagedPanel(
@@ -50,7 +53,7 @@ export async function postManagedPanel(
   const ref = await deps.discord.sendMessage(
     deps.guildId,
     panel.channelId,
-    renderPanelMessage(panel, panel.content),
+    deps.toMessage(renderPanelCard(panel)),
   );
 
   // Recorded immediately. Until this lands, an interaction on the message
@@ -86,7 +89,7 @@ export async function editManagedPanel(panel: PanelConfig, deps: PublishDeps): P
   await deps.discord.editMessage(
     deps.guildId,
     { channelId: panel.channelId, messageId: panel.messageId },
-    renderPanelMessage(panel, panel.content),
+    deps.toMessage(renderPanelCard(panel)),
   );
 
   deps.logger.info(

@@ -2,8 +2,12 @@ import type { InteractionRef, OutgoingMessage } from '../discord/port.js';
 import { isSnowflakeId } from '../ids.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
+import { panelRefusalCode } from '../copy/refusals.js';
+import { card, toOutgoingMessage, type CardMessage } from '../ui/discord/card.js';
+import { errorCard } from '../ui/discord/common-cards.js';
+import { text } from '../ui/discord/kit.js';
 import { isSelectCustomId, parseCustomId } from './components.js';
-import { needsFullReactionState, type PanelRefusal } from './convergence.js';
+import { needsFullReactionState } from './convergence.js';
 import { optionById, orderedOptions, type PanelConfig } from './model.js';
 import {
   convergeMember,
@@ -34,54 +38,46 @@ export interface InteractionSubscriberDeps extends ReactionSubscriberDeps {
   readonly responder: PanelResponder;
 }
 
-const REFUSAL_TEXT: Record<PanelRefusal, string> = {
-  'panel-disabled': 'This panel is switched off at the moment.',
-  'missing-required-role': 'You need another role before you can use this panel.',
-  'blocked-role': 'One of your roles means this panel is not available to you.',
-  'max-roles': 'That is as many roles as this panel allows — remove one first.',
-  'add-only': 'This panel can only add roles, not take them away.',
-  'remove-only': 'This panel can only remove roles, not hand them out.',
-};
-
 /**
- * What the member is told.
+ * What the member is told, as a card.
  *
  * Built from what the gateway **did**, never from what the plan wanted. Under
  * dry run, a tripped breaker or a hierarchy refusal the plan is full of
  * intentions and nothing happened — and a message built from the plan would be
  * a confident lie to somebody who can see their own role list.
  *
- * Role mentions render as the role's name and do not ping from an ephemeral
- * message, which saves fetching names we do not otherwise need.
+ * Role mentions stay live so they render as the role's name. They do not ping:
+ * the reply goes through `toOutgoingMessage`, whose `allowedMentions` is
+ * `{ parse: [] }`.
  */
-export const describeResult = (result: ConvergeMemberResult): string => {
+export const panelResultCard = (result: ConvergeMemberResult): CardMessage => {
   const refusal = result.plan.refusedBecause;
-  if (refusal !== undefined) return REFUSAL_TEXT[refusal];
+  if (refusal !== undefined) return errorCard(panelRefusalCode(refusal));
 
   const granted = result.appliedChanges.filter((c) => c.action === 'grant');
   const revoked = result.appliedChanges.filter((c) => c.action === 'revoke');
 
-  const parts: string[] = [];
-  if (granted.length > 0) {
-    parts.push(`You now have ${granted.map((c) => `<@&${c.roleId}>`).join(', ')}.`);
-  }
-  if (revoked.length > 0) {
-    parts.push(`Removed ${revoked.map((c) => `<@&${c.roleId}>`).join(', ')}.`);
-  }
-
-  if (parts.length > 0) {
+  if (granted.length > 0 || revoked.length > 0) {
+    const lines = ['**Roles updated**'];
+    if (granted.length > 0) {
+      lines.push(`You now have ${granted.map((c) => `<@&${c.roleId}>`).join(', ')}.`);
+    }
+    if (revoked.length > 0) {
+      lines.push(`Removed ${revoked.map((c) => `<@&${c.roleId}>`).join(', ')}.`);
+    }
     const clamped = result.plan.declined.find((d) => d.reason === 'max-roles');
-    if (clamped !== undefined) parts.push(REFUSAL_TEXT['max-roles']);
-    return parts.join(' ');
+    if (clamped !== undefined) {
+      lines.push(`💡 You've reached this panel's limit, so not every choice was added.`);
+    }
+    return card({ tone: 'ok', children: [text(lines.join('\n'))] });
   }
 
   // Nothing happened. Either there was nothing to do, or the gateway refused
   // everything — which one is an operator's question, not a member's.
   const declined = result.plan.declined[0];
-  if (declined !== undefined) return REFUSAL_TEXT[declined.reason];
-  return result.refused > 0
-    ? 'I could not change your roles just now. An operator has been notified.'
-    : 'No change — your roles already match.';
+  if (declined !== undefined) return errorCard(panelRefusalCode(declined.reason));
+  if (result.refused > 0) return errorCard('panel.not-applied');
+  return card({ tone: 'neutral', children: [text('**No change**\nYour roles already match.')] });
 };
 
 /**
@@ -204,12 +200,10 @@ export const createInteractionSubscriber = (deps: InteractionSubscriberDeps): Su
       );
       // Deferred already, so the member gets an answer rather than a spinner
       // that never resolves.
-      await deps.responder.respond(ref, {
-        content: 'Something went wrong handling that. An operator has been notified.',
-      });
+      await deps.responder.respond(ref, toOutgoingMessage(errorCard('panel.unavailable')));
       return;
     }
 
-    await deps.responder.respond(ref, { content: describeResult(result) });
+    await deps.responder.respond(ref, toOutgoingMessage(panelResultCard(result)));
   },
 });
