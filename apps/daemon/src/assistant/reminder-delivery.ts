@@ -166,7 +166,8 @@ export interface McpDeliveryRecheck {
  * Sends one reminder to its destination channel.
  *
  * Pings are allowed now, but only the stored, permission-checked targets
- * (ADR 0086 decision 6): `renderReminder` puts exactly the stored ids in
+ * (ADR 0086 decision 6): `renderAssistantReminderCard` (and the
+ * `style='message'` renderer) put exactly the stored ids in
  * `allowedMentions`, so text typed into the reminder can never ping. The
  * text is capped at creation (1,500 characters) and the render is capped
  * at Discord's 2,000 regardless.
