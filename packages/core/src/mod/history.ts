@@ -168,24 +168,6 @@ const recordUnauthorizedRefusal = (
   });
 };
 
-/**
- * Whether `event` is something `caseMemberId` **did** as a moderator,
- * landing on their own case (a purge, a note, an evidence link, a warning
- * they issued that resolved onto their own open case, an unauthorized
- * attempt of any of the above) rather than something that happened **to**
- * them.
- *
- * `actorId === caseMemberId` is the whole signal — per the Task 9 brief
- * (point 5, backed by two separate task reviews): purge and
- * unauthorized-refusal events attach to the *initiating moderator's own
- * case*, since a purge has no single target member. Rendering by raw event
- * count, or assuming every event on a case is a violation committed by that
- * case's member, would show "Bryan ran a purge" as "Bryan was purged" —
- * exactly the mistake this split exists to avoid. An event with no
- * `actorId` at all (an automod match, for instance) is never self-authored.
- */
-export const isSelfAuthored = (event: HistoryCaseEvent, caseMemberId: string): boolean =>
-  event.actorId !== undefined && event.actorId === caseMemberId;
 
 /** One page of a member's case history: at most `HISTORY_PAGE_SIZE` events, newest first. */
 export const HISTORY_PAGE_SIZE = 8;

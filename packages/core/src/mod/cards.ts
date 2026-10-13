@@ -25,7 +25,7 @@ import { escapeInline, jumpUrl, subtext, truncate, ts } from '../ui/discord/text
 import { ICON, type IconName } from '../ui/discord/tokens.js';
 import { buildModCancelCustomId, buildModConfirmCustomId } from './confirmations.js';
 import { buildModCustomId } from './custom-ids.js';
-import { isSelfAuthored, type HistoryCaseEvent, type HistoryPage } from './history.js';
+import type { HistoryCaseEvent, HistoryPage } from './history.js';
 
 export type DirectModAction = 'timeout' | 'untimeout' | 'kick' | 'unban';
 
@@ -484,6 +484,10 @@ const eventWords = (event: HistoryCaseEvent): string => {
       return capitalise(event.actionTaken.replaceAll('_', ' '));
   }
 };
+
+/** Whether an event was authored by the member who owns its case. */
+export const isSelfAuthored = (event: HistoryCaseEvent, caseMemberId: string): boolean =>
+  event.actorId !== undefined && event.actorId === caseMemberId;
 
 export const describeCaseEvent = (event: HistoryCaseEvent, caseMemberId: string): string => {
   const selfAuthored = isSelfAuthored(event, caseMemberId);
