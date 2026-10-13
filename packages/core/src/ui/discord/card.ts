@@ -13,7 +13,7 @@ export interface CardMessage {
   /** Art the sender must attach; each is referenced as `attachment://<file>`. */
   readonly art: readonly ArtKey[];
   readonly allowedMentions: {
-    readonly parse: readonly [];
+    readonly parse: readonly [] | readonly ['everyone'];
     readonly users?: readonly string[];
     readonly roles?: readonly string[];
   };
@@ -34,6 +34,7 @@ export const card = (options: {
   art?: readonly ArtKey[];
   pingUsers?: readonly string[];
   pingRoles?: readonly string[];
+  pingEveryone?: boolean;
   replyTo?: string;
 }): CardMessage => {
   const components = [container({ accent: TONE_ACCENT[options.tone], children: options.children })];
@@ -45,7 +46,7 @@ export const card = (options: {
     components,
     art: [...new Set(options.art ?? [])],
     allowedMentions: {
-      parse: [] as const,
+      parse: options.pingEveryone === true ? (['everyone'] as const) : ([] as const),
       ...(users.length > 0 ? { users: [...new Set(users)] } : {}),
       ...(roles.length > 0 ? { roles: [...new Set(roles)] } : {}),
     },
@@ -68,7 +69,7 @@ export const toOutgoingMessage = (
     components: message.components,
     flags: IS_COMPONENTS_V2,
     allowedMentions: {
-      parse: [],
+      parse: [...message.allowedMentions.parse],
       ...(message.allowedMentions.users === undefined
         ? {}
         : { users: [...message.allowedMentions.users] }),
