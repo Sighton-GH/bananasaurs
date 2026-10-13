@@ -597,6 +597,7 @@ export const handlePurgePreview = async (
       total: messages.length,
       fresh: freshCount,
       old: oldCount,
+      // `fetchRecentMessages` returns pages newest-first (see its contract on `DiscordPort`), so the first collected message is the newest.
       newestAtMs: messages[0]?.createdAtMs,
       reason,
       intentId,
