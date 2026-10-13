@@ -120,7 +120,7 @@ describe('AssistantPromptWizardPage', () => {
         <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
       </Router>,
     );
-    await screen.findByText(/assistant settings/);
+    await screen.findByText(/assistant settings/i);
     expect(screen.getByRole('heading', { level: 1, name: 'Build the prompt' })).toBeTruthy();
   });
 
