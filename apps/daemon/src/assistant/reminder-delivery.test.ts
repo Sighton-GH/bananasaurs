@@ -5,10 +5,12 @@ import { ChannelType, Client, PermissionsBitField } from 'discord.js';
 import { pino } from 'pino';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  cardTexts,
   deliverDueReminders,
   parseGuildId,
   ReminderDeliveryError,
   type Logger,
+  type OutgoingMessage,
   type Reminder,
   type ReminderStore,
 } from '@bananasaurs/core';
@@ -25,8 +27,8 @@ import {
   assistantWriteGateFor,
   createReminderDelivery,
   reminderStoreFor,
-  renderReminder,
 } from './reminder-delivery.js';
+import { renderAssistantReminderCard } from './cards.js';
 import { channelAccessFor } from '../channels/access.js';
 
 /**
@@ -73,134 +75,146 @@ beforeEach(() => {
 });
 afterEach(() => t.close());
 
-describe('renderReminder', () => {
-  it('sends no pings and parses nothing when no mentions are stored', () => {
-    const rendered = renderReminder(reminder());
-    expect(rendered.allowedMentions).toEqual({ parse: [] });
-    expect(rendered.content).toBe(`⏰ standup in five\n-# Set by <@${CREATOR}>`);
+/** Posts an assistant reminder through the delivery and returns what reached Discord. */
+const sendAssistant = async (
+  over: Partial<Reminder> = {},
+): Promise<NonNullable<OutgoingMessage>> => {
+  const discord = new FakeDiscord({ guildId: GUILD });
+  await createReminderDelivery(GUILD, discord).send(assistantReminder(over));
+  const calls = discord.restCalls('sendMessage');
+  expect(calls).toHaveLength(1);
+  return calls[0]?.args[2] as NonNullable<OutgoingMessage>;
+};
+
+describe('message-style reminders stay plain text (ADR 0145)', () => {
+  it('renders a message-style reminder as bare text with its pings', async () => {
+    const sent = await sendAssistant({
+      style: 'message',
+      context: 'for the race',
+      mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false },
+    });
+    expect(sent.content).toBe(`<@&${ROLE}> <@${USER}>\nstandup in five`);
+    expect(sent.content).not.toContain('⏰');
+    expect(sent.content).not.toContain('Set by');
+    expect(sent).not.toHaveProperty('components');
+    expect(sent.allowedMentions).toEqual({ parse: [], roles: [ROLE], users: [USER] });
   });
 
-  it('renders a message-style reminder as bare text with its pings', () => {
-    const rendered = renderReminder(
-      reminder({
-        style: 'message',
-        context: 'for the race',
-        mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false },
-      }),
+  it('renders a message-style reminder with no pings as the text alone', async () => {
+    const sent = await sendAssistant({ style: 'message' });
+    expect(sent.content).toBe('standup in five');
+    expect(sent.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('truncates an over-long message text, never its pings, and neutralises @everyone', async () => {
+    const sent = await sendAssistant({
+      style: 'message',
+      text: `@everyone ${'a'.repeat(3_000)}`,
+      mentions: { userIds: [USER], roleIds: [], everyone: false, here: false },
+    });
+    expect(sent.content?.length).toBeLessThanOrEqual(2_000);
+    expect(sent.content?.startsWith(`<@${USER}>\n`)).toBe(true);
+    expect(sent.content).not.toMatch(/@everyone/);
+    expect(sent.allowedMentions).toEqual({ parse: [], users: [USER] });
+  });
+
+  it('leaves the reminder frame off a message-style reminder', async () => {
+    const sent = await sendAssistant({ style: 'message', context: 'for the race' });
+    expect(sent.content).toBe('standup in five');
+    expect(sent.content).not.toContain('Set by');
+  });
+});
+
+describe('default-style reminders are cards', () => {
+  it('sends no pings and parses nothing when no mentions are stored', async () => {
+    const sent = await sendAssistant();
+    expect(sent.flags).toBe(32768);
+    expect(sent.allowedMentions).toEqual({ parse: [] });
+    expect(cardTexts(sent.components ?? [])).toBe(
+      `-# ⏰ REMINDER\nstandup in five\n-# Set by <@${CREATOR}>`,
     );
-    expect(rendered.content).toBe(`<@&${ROLE}> <@${USER}>\nstandup in five`);
-    expect(rendered.content).not.toContain('⏰');
-    expect(rendered.content).not.toContain('Set by');
-    expect(rendered.allowedMentions).toEqual({ parse: [], roles: [ROLE], users: [USER] });
   });
 
-  it('renders a message-style reminder with no pings as the text alone', () => {
-    const rendered = renderReminder(reminder({ style: 'message' }));
-    expect(rendered.content).toBe('standup in five');
-    expect(rendered.allowedMentions).toEqual({ parse: [] });
+  it('lists exactly the stored users and roles, roles before users', async () => {
+    const sent = await sendAssistant({
+      mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false },
+    });
+    expect(cardTexts(sent.components ?? []).split('\n')[1]).toBe(`<@&${ROLE}> <@${USER}>`);
+    expect(sent.allowedMentions).toEqual({ parse: [], roles: [ROLE], users: [USER] });
   });
 
-  it('truncates an over-long message text, never its pings, and neutralises @everyone', () => {
-    const rendered = renderReminder(
-      reminder({
-        style: 'message',
-        text: `@everyone ${'a'.repeat(3_000)}`,
-        mentions: { userIds: [USER], roleIds: [], everyone: false, here: false },
-      }),
+  it('puts @everyone first and parses everyone when stored', async () => {
+    const sent = await sendAssistant({
+      mentions: { userIds: [USER], roleIds: [ROLE], everyone: true, here: false },
+    });
+    expect(cardTexts(sent.components ?? []).split('\n')[1]).toBe(
+      `@everyone <@&${ROLE}> <@${USER}>`,
     );
-    expect(rendered.content.length).toBeLessThanOrEqual(2_000);
-    expect(rendered.content.startsWith(`<@${USER}>\n`)).toBe(true);
-    expect(rendered.content).not.toMatch(/@everyone/);
-    expect(rendered.allowedMentions).toEqual({ parse: [], users: [USER] });
-  });
-
-  it('keeps the reminder frame for style reminder', () => {
-    const rendered = renderReminder(reminder({ style: 'reminder' }));
-    expect(rendered.content).toBe(`⏰ standup in five\n-# Set by <@${CREATOR}>`);
-  });
-
-  it('lists exactly the stored users and roles, roles before users', () => {
-    const rendered = renderReminder(
-      reminder({ mentions: { userIds: [USER], roleIds: [ROLE], everyone: false, here: false } }),
-    );
-    expect(rendered.content.split('\n')[0]).toBe(`<@&${ROLE}> <@${USER}>`);
-    expect(rendered.allowedMentions).toEqual({ parse: [], roles: [ROLE], users: [USER] });
-  });
-
-  it('puts @everyone first and parses everyone when stored', () => {
-    const rendered = renderReminder(
-      reminder({ mentions: { userIds: [USER], roleIds: [ROLE], everyone: true, here: false } }),
-    );
-    expect(rendered.content.split('\n')[0]).toBe(`@everyone <@&${ROLE}> <@${USER}>`);
-    expect(rendered.allowedMentions).toEqual({
+    expect(sent.allowedMentions).toEqual({
       parse: ['everyone'],
       roles: [ROLE],
       users: [USER],
     });
   });
 
-  it('parses everyone for @here alone', () => {
-    const rendered = renderReminder(
-      reminder({ mentions: { userIds: [], roleIds: [], everyone: false, here: true } }),
-    );
-    expect(rendered.content.split('\n')[0]).toBe('@here');
-    expect(rendered.allowedMentions).toEqual({ parse: ['everyone'] });
+  it('parses everyone for @here alone', async () => {
+    const sent = await sendAssistant({
+      mentions: { userIds: [], roleIds: [], everyone: false, here: true },
+    });
+    expect(cardTexts(sent.components ?? []).split('\n')[1]).toBe('@here');
+    expect(sent.allowedMentions).toEqual({ parse: ['everyone'] });
   });
 
-  it('never pings text the member typed when nothing is stored', () => {
-    const rendered = renderReminder(
-      reminder({
-        text: '@everyone free pizza <@123456789012345678>',
-        mentions: { userIds: [], roleIds: [], everyone: false, here: false },
-      }),
-    );
-    expect(rendered.allowedMentions).toEqual({ parse: [] });
-    // No pings line: the content starts with the neutralised text itself.
-    expect(rendered.content.startsWith('⏰ @\u200beveryone')).toBe(true);
+  it('never pings text the member typed when nothing is stored', async () => {
+    const sent = await sendAssistant({
+      text: '@everyone free pizza <@123456789012345678>',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+    });
+    expect(sent.allowedMentions).toEqual({ parse: [] });
+    // No pings line: the text starts with the neutralised text itself.
+    expect(cardTexts(sent.components ?? [])).toContain('@\u200beveryone');
   });
 
-  it('neutralises @everyone in the text when only @here is stored', () => {
-    const rendered = renderReminder(
-      reminder({
-        text: '@everyone meeting moved',
-        mentions: { userIds: [], roleIds: [], everyone: false, here: true },
-      }),
-    );
-    expect(rendered.content.split('\n')[0]).toBe('@here');
-    expect(rendered.content).not.toContain('@everyone');
-    expect(rendered.content).toContain('@\u200beveryone');
+  it('neutralises @everyone in the text when only @here is stored', async () => {
+    const sent = await sendAssistant({
+      text: '@everyone meeting moved',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: true },
+    });
+    const texts = cardTexts(sent.components ?? []);
+    expect(texts.split('\n')[1]).toBe('@here');
+    expect(texts).not.toContain('@everyone');
+    expect(texts).toContain('@\u200beveryone');
   });
 
-  it('collapses newlines in the context line', () => {
-    const rendered = renderReminder(reminder({ context: 'line one\nline two' }));
-    const lines = rendered.content.split('\n');
-    expect(lines).toHaveLength(3);
-    expect(lines[1]).toBe('-# line one line two');
+  it('collapses newlines in the context line', async () => {
+    const sent = await sendAssistant({ context: 'line one\nline two' });
+    const lines = cardTexts(sent.components ?? []).split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[2]).toBe('-# line one line two');
   });
 
-  it('adds the context line and the Set by line', () => {
-    const rendered = renderReminder(reminder({ context: 'because the deploy moved' }));
-    expect(rendered.content).toBe(
-      `⏰ standup in five\n-# because the deploy moved\n-# Set by <@${CREATOR}>`,
+  it('adds the context line and the Set by line', async () => {
+    const sent = await sendAssistant({ context: 'because the deploy moved' });
+    expect(cardTexts(sent.components ?? [])).toBe(
+      `-# ⏰ REMINDER\nstandup in five\n-# because the deploy moved\n-# Set by <@${CREATOR}>`,
     );
   });
 
-  it('never pings the creator through the Set by line', () => {
-    const rendered = renderReminder(reminder());
-    expect(rendered.allowedMentions).toEqual({ parse: [] });
-    expect(rendered.content).toContain(`<@${CREATOR}>`);
+  it('never pings the creator through the Set by line', async () => {
+    const sent = await sendAssistant();
+    expect(sent.allowedMentions).toEqual({ parse: [] });
+    expect(cardTexts(sent.components ?? [])).toContain(`<@${CREATOR}>`);
   });
 
-  it('caps the content at 2,000 characters by truncating the text, never the pings', () => {
-    const rendered = renderReminder(
-      reminder({
-        text: 'x'.repeat(5_000),
-        mentions: { userIds: [USER], roleIds: [ROLE], everyone: true, here: false },
-      }),
-    );
-    expect(rendered.content.length).toBeLessThanOrEqual(2_000);
-    const lines = rendered.content.split('\n');
-    expect(lines[0]).toBe(`@everyone <@&${ROLE}> <@${USER}>`);
+  it('truncates a 5,000-character text with …, never the pings', async () => {
+    const sent = await sendAssistant({
+      text: 'x'.repeat(5_000),
+      mentions: { userIds: [USER], roleIds: [ROLE], everyone: true, here: false },
+    });
+    const texts = cardTexts(sent.components ?? []);
+    expect(texts).toContain('…');
+    const lines = texts.split('\n');
+    expect(lines[1]).toBe(`@everyone <@&${ROLE}> <@${USER}>`);
     expect(lines.at(-1)).toBe(`-# Set by <@${CREATOR}>`);
   });
 });
@@ -546,7 +560,7 @@ describe('mcp scheduled sends (origin mcp)', () => {
     const { logger } = capturingLogger();
 
     expect(() =>
-      renderReminder({
+      renderAssistantReminderCard({
         ...mcpReminder(),
         mentions: { userIds: [], roleIds: [], everyone: true, here: false },
       }),
@@ -785,6 +799,7 @@ describe('no model in the scheduled-send path', () => {
     expect([...new Set(specifiers)].sort()).toEqual([
       '../channels/access.js',
       '../mcp/targets.js',
+      './cards.js',
       './reminder-summary.js',
       '@bananasaurs/core',
       '@bananasaurs/storage',
@@ -807,6 +822,7 @@ describe('no model in the scheduled-send path', () => {
       'ReminderStore',
       'parseGuildId',
       'safeLogFields',
+      'toOutgoingMessage',
     ]);
     expect(source).not.toContain('generateText');
   });
@@ -876,7 +892,7 @@ describe('a guild not yet cached is transient, never a denial (N1)', () => {
 });
 
 describe('createReminderDelivery', () => {
-  it('sends the rendered reminder to the destination channel', async () => {
+  it('sends the reminder card to the destination channel', async () => {
     const discord = new FakeDiscord({ guildId: GUILD });
     const delivery = createReminderDelivery(GUILD, discord);
     const due = assistantReminder({
@@ -889,7 +905,10 @@ describe('createReminderDelivery', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
-    expect(calls[0]?.args[2]).toEqual(renderReminder(due));
+    const sent = calls[0]?.args[2] as NonNullable<OutgoingMessage>;
+    expect(sent.flags).toBe(32768);
+    expect(sent.allowedMentions).toEqual({ parse: [], users: [USER] });
+    expect(cardTexts(sent.components ?? [])).toContain('why it matters');
   });
 
   it('keeps the error classification on send failures', async () => {

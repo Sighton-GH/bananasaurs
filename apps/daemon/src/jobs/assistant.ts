@@ -15,6 +15,7 @@ import {
   safeLogFields,
   splitForDiscord,
   stripNewTopic,
+  toOutgoingMessage,
   totalTokensOf,
   type AssistantInvokePayload,
   type AssistantInvokeCursor,
@@ -47,6 +48,7 @@ import type {
   AttachmentSummary,
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
+import { renderEscalationCard } from '../assistant/cards.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import {
@@ -2115,15 +2117,22 @@ export const assistantInvokeHandler = (deps: {
         result.escalation !== undefined &&
         payload.channelId !== undefined
       ) {
-        const reviewers = result.escalation.reviewerRoleIds.map((id) => `<@&${id}>`).join(' ');
-        await deps.send(result.escalation.channelId, {
-          content:
-            `${reviewers}${reviewers === '' ? '' : '\n'}IT request ${result.escalation.ticketId} from <@${payload.userId}> in <#${payload.channelId}>:\n${result.content}`.slice(
-              0,
-              2_000,
-            ),
-          allowedMentions: { parse: [], roles: result.escalation.reviewerRoleIds },
-        });
+        await deps.send(
+          result.escalation.channelId,
+          toOutgoingMessage(
+            renderEscalationCard({
+              guildId: deps.guildId,
+              ticketId: result.escalation.ticketId,
+              reviewerRoleIds: result.escalation.reviewerRoleIds,
+              userId: payload.userId,
+              channelId: payload.channelId,
+              messageId: payload.messageId,
+              question: Object.values(payload.input).join('\n'),
+              answer: result.content,
+              at: deps.now(),
+            }),
+          ),
+        );
         saveStaged('escalation-sent', result);
       }
 

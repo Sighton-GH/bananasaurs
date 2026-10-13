@@ -10,6 +10,7 @@ import type {
   ReactionEvent,
 } from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
+import { cardTexts, type OutgoingMessage } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
   type AssistantCommandService,
@@ -377,10 +378,12 @@ describe('assistant command subscriber', () => {
     expect(h.send).toHaveBeenLastCalledWith(
       '987654321098765430',
       expect.objectContaining({
-        content: expect.stringContaining('IT request it-1'),
+        flags: 32768,
         allowedMentions: { parse: [], roles: ['987654321098765431'] },
       }),
     );
+    const escalation = (h.send.mock.lastCall as unknown as [string, OutgoingMessage])[1];
+    expect(cardTexts(escalation.components ?? [])).toContain('IT request it-1');
   });
 
   it('routes a tag of the bot user through the queue to the flagged behaviour', async () => {
@@ -1387,8 +1390,12 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     expect(d.respond).not.toHaveBeenCalled();
     expect(d.send).toHaveBeenCalledWith(
       '111111111111111111',
-      expect.objectContaining({ content: expect.stringContaining('IT request t1') }),
+      expect.objectContaining({ flags: 32768 }),
     );
+    const stranded = d.send.mock.calls.find(
+      (call) => call[0] === '111111111111111111',
+    )?.[1] as OutgoingMessage;
+    expect(cardTexts(stranded.components ?? [])).toContain('IT request t1');
   });
 });
 

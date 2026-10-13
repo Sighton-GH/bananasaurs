@@ -6,6 +6,7 @@ import { pino } from 'pino';
 import {
   assistantInvokeCursor,
   assistantSummarisePayload,
+  cardTexts,
   getLiveBuffer,
   JOB_KINDS,
   parseConfig,
@@ -4948,6 +4949,32 @@ describe('assistantInvokeHandler run ledger (ADR 0129 §6)', () => {
       .listRunEvents(scope(), 'rec-escalation', 0, 50)
       .find((r) => r.event.kind === 'finished')?.event;
     expect(finished).toMatchObject({ outcome: 'answered' });
+  });
+
+  it('posts the escalation as a hold card pinging exactly the reviewer roles', async () => {
+    const role = '666666666666666666';
+    const h = harness(async () => ({
+      ok: true as const,
+      content: 'escalated **summary**',
+      escalation: {
+        channelId: '555555555555555555',
+        reviewerRoleIds: [role],
+        ticketId: 'ticket-1',
+      },
+    }));
+    await h.run(mention('rec-escalation-card'), 1);
+    const post = h.sent.find((s) => s.channelId === '555555555555555555');
+    expect(post).toBeDefined();
+    expect(post?.message.flags).toBe(32768);
+    expect(post?.message.allowedMentions).toEqual({ parse: [], roles: [role] });
+    const texts = cardTexts(post?.message.components ?? []);
+    expect(texts).toContain('NEEDS A PERSON');
+    expect(texts).toContain('ticket-1');
+    expect(texts).toContain(`<@&${role}>`);
+    expect(texts).toContain('escalated **summary**');
+    expect(texts).toContain(
+      `[Jump to the question](https://discord.com/channels/${GUILD_ID}/${CHANNEL_ID}/810000000000000001)`,
+    );
   });
 
   it('drops the live buffer when the invoke throws before any provider call', async () => {
