@@ -7,6 +7,7 @@ import {
   deleteOutcomeCard,
   durationLabel,
   modOutcomeCard,
+  noteOutcomeCard,
   purgeConfirmCard,
   timeoutModal,
   warnModal,
@@ -125,6 +126,25 @@ describe('warnOutcomeCard', () => {
     expect(t).toContain(
       "This reached an escalation step, but its consequence didn't run: Moderation is paused.",
     );
+  });
+});
+
+describe('noteOutcomeCard', () => {
+  it('a note names the target and carries the note text', () => {
+    const c = noteOutcomeCard({ kind: 'note', targetId: U, content: 'seen near the raid server' });
+    expect(text(c)).toContain(`Added a note to <@${U}>'s case`);
+    expect(text(c)).toContain('seen near the raid server');
+    expect(c.allowedMentions).toEqual({ parse: [] });
+  });
+  it('an evidence link names the target and carries the URL', () => {
+    const c = noteOutcomeCard({
+      kind: 'evidence',
+      targetId: U,
+      content: 'https://example.com/screenshot.png',
+    });
+    expect(text(c)).toContain(`Added an evidence link to <@${U}>'s case`);
+    expect(text(c)).toContain('https://example.com/screenshot.png');
+    expect(c.allowedMentions).toEqual({ parse: [] });
   });
 });
 
