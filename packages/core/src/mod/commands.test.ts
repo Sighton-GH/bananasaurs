@@ -5,13 +5,17 @@ import type { ModerationGatewayPort } from '../automod/subscriber.js';
 import type { SlashCommandEvent } from '../discord/events.js';
 import type { InteractionRef, OutgoingMessage, Snowflake } from '../discord/port.js';
 import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
-import { parseGuildId } from '../ids.js';
+import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
+import { cardTexts } from '../ui/discord/inspect.js';
 import {
   createModCommandSubscriber,
   MAX_TIMEOUT_MS,
+  runDirectAction,
+  runWarn,
   type ModCommandCasePorts,
   type ModCommandDeps,
+  type ModInput,
   type NoteEvidenceCasePorts,
 } from './commands.js';
 import type { HistoryCase, HistoryCaseEvent, HistoryCasePorts } from './history.js';
@@ -282,7 +286,9 @@ describe('mod command subscriber', () => {
       // confirmed click does, and that lives entirely in confirmations.ts.
       expect(calls.applyAction).toHaveLength(0);
       expect(calls.recordCaseEvent).toHaveLength(0);
-      expect(calls.respond[0]?.message.content).toMatch(/ban preview/i);
+      const banPreview = calls.respond[0]?.message;
+      expect(banPreview?.flags).toBe(32768);
+      expect(cardTexts(banPreview?.components ?? [])).toContain(`Ban <@${TARGET}>?`);
     });
 
     it('purge defers and never calls the gateway directly from this subscriber', async () => {
@@ -299,7 +305,9 @@ describe('mod command subscriber', () => {
       );
       expect(calls.defer).toHaveLength(1);
       expect(calls.applyAction).toHaveLength(0);
-      expect(calls.respond[0]?.message.content).toMatch(/purge preview/i);
+      const purgePreview = calls.respond[0]?.message;
+      expect(purgePreview?.flags).toBe(32768);
+      expect(cardTexts(purgePreview?.components ?? [])).toContain('Delete 0 messages');
     });
   });
 
@@ -314,7 +322,11 @@ describe('mod command subscriber', () => {
       ]);
       expect(calls.applyAction).toHaveLength(0);
       expect(calls.respond).toHaveLength(1);
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      const refusedKick = calls.respond[0]?.message;
+      expect(refusedKick?.flags).toBe(32768);
+      const refusedKickText = cardTexts(refusedKick?.components ?? []);
+      expect(refusedKickText).toContain("You can't take moderation actions");
+      expect(refusedKickText).toContain('-# Ref');
 
       expect(calls.recordCaseEvent).toHaveLength(1);
       const event = calls.recordCaseEvent[0]!;
@@ -337,7 +349,9 @@ describe('mod command subscriber', () => {
       expect(calls.recordCaseEvent).toHaveLength(1);
       expect(calls.recordCaseEvent[0]?.actionTaken).toBe('escalation_refused');
       expect(calls.recordCaseEvent[0]?.refusalReason).toBe('unauthorized');
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        "You can't take moderation actions",
+      );
     });
   });
 
@@ -386,7 +400,11 @@ describe('mod command subscriber', () => {
       expect(event.actionTaken).toBe('manual_applied');
       expect(event.escalationAction).toBe('timeout');
       expect(event.actorId).toBe(MODERATOR);
-      expect(calls.respond[0]?.message.content).toMatch(/applied/);
+      const timeoutReply = calls.respond[0]?.message;
+      expect(timeoutReply?.flags).toBe(32768);
+      expect(cardTexts(timeoutReply?.components ?? [])).toContain(
+        `Timed out <@${TARGET}> for 10 minutes`,
+      );
     });
   });
 
@@ -408,7 +426,11 @@ describe('mod command subscriber', () => {
       expect(event.escalationAction).toBe('kick');
       expect(event.actorId).toBe(MODERATOR);
       expect(event.memberId).toBe(TARGET);
-      expect(calls.respond[0]?.message.content).toMatch(/refused/);
+      const kickRefused = calls.respond[0]?.message;
+      expect(kickRefused?.flags).toBe(32768);
+      const kickRefusedText = cardTexts(kickRefused?.components ?? []);
+      expect(kickRefusedText).toContain('That member is above the bot');
+      expect(kickRefusedText).not.toContain('role-above-bot');
     });
   });
 
@@ -430,7 +452,11 @@ describe('mod command subscriber', () => {
       expect(event.memberId).toBe(TARGET);
       expect(event.actorId).toBe(MODERATOR);
       expect(event.at).toBe(NOW_MS);
-      expect(calls.respond[0]?.message.content).toMatch(/applied/);
+      const untimeoutReply = calls.respond[0]?.message;
+      expect(untimeoutReply?.flags).toBe(32768);
+      expect(cardTexts(untimeoutReply?.components ?? [])).toContain(
+        `Ended <@${TARGET}>'s timeout`,
+      );
     });
 
     it('unban calls the gateway once and records manual_applied with escalation_action unban', async () => {
@@ -446,6 +472,9 @@ describe('mod command subscriber', () => {
       expect(event.escalationAction).toBe('unban');
       expect(event.memberId).toBe(TARGET);
       expect(event.actorId).toBe(MODERATOR);
+      const unbanReply = calls.respond[0]?.message;
+      expect(unbanReply?.flags).toBe(32768);
+      expect(cardTexts(unbanReply?.components ?? [])).toContain(`Unbanned <@${TARGET}>`);
     });
   });
 
@@ -467,8 +496,12 @@ describe('mod command subscriber', () => {
       expect(calls.warnRecordCaseEvent).toHaveLength(1);
       expect(calls.warnRecordCaseEvent[0]?.actionTaken).toBe('warned');
       expect(calls.warnRecordCaseEvent[0]?.actorId).toBe(MODERATOR);
-      expect(calls.respond[0]?.message.content).toMatch(/Violation count: 1/);
-      expect(calls.respond[0]?.message.content).not.toMatch(/escalation tier/);
+      const warnReply = calls.respond[0]?.message;
+      expect(warnReply?.flags).toBe(32768);
+      const warnText = cardTexts(warnReply?.components ?? []);
+      expect(warnText).toContain(`Warned <@${TARGET}>`);
+      expect(warnText).toContain('warning 1');
+      expect(warnText).not.toMatch(/escalation tier/);
     });
 
     it('surfaces the escalation outcome when the warning crosses a tier', async () => {
@@ -482,9 +515,9 @@ describe('mod command subscriber', () => {
 
       expect(calls.applyAction).toHaveLength(1);
       expect(calls.applyAction[0]?.intent.action).toBe('timeout');
-      expect(calls.respond[0]?.message.content).toMatch(/Violation count: 3/);
-      expect(calls.respond[0]?.message.content).toMatch(/escalation tier/i);
-      expect(calls.respond[0]?.message.content).toMatch(/applied/);
+      const escalationText = cardTexts(calls.respond[0]?.message.components ?? []);
+      expect(escalationText).toContain('warning 3');
+      expect(escalationText).toContain('its consequence was applied');
     });
 
     it('calls onWarned once with the warn info after a successful warn', async () => {
@@ -537,7 +570,9 @@ describe('mod command subscriber', () => {
       await subscriber.handle(slashCommandEvent({ subcommandPath: ['warn'] }));
 
       expect(calls.respond).toHaveLength(1);
-      expect(calls.respond[0]?.message.content).toMatch(/Warning recorded/);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        `Warned <@${TARGET}>`,
+      );
     });
 
     it('an absent onWarned replies normally', async () => {
@@ -546,7 +581,9 @@ describe('mod command subscriber', () => {
       await subscriber.handle(slashCommandEvent({ subcommandPath: ['warn'] }));
 
       expect(calls.respond).toHaveLength(1);
-      expect(calls.respond[0]?.message.content).toMatch(/Warning recorded/);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        `Warned <@${TARGET}>`,
+      );
     });
   });
 
@@ -573,7 +610,11 @@ describe('mod command subscriber', () => {
       expect(event.memberId).toBe(TARGET);
       expect(event.matchedSnippet).toBe('seen hanging around a raid server');
       expect(event.at).toBe(NOW_MS);
-      expect(calls.respond[0]?.message.content).toMatch(/note recorded/i);
+      const noteReply = calls.respond[0]?.message;
+      expect(noteReply?.flags).toBe(32768);
+      expect(cardTexts(noteReply?.components ?? [])).toContain(
+        `Added a note to <@${TARGET}>'s case`,
+      );
     });
 
     it('opens a non-counting case at count 0 when the member has no open case', async () => {
@@ -618,7 +659,11 @@ describe('mod command subscriber', () => {
       expect(event.actorId).toBe(MODERATOR);
       expect(event.memberId).toBe(TARGET);
       expect(event.matchedSnippet).toBe('https://example.com/screenshot.png');
-      expect(calls.respond[0]?.message.content).toMatch(/evidence.*recorded/i);
+      const evidenceReply = calls.respond[0]?.message;
+      expect(evidenceReply?.flags).toBe(32768);
+      expect(cardTexts(evidenceReply?.components ?? [])).toContain(
+        `Added an evidence link to <@${TARGET}>'s case`,
+      );
     });
 
     it('also opens a non-counting case at count 0 when the member has no open case', async () => {
@@ -654,7 +699,9 @@ describe('mod command subscriber', () => {
         }),
       );
 
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        "You can't take moderation actions",
+      );
       expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
       const event = calls.noteEvidenceRecordCaseEvent[0]!;
       expect(event.actionTaken).toBe('escalation_refused');
@@ -678,7 +725,9 @@ describe('mod command subscriber', () => {
         }),
       );
 
-      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        "You can't take moderation actions",
+      );
       expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
       const event = calls.noteEvidenceRecordCaseEvent[0]!;
       expect(event.actionTaken).toBe('escalation_refused');
@@ -765,6 +814,83 @@ describe('mod command subscriber', () => {
     });
   });
 
+  describe('shared ModInput path', () => {
+    it('runDirectAction from a modal submit binds the dedupe key to the modal interaction and records the same case event as the slash path', async () => {
+      const slashHarness = buildHarness({ applyActionResult: { status: 'applied' } });
+      const slashSubscriber = createModCommandSubscriber(slashHarness.deps);
+      await slashSubscriber.handle(
+        slashCommandEvent({
+          interactionId: 'interaction-1',
+          subcommandPath: ['timeout'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'reason', value: 'being disruptive' },
+            { name: 'duration_minutes', value: 10 },
+          ],
+        }),
+      );
+
+      const modalHarness = buildHarness({ applyActionResult: { status: 'applied' } });
+      const modalInput: ModInput = {
+        actorId: MODERATOR,
+        targetId: parseSnowflakeId(TARGET),
+        reason: 'being disruptive',
+        durationMinutes: 10,
+        interactionId: 'modal-1',
+      };
+      await runDirectAction(
+        modalHarness.deps,
+        modalInput,
+        { interactionId: 'modal-1', token: 'modal-token-1' },
+        'timeout',
+      );
+
+      expect(modalHarness.calls.applyAction).toHaveLength(1);
+      expect(modalHarness.calls.applyAction[0]?.intent.dedupeKey).toBe(
+        `mod:${GUILD}:timeout:modal-1`,
+      );
+      // The same case event the slash path records: only the dedupe key binds
+      // to the surface's own interaction id.
+      expect(modalHarness.calls.recordCaseEvent).toHaveLength(1);
+      const modalEvent = modalHarness.calls.recordCaseEvent[0]!;
+      const slashEvent = slashHarness.calls.recordCaseEvent[0]!;
+      expect(modalEvent).toMatchObject({
+        memberId: slashEvent.memberId,
+        matchedCategory: slashEvent.matchedCategory,
+        matchedSnippet: slashEvent.matchedSnippet,
+        actionTaken: slashEvent.actionTaken,
+        escalationAction: slashEvent.escalationAction,
+        actorId: slashEvent.actorId,
+        at: slashEvent.at,
+      });
+      expect(cardTexts(modalHarness.calls.respond[0]?.message.components ?? [])).toContain(
+        `Timed out <@${TARGET}> for 10 minutes`,
+      );
+    });
+
+    it('runWarn with an unauthorized actor records escalation_refused/unauthorized and never calls issueWarn', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      const input: ModInput = {
+        actorId: MODERATOR,
+        targetId: parseSnowflakeId(TARGET),
+        reason: 'being disruptive',
+        interactionId: 'modal-2',
+      };
+      await runWarn(deps, input, { interactionId: 'modal-2', token: 'modal-token-2' });
+
+      expect(calls.warnRecordCaseEvent).toHaveLength(0);
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.recordCaseEvent).toHaveLength(1);
+      expect(calls.recordCaseEvent[0]?.actionTaken).toBe('escalation_refused');
+      expect(calls.recordCaseEvent[0]?.refusalReason).toBe('unauthorized');
+      expect(calls.recordCaseEvent[0]?.memberId).toBe(TARGET);
+      expect(calls.recordCaseEvent[0]?.actorId).toBe(MODERATOR);
+      expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+        "You can't take moderation actions",
+      );
+    });
+  });
+
   it('an internal failure after deferring still answers ephemeral, not a hung interaction', async () => {
     const { deps, calls } = buildHarness();
     const subscriber = createModCommandSubscriber(deps);
@@ -777,7 +903,11 @@ describe('mod command subscriber', () => {
 
     expect(calls.defer).toHaveLength(1);
     expect(calls.respond).toHaveLength(1);
-    expect(calls.respond[0]?.message.content).toMatch(/something went wrong/i);
+    const fallback = calls.respond[0]?.message;
+    expect(fallback?.flags).toBe(32768);
+    const fallbackText = cardTexts(fallback?.components ?? []);
+    expect(fallbackText).toContain("Couldn't finish that");
+    expect(fallbackText).toContain('-# Ref');
     expect(calls.applyAction).toHaveLength(0);
   });
 });

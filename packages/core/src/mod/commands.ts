@@ -13,9 +13,18 @@ import type { InteractionRef, Snowflake } from '../discord/port.js';
 import type { ModerationOutcome, ModerationRefusalReason } from '../effects/moderation-gateway.js';
 import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId } from '../ids.js';
+import { refFor } from '../copy/refusals.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
+import { toOutgoingMessage, type CardMessage } from '../ui/discord/card.js';
+import { errorCard } from '../ui/discord/common-cards.js';
+import {
+  modOutcomeCard,
+  noteOutcomeCard,
+  warnOutcomeCard,
+  type DirectModAction,
+} from './cards.js';
 import { handleBanPreview, handlePurgePreview, type ModConfirmationDeps } from './confirmations.js';
 import { handleHistory, type HistoryDeps } from './history.js';
 import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';
@@ -65,7 +74,7 @@ export const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 
 const clampTimeoutMs = (ms: number): number => Math.max(0, Math.min(ms, MAX_TIMEOUT_MS));
 
-type DirectAction = 'timeout' | 'untimeout' | 'kick' | 'unban';
+type DirectAction = DirectModAction;
 
 const DIRECT_ACTIONS: ReadonlySet<string> = new Set<DirectAction>([
   'timeout',
@@ -258,40 +267,6 @@ const ESCALATION_ACTION_FOR_DIRECT: Record<DirectAction, 'timeout' | 'kick' | 'u
     unban: 'unban',
   };
 
-const describeOutcome = (
-  action: DirectAction,
-  targetId: Snowflake,
-  outcome: ModerationOutcome,
-): string => {
-  switch (outcome.status) {
-    case 'applied':
-      return `${action} applied to <@${targetId}>.`;
-    case 'dry-run':
-      return `${action} would apply to <@${targetId}> — dry run is on, so nothing actually changed.`;
-    case 'skipped':
-      return `${action} was already applied to <@${targetId}> (skipped as a duplicate).`;
-    case 'refused':
-      return `${action} refused for <@${targetId}>: ${outcome.reason}.`;
-    case 'failed':
-      return `${action} failed for <@${targetId}>: ${outcome.code}.`;
-  }
-};
-
-const describeEscalation = (outcome: ModerationOutcome): string => {
-  switch (outcome.status) {
-    case 'applied':
-      return 'the ladder’s automatic consequence was applied.';
-    case 'dry-run':
-      return 'the ladder’s automatic consequence would apply — dry run is on.';
-    case 'skipped':
-      return 'the ladder’s automatic consequence was already applied (skipped as a duplicate).';
-    case 'refused':
-      return `the ladder’s automatic consequence was refused: ${outcome.reason}.`;
-    case 'failed':
-      return `the ladder’s automatic consequence failed: ${outcome.code}.`;
-  }
-};
-
 /** Obtained honestly, from a live `fetchMember`, and re-verified inside the gateway. */
 const authorizeInvoker = async (
   deps: ModCommandDeps,
@@ -369,40 +344,64 @@ const recordDirectOutcome = (
   });
 };
 
-const handleDirectAction = async (
+/** One moderation request, whichever surface made it (ADR 0141 decision 6). */
+export interface ModInput {
+  readonly actorId: Snowflake;
+  readonly targetId: SnowflakeId;
+  readonly reason: string;
+  /** `timeout` only. */
+  readonly durationMinutes?: number;
+  /** The interaction that asked: the slash command or the modal submit. Dedupe keys bind to it. */
+  readonly interactionId: Snowflake;
+}
+
+const modInputFromSlash = (event: SlashCommandEvent): ModInput => {
+  const durationRaw = optionValue(event.options, 'duration_minutes');
+  return {
+    actorId: event.userId,
+    targetId: parseSnowflakeId(optionValue(event.options, 'target')),
+    reason: stringOption(event.options, 'reason'),
+    ...(typeof durationRaw === 'number' ? { durationMinutes: durationRaw } : {}),
+    interactionId: event.interactionId,
+  };
+};
+
+/** Every reply this module sends is a card. */
+const reply = (deps: ModCommandDeps, ref: InteractionRef, message: CardMessage): Promise<void> =>
+  deps.responder.respond(ref, toOutgoingMessage(message));
+
+/** The slash command and the log-card modal submit share this one code path. */
+export const runDirectAction = async (
   deps: ModCommandDeps,
-  event: SlashCommandEvent,
+  input: ModInput,
   ref: InteractionRef,
   action: DirectAction,
 ): Promise<void> => {
   const nowMs = deps.now();
-  const targetId = parseSnowflakeId(optionValue(event.options, 'target'));
-  const reason = stringOption(event.options, 'reason');
+  const targetId = input.targetId;
+  const reason = input.reason;
 
-  const authResult = await authorizeInvoker(deps, event.userId);
+  const authResult = await authorizeInvoker(deps, input.actorId);
   if (!authResult.ok) {
-    recordDirectRefusal(deps, { targetId, action, reason, actorId: event.userId, now: nowMs });
+    recordDirectRefusal(deps, { targetId, action, reason, actorId: input.actorId, now: nowMs });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-commands',
         guildId: deps.guildId,
-        actorId: event.userId,
+        actorId: input.actorId,
         targetId,
         action,
         outcome: 'unauthorized',
       }),
       '/mod command refused: caller lacks moderation.act',
     );
-    await deps.responder.respond(ref, {
-      content: `You do not have permission to ${action} members.`,
-    });
+    await reply(deps, ref, errorCard('mod.not-allowed', { ref: refFor(input.interactionId) }));
     return;
   }
 
   let timeoutMs: number | undefined;
   if (action === 'timeout') {
-    const durationRaw = optionValue(event.options, 'duration_minutes');
-    const minutes = typeof durationRaw === 'number' ? durationRaw : 0;
+    const minutes = input.durationMinutes ?? 0;
     timeoutMs = clampTimeoutMs(minutes * 60_000);
   }
 
@@ -414,7 +413,7 @@ const handleDirectAction = async (
     // idiom `warn.ts`'s escalation dedupe key uses: a resumed-replay of the
     // identical interaction (there is no such thing for a slash command
     // today, but the shape costs nothing) cannot double-execute.
-    dedupeKey: `mod:${deps.guildId}:${action}:${event.interactionId}`,
+    dedupeKey: `mod:${deps.guildId}:${action}:${input.interactionId}`,
     reason,
   });
 
@@ -422,7 +421,7 @@ const handleDirectAction = async (
     targetId,
     action,
     reason,
-    actorId: event.userId,
+    actorId: input.actorId,
     now: nowMs,
     outcome,
   });
@@ -431,7 +430,7 @@ const handleDirectAction = async (
     safeLogFields({
       component: 'mod-commands',
       guildId: deps.guildId,
-      actorId: event.userId,
+      actorId: input.actorId,
       targetId,
       action,
       outcome: outcome.status,
@@ -439,19 +438,31 @@ const handleDirectAction = async (
     '/mod direct action handled',
   );
 
-  await deps.responder.respond(ref, { content: describeOutcome(action, targetId, outcome) });
+  await reply(
+    deps,
+    ref,
+    modOutcomeCard({
+      action,
+      targetId,
+      outcome,
+      reason,
+      ...(input.durationMinutes !== undefined ? { durationMinutes: input.durationMinutes } : {}),
+      interactionId: input.interactionId,
+    }),
+  );
 };
 
-const handleWarn = async (
+/** The slash command and the log-card modal submit share this one code path. */
+export const runWarn = async (
   deps: ModCommandDeps,
-  event: SlashCommandEvent,
+  input: ModInput,
   ref: InteractionRef,
 ): Promise<void> => {
   const nowMs = deps.now();
-  const targetId = parseSnowflakeId(optionValue(event.options, 'target'));
-  const reason = stringOption(event.options, 'reason');
+  const targetId = input.targetId;
+  const reason = input.reason;
 
-  const authResult = await authorizeInvoker(deps, event.userId);
+  const authResult = await authorizeInvoker(deps, input.actorId);
   if (!authResult.ok) {
     // `issueWarn` records its `'warned'` event unconditionally — it takes no
     // refusal path of its own — so an unauthorized caller must never reach
@@ -472,20 +483,20 @@ const handleWarn = async (
       matchedSnippet: reason,
       actionTaken: 'escalation_refused',
       refusalReason: 'unauthorized',
-      actorId: event.userId,
+      actorId: input.actorId,
     });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-commands',
         guildId: deps.guildId,
-        actorId: event.userId,
+        actorId: input.actorId,
         targetId,
         action: 'warn',
         outcome: 'unauthorized',
       }),
       '/mod command refused: caller lacks moderation.act',
     );
-    await deps.responder.respond(ref, { content: 'You do not have permission to warn members.' });
+    await reply(deps, ref, errorCard('mod.not-allowed', { ref: refFor(input.interactionId) }));
     return;
   }
 
@@ -499,9 +510,9 @@ const handleWarn = async (
     {
       guildId: deps.guildId,
       memberId: targetId,
-      actorId: event.userId,
+      actorId: input.actorId,
       // The parent event's id, per `IssueWarnInput.warnId`'s own docstring.
-      warnId: event.interactionId,
+      warnId: input.interactionId,
       reason,
       now: nowMs,
       auth: authResult.value,
@@ -516,8 +527,8 @@ const handleWarn = async (
     try {
       await deps.onWarned({
         memberId: targetId,
-        actorId: event.userId,
-        warnId: event.interactionId,
+        actorId: input.actorId,
+        warnId: input.interactionId,
         reason,
         caseId: result.caseId,
         violationCount: result.violationCount,
@@ -530,11 +541,17 @@ const handleWarn = async (
     }
   }
 
-  const lines = [`Warning recorded for <@${targetId}>. Violation count: ${result.violationCount}.`];
-  if (result.escalation !== undefined) {
-    lines.push(`This crossed an escalation tier: ${describeEscalation(result.escalation)}`);
-  }
-  await deps.responder.respond(ref, { content: lines.join('\n') });
+  await reply(
+    deps,
+    ref,
+    warnOutcomeCard({
+      targetId,
+      reason,
+      caseId: result.caseId,
+      violationCount: result.violationCount,
+      escalation: result.escalation,
+    }),
+  );
 };
 
 type NoteEvidenceKind = 'note' | 'evidence';
@@ -622,12 +639,7 @@ const handleNoteOrEvidence = async (
       }),
       '/mod command refused: caller lacks moderation.act',
     );
-    await deps.responder.respond(ref, {
-      content:
-        kind === 'note'
-          ? 'You do not have permission to add notes to members.'
-          : 'You do not have permission to add evidence to members.',
-    });
+    await reply(deps, ref, errorCard('mod.not-allowed', { ref: refFor(event.interactionId) }));
     return;
   }
 
@@ -660,12 +672,7 @@ const handleNoteOrEvidence = async (
     '/mod note/evidence recorded',
   );
 
-  await deps.responder.respond(ref, {
-    content:
-      kind === 'note'
-        ? `Note recorded for <@${targetId}>.`
-        : `Evidence link recorded for <@${targetId}>: ${content}`,
-  });
+  await reply(deps, ref, noteOutcomeCard({ kind, targetId, content }));
 };
 
 const isKnownSubcommand = (
@@ -698,7 +705,7 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
 
     try {
       if (subcommand === 'warn') {
-        await handleWarn(deps, event, ref);
+        await runWarn(deps, modInputFromSlash(event), ref);
       } else if (subcommand === 'ban') {
         await handleBanPreview(deps.confirmations, event, ref);
       } else if (subcommand === 'purge') {
@@ -708,7 +715,7 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
       } else if (subcommand === 'history') {
         await handleHistory(deps.history, event, ref);
       } else {
-        await handleDirectAction(deps, event, ref, subcommand);
+        await runDirectAction(deps, modInputFromSlash(event), ref, subcommand);
       }
     } catch (err) {
       deps.logger.error(
@@ -722,9 +729,7 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
         }),
         'a /mod command failed unexpectedly',
       );
-      await deps.responder.respond(ref, {
-        content: 'Something went wrong running that command. An operator has been notified.',
-      });
+      await reply(deps, ref, errorCard('mod.unavailable', { ref: refFor(event.interactionId) }));
     }
   },
 });

@@ -383,8 +383,11 @@ export {
   createModCommandSubscriber,
   MAX_TIMEOUT_MS,
   MOD_COMMAND_NAME,
+  runDirectAction,
+  runWarn,
   type ModCommandCasePorts,
   type ModCommandDeps,
+  type ModInput,
   type NoteEvidenceCasePorts,
 } from './mod/commands.js';
 export {
