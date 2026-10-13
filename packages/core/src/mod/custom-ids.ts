@@ -46,7 +46,9 @@ export const parseModCustomId = (raw: string): ModCardAction | undefined => {
   }
   if (action === 'history' && parts.length === 4) {
     const parsed = z.tuple([id, page]).safeParse(parts.slice(2));
-    return parsed.success ? { action, userId: String(parsed.data[0]), page: parsed.data[1] } : undefined;
+    return parsed.success
+      ? { action, userId: String(parsed.data[0]), page: parsed.data[1] }
+      : undefined;
   }
   return undefined;
 };

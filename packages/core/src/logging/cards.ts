@@ -113,7 +113,10 @@ export const modActionRow = (input: {
     );
   if (input.memberId !== undefined) {
     buttons.push(
-      button({ customId: buildModCustomId({ action: 'warn', userId: input.memberId }), label: 'Warn' }),
+      button({
+        customId: buildModCustomId({ action: 'warn', userId: input.memberId }),
+        label: 'Warn',
+      }),
     );
     buttons.push(
       button({
@@ -154,7 +157,9 @@ export const renderLogCard = (view: LogCardView, guildId: string): CardMessage =
   if (row !== undefined) children.push(separator(), row);
   const footer = [ts(view.at, 'R')];
   if (view.message !== undefined && view.message.exists)
-    footer.push(`[Jump to message](${jumpUrl(guildId, view.message.channelId, view.message.messageId)})`);
+    footer.push(
+      `[Jump to message](${jumpUrl(guildId, view.message.channelId, view.message.messageId)})`,
+    );
   children.push(text(subtext(footer.join(' · '))));
   return card({ tone: meta.tone, children });
 };

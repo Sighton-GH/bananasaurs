@@ -66,7 +66,12 @@ describe('renderLogCard', () => {
 
   it('offers nothing on kinds that are not conduct', () => {
     const c = renderLogCard(
-      { kind: 'member_nickname_changed', headline: `<@${U}> changed nickname`, at: AT, memberId: U },
+      {
+        kind: 'member_nickname_changed',
+        headline: `<@${U}> changed nickname`,
+        at: AT,
+        memberId: U,
+      },
       G,
     );
     expect(customIds(c)).toEqual([]);
@@ -83,7 +88,10 @@ describe('renderLogCard', () => {
   });
 
   it('caps hostile content and stays in budget', () => {
-    const c = renderLogCard({ ...edit, quote: { label: 'Now reads', text: '```'.repeat(2000) } }, G);
+    const c = renderLogCard(
+      { ...edit, quote: { label: 'Now reads', text: '```'.repeat(2000) } },
+      G,
+    );
     expect(countText(c.components)).toBeLessThanOrEqual(4000);
     expect(countComponents(c.components)).toBeLessThanOrEqual(40);
   });

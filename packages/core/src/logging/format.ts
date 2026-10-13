@@ -97,8 +97,12 @@ export function formatMessageDelete(
   return {
     kind: 'message_delete',
     headline: `Message by ${authorMention(payload.authorId)} deleted in <#${payload.channelId}>`,
-    details: [actorUserId === undefined ? 'Deleted by: unknown' : `Deleted by <@${actorUserId}> (inferred)`],
-    ...(payload.content === undefined ? {} : { quote: { label: 'It read', text: payload.content } }),
+    details: [
+      actorUserId === undefined ? 'Deleted by: unknown' : `Deleted by <@${actorUserId}> (inferred)`,
+    ],
+    ...(payload.content === undefined
+      ? {}
+      : { quote: { label: 'It read', text: payload.content } }),
     at,
     ...(payload.authorId === undefined ? {} : { memberId: payload.authorId }),
     message: { channelId: payload.channelId, messageId: payload.messageId, exists: false },

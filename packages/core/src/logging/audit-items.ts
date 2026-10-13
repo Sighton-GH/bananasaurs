@@ -271,9 +271,7 @@ export function auditItemsFor(event: AuditLogEntryEvent): AuditItem[] {
     case AUDIT_ACTION_INVITE_DELETE: {
       const codeChange = findChange(event, 'code');
       const code = changeString(codeChange?.old) ?? changeString(codeChange?.new) ?? 'unknown';
-      return [
-        makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${safeName(code)}`, []),
-      ];
+      return [makeItem(event, 'invite_delete', `Invite deleted: discord.gg/${safeName(code)}`, [])];
     }
     case AUDIT_ACTION_EMOJI_CREATE: {
       const name = changeString(findChange(event, 'name')?.new) ?? 'unknown';

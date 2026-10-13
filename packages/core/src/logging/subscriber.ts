@@ -201,8 +201,7 @@ function logItemsFor(event: HandleEvent): LogItem[] {
         eventKind: routeKind,
         fingerprint,
         source,
-        view: (includeContent) =>
-          formatMessageCreate(event, includeContent, event.receivedAtMs),
+        view: (includeContent) => formatMessageCreate(event, includeContent, event.receivedAtMs),
       },
     ];
   }
