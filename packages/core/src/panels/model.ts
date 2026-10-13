@@ -93,7 +93,7 @@ export interface PanelConfig {
   readonly messageId: SnowflakeId | undefined;
   /**
    * The message body a managed panel posts. Undefined falls back to the
-   * default copy in `renderPanelMessage`. Adopted panels keep whatever the
+   * default copy in `renderPanelCard`. Adopted panels keep whatever the
    * existing message already says — Bananasaurs does not edit other bots'
    * messages.
    */
