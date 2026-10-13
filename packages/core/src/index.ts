@@ -169,6 +169,7 @@ export {
   type ConnectionPorts,
 } from './pipeline/connection-subscriber.js';
 export {
+  formatAutomodMatch,
   formatMemberJoin,
   formatMemberLeave,
   formatMessageDelete,
@@ -306,6 +307,8 @@ export {
 } from './effects/moderation-gateway.js';
 export {
   createAutomodSubscriber,
+  type AutomodActionTaken,
+  type AutomodMatchInfo,
   type AutomodSafetyState,
   type AutomodSubscriberDeps,
   type AutomodSwitchState,

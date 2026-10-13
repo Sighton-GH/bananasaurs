@@ -104,9 +104,11 @@ const ROUTE_KIND = {
  * not mapped from one gateway kind), `message_delete`, which is routed
  * here but handled by a delayed job rather than by the switch below
  * (ADR 0019 fact 3), the eighteen audit-log kinds (one item per live
- * `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
- * gateway bulk-delete event), and `member_warn` (posted by the logging
- * side of `/mod warn` through `createLogPoster`, not by this subscriber).
+ *  `auditLogEntry`, via `audit-items.ts`), `message_bulk_delete` (the
+ *  gateway bulk-delete event), `member_warn` (posted by the logging
+ *  side of `/mod warn` through `createLogPoster`, not by this subscriber),
+ *  and `automod_match` (posted by the automod subscriber's `onMatchRecorded`
+ *  hook through `createLogPoster`, not by this subscriber).
  *
  * Exported for `bananasaurs log routing create`, which validates against it. A
  * route on an event kind nothing emits is the exact failure WP4's report §5
@@ -120,6 +122,7 @@ export const LOG_EVENT_KINDS: readonly string[] = [
   'message_delete',
   'message_bulk_delete',
   'member_warn',
+  'automod_match',
 ].sort();
 
 /**

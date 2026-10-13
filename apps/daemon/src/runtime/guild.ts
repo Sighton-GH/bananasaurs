@@ -19,6 +19,7 @@ import {
   createModConfirmationSubscriber,
   createNativeAutomodSubscriber,
   createReactionSubscriber,
+  formatAutomodMatch,
   formatWarn,
   DIGEST_DEFAULT_INPUT_CHARS,
   DIGEST_DEFAULT_MAX_PROPOSALS,
@@ -459,9 +460,29 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // `panelEffectsFor` in taking an already-constructed gateway and witness so
   // Task 12's integration test can build the identical wiring without
   // re-deriving it (`apps/daemon/src/automod/wiring.ts`).
+  //
+  // P2 Task 4 (ADR 0141 decision 3): every recorded match also posts an
+  // `automod_match` card to log routes, through the same `createLogPoster`
+  // `/mod warn` uses for `member_warn` — claimed on
+  // `automod:<messageId>:<ruleId>`, so a redelivered message posts no second
+  // card. Built here rather than inside `automodPortsFor` because the poster
+  // belongs to the logging module, not the automod one.
+  const logPoster = createLogPoster(loggingPorts);
   const automodGateway = automodGatewayFor(scope, discord, logger, now);
   const automodAuth = automodAuthorization(scope);
-  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now);
+  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now, (info) =>
+    logPoster.post({
+      eventKind: 'automod_match',
+      fingerprint: `automod:${info.messageId}:${info.ruleId}`,
+      source: {
+        channelId: parseSnowflakeId(info.channelId),
+        parentChannelId:
+          info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
+        categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
+      },
+      view: (includeContent) => formatAutomodMatch(info, includeContent),
+    }),
+  );
 
   // ADR 0038, Task 5: native Discord AutoMod observability. Deliberately
   // narrower than `automodPorts` above — this subscriber makes no Discord
@@ -711,8 +732,6 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     now,
     logger,
   };
-
-  const logPoster = createLogPoster(loggingPorts);
 
   const modCommandDeps: ModCommandDeps = {
     guildId,

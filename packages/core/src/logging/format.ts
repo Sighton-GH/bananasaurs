@@ -1,4 +1,5 @@
 import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js';
+import type { AutomodActionTaken, AutomodMatchInfo } from '../automod/subscriber.js';
 import { escapeInline } from '../ui/discord/text.js';
 import type { LogCardView } from './cards.js';
 
@@ -303,6 +304,71 @@ export function formatWarn(
     memberId: input.memberId,
   };
 }
+
+/**
+ * One automod match as a log card (ADR 0141 decision 3). The rule kind is
+ * moderator-configured text, so it goes through `escapeInline`; the matched
+ * snippet is member-written and travels raw in `quote.text`, spoilered, shown
+ * only when the route has `include_content` on — and escaped at render time.
+ *
+ * `message.exists` is false whenever the message is gone: `deleted`, and
+ * every `escalation_*` outcome, which is only ever reached after the deletion
+ * succeeded. It stays true when nothing was deleted — watch, a safety layer,
+ * a refused delete, or a native Discord AutoMod observation — so the card
+ * keeps offering Delete.
+ */
+export function formatAutomodMatch(
+  info: AutomodMatchInfo,
+  includeContent: boolean,
+): LogCardView {
+  const detail = automodMatchDetail(info.actionTaken);
+  return {
+    kind: 'automod_match',
+    headline: `<@${info.memberId}> matched a **${escapeInline(info.ruleKind)}** rule in <#${info.channelId}>`,
+    details: [detail],
+    ...(includeContent ? { quote: { label: 'Matched', text: info.snippet, spoiler: true } } : {}),
+    at: info.at,
+    memberId: info.memberId,
+    message: {
+      channelId: info.channelId,
+      messageId: info.messageId,
+      exists: automodMatchMessageExists(info.actionTaken),
+    },
+  };
+}
+
+const automodMatchDetail = (actionTaken: AutomodActionTaken): string => {
+  switch (actionTaken) {
+    case 'would_delete':
+      return 'Watch only — nothing was done.';
+    case 'deleted':
+      return 'The message was deleted.';
+    case 'delete_blocked_killswitch':
+      return 'Not deleted: the kill switch is on.';
+    case 'delete_blocked_breaker':
+      return 'Not deleted: the safety breaker is open.';
+    case 'delete_blocked_dry_run':
+      return 'Not deleted: dry run is on.';
+    case 'delete_failed':
+      return "Not deleted: Discord didn't accept the delete.";
+    default:
+      return 'Recorded.';
+  }
+};
+
+const automodMatchMessageExists = (actionTaken: AutomodActionTaken): boolean => {
+  switch (actionTaken) {
+    case 'deleted':
+    case 'deleted_and_escalated':
+    case 'escalation_refused':
+    case 'escalation_failed':
+    case 'escalation_dry_run':
+    case 'escalation_skipped':
+      return false;
+    default:
+      return true;
+  }
+};
 
 /**
  * `docs/19` §6.7's restated gate: a gap must be a visible marker, never a

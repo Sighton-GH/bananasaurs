@@ -4,15 +4,24 @@ import { Client } from 'discord.js';
 import {
   createAutomodSubscriber,
   createDispatcher,
+  createLogPoster,
   doctorCommand,
+  formatAutomodMatch,
+  JOB_KINDS,
   parseGuildId,
   parseSnowflakeId,
   Pipeline,
+  type AutomodSubscriberDeps,
+  type LoggingPorts,
+  type MessageEvent,
   type OpsInstance,
+  type OutgoingMessage,
 } from '@bananasaurs/core';
 import {
   automodRuleRepo,
   guildRepo,
+  jobRepo,
+  loggingRepo,
   modCaseRepo,
   pipelineRepo,
   read,
@@ -56,6 +65,7 @@ const EXEMPT_ROLE = parseSnowflakeId('777777777777777777');
 const RULE_ID = 'rule-1';
 const CATEGORY_ID = 'cat-1';
 const TERM_ID = 'term-1';
+const LOG = parseSnowflakeId('777777777777777777');
 
 const logger = pino({ level: 'silent' });
 
@@ -65,13 +75,61 @@ let discord: FakeDiscord;
 let pipeline: Pipeline;
 let nextMessageId: bigint;
 
-/** Wires the automod subscriber onto the pipeline, exactly as `guild.ts` will. */
-const buildPipeline = (): Pipeline => {
+/** Logging ports over the real repositories, the way `guild.ts` binds them. */
+const loggingPortsForTest = (): LoggingPorts => ({
+  guildId: GUILD,
+  listEnabledRoutesFor: (eventKind) => loggingRepo.listEnabledRoutesFor(scope, eventKind),
+  isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+  listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
+  claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: discord.now() }),
+  release: (input) => pipelineRepo.forgetFirstSight(scope, input),
+  sendMessage: (channelId, message) => discord.sendMessage(GUILD, channelId, message),
+  enqueueDeletionAttribution: ({ dedupeKey, payload, runAfter }) =>
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.logMessageDelete,
+      payload,
+      dedupeKey,
+      runAfter,
+      now: discord.now(),
+    }),
+  getMemberSnapshot: (id) => loggingRepo.getMemberSnapshot(scope, id),
+  saveMemberSnapshot: (s) =>
+    loggingRepo.upsertMemberSnapshot(scope, { ...s, roleIds: [...s.roleIds] }),
+  deleteMemberSnapshot: (id) => {
+    loggingRepo.deleteMemberSnapshot(scope, id);
+  },
+  now: () => discord.now(),
+  logger,
+});
+
+/**
+ * The automod ports with the log hook wired, exactly as `guild.ts` wires
+ * them: every recorded match posts an `automod_match` card through the same
+ * `createLogPoster` `/mod warn` uses, claimed on
+ * `automod:<messageId>:<ruleId>`.
+ */
+const buildAutomodPorts = (): AutomodSubscriberDeps => {
   const automodGateway = automodGatewayFor(scope, discord, logger, () => discord.now());
   const automodAuth = automodAuthorization(scope);
-  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, () =>
-    discord.now(),
+  const logPoster = createLogPoster(loggingPortsForTest());
+  return automodPortsFor(scope, discord, automodGateway, automodAuth, logger, () => discord.now(), (info) =>
+    logPoster.post({
+      eventKind: 'automod_match',
+      fingerprint: `automod:${info.messageId}:${info.ruleId}`,
+      source: {
+        channelId: parseSnowflakeId(info.channelId),
+        parentChannelId:
+          info.parentChannelId === undefined ? undefined : parseSnowflakeId(info.parentChannelId),
+        categoryId: info.categoryId === undefined ? undefined : parseSnowflakeId(info.categoryId),
+      },
+      view: (includeContent) => formatAutomodMatch(info, includeContent),
+    }),
   );
+};
+
+/** Wires the automod subscriber onto the pipeline, exactly as `guild.ts` will. */
+const buildPipeline = (): Pipeline => {
+  const automodPorts = buildAutomodPorts();
 
   return new Pipeline({
     allowlist: new Set([GUILD]),
@@ -154,6 +212,26 @@ beforeEach(() => {
 afterEach(() => {
   t.close();
 });
+
+/** Every Text Display joined: the card's headline, quote and footer. */
+const textOf = (message: OutgoingMessage): string => {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
+    walk(o['components']);
+  };
+  walk(message.components);
+  return out.join('\n');
+};
+
+const sentTo = (channelId: string): OutgoingMessage[] =>
+  discord
+    .restCalls('sendMessage')
+    .filter((call) => call.args[1] === channelId)
+    .map((call) => call.args[2] as OutgoingMessage);
 
 describe('automod, end to end on the fake gateway', () => {
   it('deletes a matching message and opens a case when the switch is on', async () => {
@@ -485,5 +563,57 @@ describe('automod, end to end on the fake gateway', () => {
         },
       ],
     });
+  });
+
+  /**
+   * P2 Task 4 (ADR 0141 decision 3): a Watch-mode match posts one
+   * `automod_match` card to the route channel. The subscriber is driven
+   * directly — twice with the same event — because the pipeline's own gate-2
+   * dedupe would swallow the redelivery before the claim fingerprint is ever
+   * consulted, and it is the claim (`automod:<messageId>:<ruleId>`) this test
+   * is about.
+   */
+  it('posts one automod_match card per message, even when the message is redelivered', async () => {
+    guildRepo.setAutomodState(scope, 'watch', discord.now());
+    seedRule();
+    loggingRepo.createRoute(scope, {
+      name: 'automod matches',
+      channelId: LOG,
+      includeContent: true,
+      enabled: true,
+      eventKinds: ['automod_match'],
+      excludedChannelIds: [],
+      nowMs: 0,
+    });
+
+    const subscriber = createAutomodSubscriber(buildAutomodPorts());
+    const event: MessageEvent = {
+      kind: 'messageCreate',
+      guildId: GUILD,
+      receivedAtMs: discord.now(),
+      channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '200000000000000000',
+      authorId: MEMBER,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: 'badword here',
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    };
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+
+    const cards = sentTo(LOG);
+    expect(cards).toHaveLength(1);
+    const text = textOf(cards[0]!);
+    expect(text).toContain('AUTOMOD MATCH');
+    expect(text).toContain('Watch only');
+    expect(JSON.stringify(cards[0]!.components)).toContain('bs.mod:delete:');
   });
 });
