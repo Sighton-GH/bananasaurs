@@ -170,7 +170,7 @@ describe('AutomodRulePage', () => {
   it('renders NotFound naming the rule when it does not exist', async () => {
     stubFetch([]);
     renderRule();
-    expect(await screen.findByText(/rule kw-one doesn't exist or was deleted/)).toBeTruthy();
+    expect(await screen.findByText(/Rule kw-one doesn't exist or was deleted/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
   it('renders the error state with retry when loading the rule fails', async () => {

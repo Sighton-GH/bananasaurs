@@ -317,7 +317,7 @@ describe('AssistantSkillPage', () => {
         <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
       </Router>,
     );
-    expect(await screen.findByText("skill doesn't exist or was deleted")).toBeTruthy();
+    expect(await screen.findByText("Skill doesn't exist or was deleted")).toBeTruthy();
     expect(screen.getByRole('heading', { level: 1, name: 'Skill' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Back to Skills' }).getAttribute('href')).toBe(
       '/assistant/skills',
