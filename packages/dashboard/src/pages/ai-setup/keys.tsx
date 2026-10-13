@@ -12,6 +12,9 @@ import { Button } from '../../ui/Button.js';
 import { Card } from '../../ui/Card.js';
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js';
 import { Field, Input } from '../../ui/Field.js';
+import { InlineAlert } from '../../ui/InlineAlert.js';
+import { RadioGroup } from '../../ui/RadioGroup.js';
+import { Select } from '../../ui/Select.js';
 import { HelpTip } from '../../ui/HelpTip.js';
 import { StatusPill } from '../../ui/StatusPill.js';
 import { useToast } from '../../ui/Toast.js';
@@ -145,7 +148,7 @@ export function KeysSection({
           {setup.keys.map((key) => (
             <li
               key={key.keyId}
-              className="grid gap-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm"
+              className="grid gap-1.5 rounded-panel border border-line bg-canvas px-2 py-1.5 text-sm"
             >
               <p>
                 <strong>{key.label}</strong> · {providerName(key.provider)} ·{' '}
@@ -171,29 +174,17 @@ export function KeysSection({
                       placeholder="Saved. Leave blank to keep it"
                     />
                   </Field>
-                  <fieldset>
-                    <legend className="mb-1 block text-sm text-ink-muted">Cost</legend>
-                    <div className="flex flex-col gap-1 text-sm">
-                      {(
-                        [
-                          ['free', 'Free'],
-                          ['paid', 'Paid'],
-                          ['unknown', 'Not sure'],
-                        ] as const
-                      ).map(([value, words]) => (
-                        <label key={value} className="inline-flex items-center gap-2">
-                          <input
-                            type="radio"
-                            name={`cost-${key.keyId}`}
-                            value={value}
-                            checked={editCost === value}
-                            onChange={() => setEditCost(value)}
-                          />
-                          {words}
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
+                  <RadioGroup
+                    legend="Cost"
+                    name={`cost-${key.keyId}`}
+                    value={editCost}
+                    onChange={(value) => setEditCost(value as 'free' | 'paid' | 'unknown')}
+                    options={[
+                      { value: 'free', label: 'Free' },
+                      { value: 'paid', label: 'Paid' },
+                      { value: 'unknown', label: 'Not sure' },
+                    ]}
+                  />
                   <div className="flex flex-wrap gap-2">
                     <Button variant="primary" busy={busy} onClick={() => void saveEdit(key)}>
                       Save key
@@ -250,23 +241,16 @@ export function KeysSection({
           </HelpTip>
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-0.5 text-sm">
-            <span className="mb-1 block text-ink-muted">Service</span>
-            <select
-              aria-label="Service"
+          <Field label="Service">
+            <Select
               value={provider}
-              onChange={(e) =>
-                setProvider(e.target.value as 'gemini' | 'openrouter' | 'nvidia-nim')
+              onValueChange={(value) =>
+                setProvider(value as 'gemini' | 'openrouter' | 'nvidia-nim')
               }
-              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={PROVIDERS.map((p) => ({ value: p.id, label: p.name }))}
+              aria-label="Service"
+            />
+          </Field>
           <Field label="Label" hint="1–60 characters, so you can tell backups apart">
             <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} />
           </Field>
@@ -279,36 +263,24 @@ export function KeysSection({
             onChange={(e) => setApiKey(e.target.value)}
           />
         </Field>
-        <fieldset>
-          <legend className="mb-1 block text-sm text-ink-muted">Is this key free to use?</legend>
-          <div className="flex flex-col gap-1 text-sm">
-            {(
-              [
-                ['free', 'Free'],
-                ['paid', 'Paid'],
-                ['unknown', 'Not sure'],
-              ] as const
-            ).map(([value, words]) => (
-              <label key={value} className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="cost-new"
-                  value={value}
-                  checked={cost === value}
-                  onChange={() => setCost(value)}
-                />
-                {words}
-              </label>
-            ))}
-          </div>
-          <p className="mt-1 text-xs text-ink-muted">
-            Bananasaurs has a $0 spending limit, so only free models can be used.
-          </p>
-        </fieldset>
+        <RadioGroup
+          legend="Is this key free to use?"
+          name="cost-new"
+          value={cost}
+          onChange={(value) => setCost(value as 'free' | 'paid' | 'unknown')}
+          options={[
+            { value: 'free', label: 'Free' },
+            { value: 'paid', label: 'Paid' },
+            { value: 'unknown', label: 'Not sure' },
+          ]}
+        />
+        <p className="text-xs text-ink-muted">
+          Bananasaurs has a $0 spending limit, so only free models can be used.
+        </p>
         {addError !== undefined && (
-          <p role="alert" className="text-sm text-danger">
+          <InlineAlert tone="danger" title="The key could not be added.">
             {addError}
-          </p>
+          </InlineAlert>
         )}
         <div>
           <Button variant="primary" type="submit" busy={adding}>
@@ -377,7 +349,7 @@ export function ProvidersSection({ setup }: { readonly setup: AssistantSetupData
           return (
             <li
               key={row.provider}
-              className="grid gap-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm"
+              className="grid gap-1.5 rounded-panel border border-line bg-canvas px-2 py-1.5 text-sm"
             >
               <p className="flex flex-wrap items-center gap-2">
                 <strong>{info?.name ?? row.provider}</strong>

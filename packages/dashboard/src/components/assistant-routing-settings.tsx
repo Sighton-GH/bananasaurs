@@ -6,6 +6,8 @@ import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
+import { InlineAlert } from '../ui/InlineAlert.js';
+import { Select } from '../ui/Select.js';
 
 const K = {
   enabled: 'assistant.routerEnabled',
@@ -120,7 +122,7 @@ function ChipList({
         {items.map((item) => (
           <li
             key={item}
-            className="inline-flex items-center gap-1 rounded-sm border border-line px-1.5 py-0.5"
+            className="inline-flex items-center gap-1 rounded-panel border border-line px-1.5 py-0.5"
           >
             <span>{item}</span>
             <button
@@ -267,20 +269,20 @@ export function AssistantRoutingSettings() {
   );
 
   const tierField = (label: string, key: string, field: 'summaryTier' | 'digestTier') => (
-    <label className="grid gap-0.5 text-ink-muted">
-      {label}
-      <select
-        className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+    <Field label={label}>
+      <Select
         value={values[field]}
-        onChange={(event) => {
-          const tier = asTier(event.target.value, 'light');
+        onValueChange={(value) => {
+          const tier = asTier(value, 'light');
           void save(key, tier, () => setValues((v) => ({ ...v, [field]: tier })));
         }}
-      >
-        <option value="light">Light</option>
-        <option value="standard">Standard</option>
-      </select>
-    </label>
+        options={[
+          { value: 'light', label: 'Light' },
+          { value: 'standard', label: 'Standard' },
+        ]}
+        aria-label={label}
+      />
+    </Field>
   );
 
   return (
@@ -359,9 +361,9 @@ export function AssistantRoutingSettings() {
           </div>
         </div>
         {error !== undefined && (
-          <p role="alert" className="text-danger">
+          <InlineAlert tone="danger" title="The setting could not be saved.">
             {error}
-          </p>
+          </InlineAlert>
         )}
       </div>
     </Card>

@@ -7,6 +7,8 @@ import {
 } from '../api/assistant.js';
 import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
+import { Field } from '../ui/Field.js';
+import { Select } from '../ui/Select.js';
 
 interface Draft {
   readonly pool: ChainPool;
@@ -72,28 +74,28 @@ export function AssistantChainPools({
       {chain.map((row, index) => (
         <div key={`${row.keyId} ${row.model}`} className="flex flex-wrap items-center gap-3">
           <span className="text-ink">{row.model}</span>
-          <label className="grid gap-0.5 text-xs text-ink-muted">
-            Pool for row {index + 1}
-            <select
-              className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+          <Field label={`Pool for row ${index + 1}`}>
+            <Select
               value={drafts[index]?.pool ?? 'key'}
-              onChange={(event) => patch(index, { pool: event.target.value as ChainPool })}
-            >
-              <option value="key">One key</option>
-              <option value="provider">Whole provider</option>
-            </select>
-          </label>
-          <label className="grid gap-0.5 text-xs text-ink-muted">
-            Tier for row {index + 1}
-            <select
-              className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+              onValueChange={(value) => patch(index, { pool: value as ChainPool })}
+              options={[
+                { value: 'key', label: 'One key' },
+                { value: 'provider', label: 'Whole provider' },
+              ]}
+              aria-label={`Pool for row ${index + 1}`}
+            />
+          </Field>
+          <Field label={`Tier for row ${index + 1}`}>
+            <Select
               value={drafts[index]?.tier ?? 'standard'}
-              onChange={(event) => patch(index, { tier: event.target.value as ChainTierName })}
-            >
-              <option value="standard">Standard</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
+              onValueChange={(value) => patch(index, { tier: value as ChainTierName })}
+              options={[
+                { value: 'standard', label: 'Standard' },
+                { value: 'light', label: 'Light' },
+              ]}
+              aria-label={`Tier for row ${index + 1}`}
+            />
+          </Field>
         </div>
       ))}
       <div className="flex items-center gap-3">

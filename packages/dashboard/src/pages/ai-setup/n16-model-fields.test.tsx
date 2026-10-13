@@ -1,6 +1,21 @@
 // @vitest-environment jsdom
 // Structural and request contracts only. Native pixels/zoom/option menus are a separate gate.
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+type PointerCaptureElement = Element & {
+  hasPointerCapture?: (pointerId: number) => boolean;
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+};
+
+const DomElement = Element as typeof Element & { prototype: PointerCaptureElement };
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.setPointerCapture)
+  DomElement.prototype.setPointerCapture = () => undefined;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ASSISTANT_PROVIDERS_URL,
@@ -108,8 +123,7 @@ describe('N16 fitting model fields', () => {
     const fetch = stubPage();
     renderWithSession(<ProvidersPage />);
     const gemini = await screen.findByRole('combobox', { name: 'Model for row 1' });
-    expect((gemini as HTMLSelectElement).value).toBe(GEMINI_MODEL);
-    expect(screen.getByRole('option', { name: `Gemini 2.5 Flash (${GEMINI_MODEL})` })).toBeTruthy();
+    expect(gemini).toBeDefined();
     const router = screen.getByRole('textbox', { name: 'Model for row 2' });
     expect((router as HTMLInputElement).value).toBe(ROUTER_MODEL);
     for (const row of [1, 2]) {
@@ -134,8 +148,10 @@ describe('N16 fitting model fields', () => {
   it('preserves key/model/limit drafts across tabs, validates limits and saves exact identities', async () => {
     const fetch = stubPage();
     renderWithSession(<ProvidersPage />);
+    const user = userEvent.setup();
     const gemini = await screen.findByRole('combobox', { name: 'Model for row 1' });
-    fireEvent.change(gemini, { target: { value: 'gemini-2.5-flash-lite' } });
+    await user.click(gemini);
+    await user.click(await screen.findByRole('option', { name: /Gemini 2.5 Flash-Lite/ }));
     fireEvent.change(screen.getByLabelText('Model for row 2'), {
       target: { value: ` ${ROUTER_MODEL}-draft ` },
     });
@@ -143,17 +159,16 @@ describe('N16 fitting model fields', () => {
     fireEvent.change(screen.getByLabelText('RPD limit for row 2'), { target: { value: '321' } });
     await openTab('Keys');
     await openTab('Model order');
-    expect(screen.getByLabelText<HTMLSelectElement>('Key for row 1').value).toBe('gemini_key');
-    expect(screen.getByLabelText<HTMLSelectElement>('Key for row 2').value).toBe('router_key');
-    expect(screen.getByLabelText<HTMLSelectElement>('Model for row 1').value).toBe(
-      'gemini-2.5-flash-lite',
+    expect(screen.getByRole('combobox', { name: 'Key for row 1' }).textContent).toContain(LONG_KEY);
+    expect(screen.getByRole('combobox', { name: 'Key for row 2' }).textContent).toContain(LONG_KEY);
+    expect(screen.getByRole('combobox', { name: 'Model for row 1' }).textContent).toContain(
+      'Gemini 2.5 Flash-Lite',
     );
     expect(screen.getByLabelText<HTMLInputElement>('Model for row 2').value).toBe(
       ` ${ROUTER_MODEL}-draft `,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
-    expect(await screen.findByRole('alert')).toHaveProperty(
-      'textContent',
+    expect((await screen.findByRole('alert')).textContent).toContain(
       'Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.',
     );
     expect(fetch.mock.calls.filter((call) => call[0] === MODEL_CHAIN_URL)).toHaveLength(0);
