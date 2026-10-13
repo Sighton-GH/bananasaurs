@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js';
+import type { AutomodActionTaken } from '../automod/subscriber.js';
 import {
+  formatAutomodMatch,
   formatGapMarker,
   formatMemberAvatarChanged,
   formatMemberJoin,
@@ -416,5 +418,58 @@ describe('formatGapMarker', () => {
     expect(details).toContain('message');
     expect(details).toContain('member');
     expect(details).toContain('role');
+  });
+});
+
+describe('formatAutomodMatch', () => {
+  const base = {
+    ruleId: 'rule-1',
+    ruleKind: 'keyword_filter',
+    memberId: AUTHOR,
+    channelId: CHANNEL,
+    messageId: MESSAGE,
+    snippet: 'badword',
+    at: AT,
+  };
+
+  it('a watch match names the rule, the member and the channel, spoilered', () => {
+    const view = formatAutomodMatch({ ...base, actionTaken: 'would_delete' }, true);
+    expect(view.kind).toBe('automod_match');
+    expect(view.headline).toBe(
+      `<@${AUTHOR}> matched a **keyword\\_filter** rule in <#${CHANNEL}>`,
+    );
+    expect(view.details).toEqual(['Watch only — nothing was done.']);
+    expect(view.quote).toEqual({ label: 'Matched', text: 'badword', spoiler: true });
+    expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: true });
+    expect(view.memberId).toBe(AUTHOR);
+    expect(view.at).toBe(AT);
+  });
+
+  it('a deleted match says the message was deleted and drops the button', () => {
+    const view = formatAutomodMatch({ ...base, actionTaken: 'deleted' }, true);
+    expect(view.details).toEqual(['The message was deleted.']);
+    expect(view.message).toEqual({ channelId: CHANNEL, messageId: MESSAGE, exists: false });
+  });
+
+  it.each([
+    ['delete_blocked_killswitch', 'Not deleted: the kill switch is on.', true],
+    ['delete_blocked_breaker', 'Not deleted: the safety breaker is open.', true],
+    ['delete_blocked_dry_run', 'Not deleted: dry run is on.', true],
+    ["delete_failed", "Not deleted: Discord didn't accept the delete.", true],
+  ] as const)('%s → %s', (actionTaken, words, exists) => {
+    const view = formatAutomodMatch({ ...base, actionTaken }, true);
+    expect(view.details).toEqual([words]);
+    expect(view.message?.exists).toBe(exists);
+  });
+
+  it.each(['deleted_and_escalated', 'escalation_refused', 'native_blocked'] as const)(
+    '%s says Recorded.',
+    (actionTaken: AutomodActionTaken) => {
+      expect(formatAutomodMatch({ ...base, actionTaken }, true).details).toEqual(['Recorded.']);
+    },
+  );
+
+  it('omits the quote when the route has content off', () => {
+    expect(formatAutomodMatch({ ...base, actionTaken: 'would_delete' }, false).quote).toBeUndefined();
   });
 });

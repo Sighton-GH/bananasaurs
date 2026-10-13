@@ -1269,3 +1269,83 @@ describe('a rule that cannot be compiled', () => {
     expect(capturing.errors).toHaveLength(2);
   });
 });
+
+describe('onMatchRecorded (P2 Task 4)', () => {
+  it('on a Watch-mode match is called once, after recordCaseEvent, with the match facts', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-watch-hook', kind: 'keyword_filter' })],
+      safetyState: WATCH,
+    });
+    const order: string[] = [];
+    const seen: Parameters<NonNullable<AutomodSubscriberDeps['onMatchRecorded']>>[0][] = [];
+    const origRecord = deps.recordCaseEvent;
+    deps.recordCaseEvent = (input) => {
+      order.push('recordCaseEvent');
+      origRecord(input);
+    };
+    deps.onMatchRecorded = async (info) => {
+      order.push('onMatchRecorded');
+      seen.push(info);
+    };
+    await createAutomodSubscriber(deps).handle(messageCreate());
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      ruleId: 'rule-watch-hook',
+      ruleKind: 'keyword_filter',
+      memberId: AUTHOR,
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      snippet: 'badword',
+      actionTaken: 'would_delete',
+      at: NOW_MS,
+    });
+    expect(calls.recordCaseEvent).toHaveLength(1);
+    expect(order).toEqual(['recordCaseEvent', 'onMatchRecorded']);
+  });
+
+  it('on an On-mode match whose delete succeeds is called with deleted', async () => {
+    const { deps } = buildHarness({ rules: [rule({ ruleId: 'rule-on-hook' })] });
+    const seen: Parameters<NonNullable<AutomodSubscriberDeps['onMatchRecorded']>>[0][] = [];
+    deps.onMatchRecorded = async (info) => {
+      seen.push(info);
+    };
+    await createAutomodSubscriber(deps).handle(messageCreate());
+
+    expect(seen).toHaveLength(1);
+    expect(['deleted', 'deleted_and_escalated']).toContain(seen[0]?.actionTaken);
+    expect(seen[0]).toMatchObject({ ruleId: 'rule-on-hook', memberId: AUTHOR });
+  });
+
+  it('a rejecting hook still resolves, logs component automod, and keeps the case event', async () => {
+    const capturing = capturingLogger();
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-reject-hook' })],
+      safetyState: WATCH,
+      logger: capturing.logger,
+    });
+    deps.onMatchRecorded = async () => {
+      throw new Error('log poster down');
+    };
+    await expect(createAutomodSubscriber(deps).handle(messageCreate())).resolves.toBeUndefined();
+
+    expect(calls.recordCaseEvent).toHaveLength(1);
+    const withComponent = capturing.lines
+      .map((l) => JSON.parse(l) as { component?: string })
+      .some((l) => l.component === 'automod');
+    expect(withComponent).toBe(true);
+  });
+
+  it('a message that matches no rule never calls it', async () => {
+    const { deps } = buildHarness({ rules: [rule({ ruleId: 'rule-no-call' })] });
+    let called = 0;
+    deps.onMatchRecorded = async () => {
+      called += 1;
+    };
+    await createAutomodSubscriber(deps).handle(
+      messageCreate({ content: 'nothing to see here' }),
+    );
+
+    expect(called).toBe(0);
+  });
+});
