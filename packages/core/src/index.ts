@@ -793,6 +793,11 @@ export * from './assistant/router.js';
 
 export * from './ui/discord/index.js';
 export { ERROR_COPY, type CopyAudience, type ErrorCode, type ErrorCopy } from './copy/errors.js';
+export {
+  moderationRefusalCode,
+  panelRefusalCode,
+  refFor,
+} from './copy/refusals.js';
 
 // Runtime schemas for the dashboard's generated automod editor. Predicate logic is unchanged.
 export { capsConfig } from './automod/predicates/caps.js';
