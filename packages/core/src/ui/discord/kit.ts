@@ -37,7 +37,7 @@ export interface Button {
   readonly style: 1 | 2 | 3 | 4;
   readonly custom_id: string;
   readonly label: string;
-  readonly emoji?: { readonly name: string };
+  readonly emoji?: { readonly name: string } | { readonly id: string };
   readonly disabled?: boolean;
 }
 export interface LinkButton {
@@ -50,7 +50,7 @@ export interface SelectOption {
   readonly label: string;
   readonly value: string;
   readonly description?: string;
-  readonly emoji?: { readonly name: string };
+  readonly emoji?: { readonly name: string } | { readonly id: string };
   readonly default?: boolean;
 }
 export interface StringSelect {
@@ -132,7 +132,7 @@ export const button = (options: {
   customId: string;
   label: string;
   style?: ButtonStyleName;
-  emoji?: string;
+  emoji?: string | { id: string };
   disabled?: boolean;
 }): Button => {
   assertButtonLabel(options.label, options.emoji !== undefined);
@@ -141,7 +141,9 @@ export const button = (options: {
     style: BUTTON_STYLE[options.style ?? 'secondary'],
     custom_id: options.customId,
     label: options.label,
-    ...(options.emoji === undefined ? {} : { emoji: { name: options.emoji } }),
+    ...(options.emoji === undefined
+      ? {}
+      : { emoji: typeof options.emoji === 'string' ? { name: options.emoji } : { id: options.emoji.id } }),
     ...(options.disabled === true ? { disabled: true } : {}),
   };
 };
