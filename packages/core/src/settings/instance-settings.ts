@@ -473,9 +473,9 @@ const attachmentTextMaxBytes: SettingDefinition<number> = {
   label: 'Text attachment size limit',
   help: 'The largest text file read from a message, in bytes. Larger files are skipped with a note.',
   display: 'count',
-  schema: z.number().int().min(1024).max(1_048_576),
+  schema: z.number().int().min(1024).max(262_144),
   defaultValue: 262_144,
-  bounds: { min: 1024, max: 1_048_576 },
+  bounds: { min: 1024, max: 262_144 },
 };
 
 const attachmentTextMaxChars: SettingDefinition<number> = {
@@ -484,9 +484,9 @@ const attachmentTextMaxChars: SettingDefinition<number> = {
   label: 'Text attachment characters sent',
   help: 'How many characters of each text file are sent to the AI. Longer files are cut with a note.',
   display: 'count',
-  schema: z.number().int().min(1000).max(100_000),
+  schema: z.number().int().min(1000).max(24_000),
   defaultValue: 24_000,
-  bounds: { min: 1000, max: 100_000 },
+  bounds: { min: 1000, max: 24_000 },
 };
 
 const attachmentTextMaxCount: SettingDefinition<number> = {
@@ -495,9 +495,9 @@ const attachmentTextMaxCount: SettingDefinition<number> = {
   label: 'Text files read per message',
   help: 'How many text files are read from one message. 0 turns text attachments off.',
   display: 'count',
-  schema: z.number().int().min(0).max(10),
+  schema: z.number().int().min(0).max(3),
   defaultValue: 3,
-  bounds: { min: 0, max: 10 },
+  bounds: { min: 0, max: 3 },
 };
 
 const attachmentImageMaxBytes: SettingDefinition<number> = {
@@ -506,9 +506,9 @@ const attachmentImageMaxBytes: SettingDefinition<number> = {
   label: 'Image size limit',
   help: 'The largest image sent to the AI, in bytes. Larger images are skipped with a note.',
   display: 'count',
-  schema: z.number().int().min(1024).max(20_971_520),
+  schema: z.number().int().min(1024).max(5_242_880),
   defaultValue: 5_242_880,
-  bounds: { min: 1024, max: 20_971_520 },
+  bounds: { min: 1024, max: 5_242_880 },
 };
 
 const attachmentImageMaxCount: SettingDefinition<number> = {
@@ -517,9 +517,9 @@ const attachmentImageMaxCount: SettingDefinition<number> = {
   label: 'Images read per message',
   help: 'How many images are sent to the AI from one message. 0 turns image attachments off.',
   display: 'count',
-  schema: z.number().int().min(0).max(10),
+  schema: z.number().int().min(0).max(4),
   defaultValue: 4,
-  bounds: { min: 0, max: 10 },
+  bounds: { min: 0, max: 4 },
 };
 
 const attachmentPdfMaxBytes: SettingDefinition<number> = {
@@ -528,9 +528,9 @@ const attachmentPdfMaxBytes: SettingDefinition<number> = {
   label: 'PDF size limit',
   help: 'The largest PDF sent to the AI, in bytes. Larger PDFs are skipped with a note.',
   display: 'count',
-  schema: z.number().int().min(1024).max(31_457_280),
+  schema: z.number().int().min(1024).max(10_485_760),
   defaultValue: 10_485_760,
-  bounds: { min: 1024, max: 31_457_280 },
+  bounds: { min: 1024, max: 10_485_760 },
 };
 
 const attachmentPdfMaxCount: SettingDefinition<number> = {
@@ -539,9 +539,9 @@ const attachmentPdfMaxCount: SettingDefinition<number> = {
   label: 'PDFs read per message',
   help: 'How many PDFs are sent to the AI from one message. 0 turns PDF attachments off.',
   display: 'count',
-  schema: z.number().int().min(0).max(10),
+  schema: z.number().int().min(0).max(2),
   defaultValue: 2,
-  bounds: { min: 0, max: 10 },
+  bounds: { min: 0, max: 2 },
 };
 
 export const INSTANCE_SETTINGS: readonly SettingDefinition<unknown>[] = [

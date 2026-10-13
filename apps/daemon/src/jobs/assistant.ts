@@ -1388,9 +1388,9 @@ export const assistantInvokeHandler = (deps: {
             // ADR 0126 (fail-closed): the re-read needs its own Read pass,
             // independent of the channel-context window and of
             // fetchChannelMessages being wired. Missing access, a denial or
-            // a check error skips the re-read silently. Whether the invoking
-            // message should instead ride the tagged-message exemption the
-            // quote fetch uses is an open owner decision (task report).
+            // a check error skips the re-read silently. Owner decision
+            // (2026-10-12): the invoking message does NOT ride the
+            // tagged-message exemption the quote fetch uses.
             let attachmentReadAllowed = false;
             if (deps.channelAccess !== undefined) {
               try {

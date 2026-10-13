@@ -253,3 +253,20 @@ it('attachment caps default to the D7 table and a count of 0 disables that kind'
   expect(def('assistant.attachments.imageMaxCount')?.schema.safeParse(11).success).toBe(false);
   expect(def('assistant.attachments.pdfMaxBytes')?.schema.safeParse(0).success).toBe(false);
 });
+
+it('attachment caps can be lowered but never raised above the D7 table', () => {
+  const ceilings: Record<string, number> = {
+    'assistant.attachments.textMaxBytes': 262_144,
+    'assistant.attachments.textMaxChars': 24_000,
+    'assistant.attachments.textMaxCount': 3,
+    'assistant.attachments.imageMaxBytes': 5_242_880,
+    'assistant.attachments.imageMaxCount': 4,
+    'assistant.attachments.pdfMaxBytes': 10_485_760,
+    'assistant.attachments.pdfMaxCount': 2,
+  };
+  for (const [key, max] of Object.entries(ceilings)) {
+    const schema = settingDefinition(key)?.schema;
+    expect(schema?.safeParse(max).success, key).toBe(true);
+    expect(schema?.safeParse(max + 1).success, key).toBe(false);
+  }
+});
