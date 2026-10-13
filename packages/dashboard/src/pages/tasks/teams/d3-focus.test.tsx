@@ -107,7 +107,7 @@ describe('add team focus (d3 L05/L06)', () => {
       const gets = calls().filter(([url]) => url === '/api/tasks/setup');
       expect(gets.length).toBeGreaterThan(1);
     });
-    const name = (await screen.findByLabelText('Team name')) as HTMLInputElement;
+    const name = await screen.findByLabelText<HTMLInputElement>('Team name');
     expect(name.value).toBe('');
     await vi.waitFor(() => {
       const current = document.getElementById('add-team-name');

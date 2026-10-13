@@ -111,7 +111,7 @@ describe('account permissions save focus (d3 L04)', () => {
     probe.focus();
     probe.remove();
     expect(document.activeElement).toBe(document.body);
-    await release(
+    release(
       new Response(
         JSON.stringify({
           error: 'forbidden',
