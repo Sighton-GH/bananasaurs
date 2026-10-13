@@ -1,6 +1,18 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+type PointerCaptureElement = Element & {
+  hasPointerCapture?: (pointerId: number) => boolean;
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+};
+
+const DomElement = Element as typeof Element & { prototype: PointerCaptureElement };
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.setPointerCapture) DomElement.prototype.setPointerCapture = () => undefined;
+if (!DomElement.prototype.releasePointerCapture) DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
@@ -295,7 +307,7 @@ describe('ProvidersPage API keys', () => {
     const inSection = within(section);
     const user = userEvent.setup();
     await user.click(inSection.getByRole('combobox', { name: 'Service' }));
-    await user.click(await screen.findByRole('option', { name: /OpenRouter/ }));
+    await user.click(await screen.findByRole('option', { name: 'Gemini' }));
     fireEvent.change(inputOf(inSection.getByLabelText('Label')), { target: { value: 'Spare' } });
     fireEvent.change(inputOf(inSection.getByLabelText('API key')), {
       target: { value: 'sk-spare-key' },
@@ -1357,8 +1369,8 @@ describe('ProvidersPage terms and web search', () => {
     await openTab('Web search');
     const card = await webCard();
     expect(within(card).getByText('Only the server owner can change web search.')).toBeTruthy();
-    expect(within(card).getByRole('radio', { name: 'Tavily' })).toBeChecked();
-    expect(within(card).getByRole('radio', { name: 'Brave Search' })).toBeDisabled();
+    expect((within(card).getByRole('radio', { name: 'Tavily' }) as HTMLInputElement).checked).toBe(true);
+    expect((within(card).getByRole('radio', { name: 'Brave Search' }) as HTMLInputElement).closest('fieldset')?.disabled).toBe(true);
     expect(
       mock.mock.calls.some((c) => (c[0] as string).includes('/api/assistant/search-keys')),
     ).toBe(false);

@@ -1,5 +1,19 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+
+type PointerCaptureElement = Element & {
+  hasPointerCapture?: (pointerId: number) => boolean;
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+};
+
+const DomElement = Element as typeof Element & { prototype: PointerCaptureElement };
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.setPointerCapture)
+  DomElement.prototype.setPointerCapture = () => undefined;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
 import userEvent from '@testing-library/user-event';
 import { DEFAULT_ROUTER_RULES, routeRun } from '@bananasaurs/core';
 import type { SetupChainRow } from '../api/assistant.js';
@@ -303,10 +317,16 @@ describe('Slice 6 dashboard (ADR 0143/0144)', () => {
       </SessionProvider>
     );
     const { rerender } = render(tree(base));
-    expect(screen.getByRole('combobox', { name: /pool for row 1/i })).toHaveTextContent('One key');
+    expect(screen.getByRole('combobox', { name: /pool for row 1/i }).textContent).toContain(
+      'One key',
+    );
     rerender(tree({ ...base, pool: 'provider', tier: 'light' }));
-    expect(screen.getByRole('combobox', { name: /pool for row 1/i })).toHaveTextContent('Whole provider');
-    expect(screen.getByRole('combobox', { name: /tier for row 1/i })).toHaveTextContent('Light');
+    expect(screen.getByRole('combobox', { name: /pool for row 1/i }).textContent).toContain(
+      'Whole provider',
+    );
+    expect(screen.getByRole('combobox', { name: /tier for row 1/i }).textContent).toContain(
+      'Light',
+    );
     fireEvent.click(screen.getByRole('button', { name: /save pools and tiers/i }));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(bodyOf(fetchMock.mock.calls[0] as unknown[])).toMatchObject({

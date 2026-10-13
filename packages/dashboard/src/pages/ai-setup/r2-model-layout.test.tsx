@@ -7,6 +7,18 @@
 // preservation. Pixel verification belongs to the native recheck, not JSDOM.
 import { cleanup, fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+type PointerCaptureElement = Element & {
+  hasPointerCapture?: (pointerId: number) => boolean;
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+};
+
+const DomElement = Element as typeof Element & { prototype: PointerCaptureElement };
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.setPointerCapture) DomElement.prototype.setPointerCapture = () => undefined;
+if (!DomElement.prototype.releasePointerCapture) DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ASSISTANT_PROVIDERS_URL, PROVIDER_MODELS_URL } from '../../api/assistant.js';
 import { renderWithSession, stubFetch } from '../../test-support.js';
@@ -142,7 +154,7 @@ describe('Model order narrow layout (R2 / N03)', () => {
     expect(modelLabel?.className).toContain('max-w-full');
     expect(modelLabel?.className).not.toContain('min-w-40');
     // The long saved model stays selectable even before it appears in the list.
-    expect(modelSelect).toHaveTextContent(LONG_MODEL);
+    expect(modelSelect.textContent).toContain(LONG_MODEL);
   });
 
   it('keeps the typed model field for non-Gemini providers on a constrained row', async () => {
@@ -202,10 +214,10 @@ describe('Model order narrow layout (R2 / N03)', () => {
     const select = await screen.findByRole('combobox', { name: 'Model for row 1' });
     await user.click(select);
     await user.click(await screen.findByRole('option', { name: /Gemini 2.5 Flash-Lite/ }));
-    expect(select).toHaveTextContent('Gemini 2.5 Flash-Lite');
+    expect(select.querySelector('[data-radix-select-value]')?.textContent).toContain('Gemini 2.5 Flash-Lite');
     await openTab('Keys');
     await openTab('Model order');
     const back = await screen.findByRole('combobox', { name: 'Model for row 1' });
-    expect(back).toHaveTextContent('Gemini 2.5 Flash-Lite');
+    expect(back.querySelector('[data-radix-select-value]')?.textContent).toContain('Gemini 2.5 Flash-Lite');
   });
 });
