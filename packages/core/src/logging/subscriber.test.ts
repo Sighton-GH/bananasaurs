@@ -11,6 +11,7 @@ import type {
   MessageEvent,
 } from '../discord/events.js';
 import type { OutgoingMessage } from '../discord/port.js';
+import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
 
 const GUILD = '111111111111111111';
 const SOURCE = '222222222222222222';
@@ -22,23 +23,6 @@ interface SentCard {
   channelId: string;
   message: OutgoingMessage;
 }
-
-/** Every Text Display joined: the card's headline, quote, changes and footer. */
-const textOf = (message: OutgoingMessage): string => {
-  const out: string[] = [];
-  const walk = (v: unknown): void => {
-    if (Array.isArray(v)) return v.forEach(walk);
-    if (typeof v !== 'object' || v === null) return;
-    const o = v as Record<string, unknown>;
-    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
-    walk(o['components']);
-  };
-  walk(message.components);
-  return out.join('\n');
-};
-
-const customIdsOf = (message: OutgoingMessage): string[] =>
-  JSON.stringify(message.components).match(/bs\.mod:[^"]+/g) ?? [];
 
 const sentMessage = (sent: SentCard[], index: number): OutgoingMessage => {
   const card = sent[index];
@@ -185,12 +169,12 @@ describe('logging subscriber fan-out', () => {
     const message = sentMessage(fake.sent, 0);
     expect(message.flags).toBe(32768);
     expect(message.allowedMentions).toEqual({ parse: [] });
-    const text = textOf(message);
+    const text = cardTexts(message.components ?? []);
     expect(text).toContain('-# ✏️ MESSAGE EDITED');
     expect(text).toContain(`<@${AUTHOR}> edited a message in <#${SOURCE}>`);
     expect(text).toContain('edited text');
     expect(text).toContain(`https://discord.com/channels/${GUILD}/${SOURCE}/${MESSAGE}`);
-    expect(customIdsOf(message)).toEqual([
+    expect(cardCustomIds(message.components ?? [])).toEqual([
       `bs.mod:delete:${SOURCE}:${MESSAGE}:${AUTHOR}`,
       `bs.mod:warn:${AUTHOR}`,
       `bs.mod:timeout:${AUTHOR}`,
@@ -247,7 +231,9 @@ describe('logging subscriber fan-out', () => {
       makeRoute({ routeId: 'b', channelId: DEST_B, includeContent: true }),
     ]);
     await createLoggingSubscriber(fake.ports).handle(editEvent({ content: 'secret words' }));
-    const byChannel = new Map(fake.sent.map((s) => [s.channelId, textOf(s.message)]));
+    const byChannel = new Map(
+      fake.sent.map((s) => [s.channelId, cardTexts(s.message.components ?? [])]),
+    );
     expect(byChannel.get(DEST_A)).not.toContain('secret words');
     expect(byChannel.get(DEST_B)).toContain('secret words');
   });
@@ -447,7 +433,7 @@ describe('member snapshots and change lines', () => {
     await subscriber.handle(memberUpdate({ receivedAtMs: 1_000, profile: memberProfile('Old') }));
     await subscriber.handle(memberUpdate({ receivedAtMs: 2_000, profile: memberProfile('New') }));
     expect(fake.sent).toHaveLength(1);
-    const text = textOf(sentMessage(fake.sent, 0));
+    const text = cardTexts(sentMessage(fake.sent, 0).components ?? []);
     expect(text).toContain('changed nickname');
     expect(text).toContain(`<@${MEMBER}>`);
     expect(text).toContain('Old → New');
@@ -509,7 +495,7 @@ describe('member snapshots and change lines', () => {
       at += 1_000;
     }
     expect(fake.sent).toHaveLength(4);
-    expect(fake.sent.map((s) => textOf(s.message))).toEqual([
+    expect(fake.sent.map((s) => cardTexts(s.message.components ?? []))).toEqual([
       expect.stringContaining('Zero → A'),
       expect.stringContaining('A → B'),
       expect.stringContaining('B → A'),
@@ -526,7 +512,7 @@ describe('member snapshots and change lines', () => {
     expect(fake.snapshots.has(MEMBER)).toBe(true);
 
     await subscriber.handle(memberLeave({ receivedAtMs: 2_000 }));
-    const text = textOf(sentMessage(fake.sent, fake.sent.length - 1));
+    const text = cardTexts(sentMessage(fake.sent, fake.sent.length - 1).components ?? []);
     expect(text).toContain(`<@${MEMBER}>`);
     expect(text).toContain('left');
     expect(fake.snapshots.has(MEMBER)).toBe(false);
@@ -582,7 +568,7 @@ describe('audit-log entries and bulk deletes', () => {
     await createLoggingSubscriber(fake.ports).handle(auditEntry({ action: 20 }));
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0]?.channelId).toBe(DEST_A);
-    const text = textOf(sentMessage(fake.sent, 0));
+    const text = cardTexts(sentMessage(fake.sent, 0).components ?? []);
     expect(text).toContain('Kicked: <@777777777777777777>');
     expect(sentMessage(fake.sent, 0).allowedMentions).toEqual({ parse: [] });
     expect(sentMessage(fake.sent, 0).flags).toBe(32768);
@@ -617,7 +603,9 @@ describe('audit-log entries and bulk deletes', () => {
     await createLoggingSubscriber(fake.ports).handle(bulkDelete());
     expect(fake.sent).toHaveLength(2);
     for (const card of fake.sent) {
-      expect(textOf(card.message)).toContain(`3 messages were purged in <#${SOURCE}>`);
+      expect(cardTexts(card.message.components ?? [])).toContain(
+        `3 messages were purged in <#${SOURCE}>`,
+      );
       expect(card.message.allowedMentions).toEqual({ parse: [] });
     }
   });
@@ -671,12 +659,12 @@ describe('native automod actions', () => {
     await createLoggingSubscriber(fake.ports).handle(automodEvent());
     expect(fake.sent).toHaveLength(1);
     const message = sentMessage(fake.sent, 0);
-    const text = textOf(message);
+    const text = cardTexts(message.components ?? []);
     expect(text).toContain('-# 🛡️ DISCORD AUTOMOD');
     expect(text).toContain(`Discord AutoMod acted on a message by <@${MEMBER}>`);
     expect(text).toContain('Action: Blocked the message');
     expect(text).toContain('-# Rule 888888888888888888');
-    expect(customIdsOf(message)).toEqual([
+    expect(cardCustomIds(message.components ?? [])).toEqual([
       `bs.mod:delete:${SOURCE}:${MESSAGE}:${MEMBER}`,
       `bs.mod:warn:${MEMBER}`,
       `bs.mod:timeout:${MEMBER}`,
@@ -704,7 +692,7 @@ describe('native automod actions', () => {
       );
       at += 1;
     }
-    const texts = fake.sent.map((s) => textOf(s.message));
+    const texts = fake.sent.map((s) => cardTexts(s.message.components ?? []));
     // Each card carries its own fingerprint, so all three post.
     expect(texts).toEqual([
       expect.stringContaining('Sent an alert'),

@@ -13,6 +13,53 @@ import { ICON, type IconName, type Tone } from '../ui/discord/tokens.js';
 
 export type LogCardKind = string;
 
+/**
+ * Every event kind a log route can carry (`LOG_EVENT_KINDS` in
+ * `./subscriber.js`, verified 2026-10-13 to be exactly these 37 values). No
+ * union type is exported anywhere in the logging module — `LOG_EVENT_KINDS`
+ * and `AUDIT_EVENT_KINDS` are both `readonly string[]` — so the union lives
+ * here, next to the table it keeps exhaustive. Adding a value here without a
+ * `LOG_KIND_META` row fails `tsc`; so does removing a row.
+ */
+export type LogEventKind =
+  | 'automod_action'
+  | 'automod_match'
+  | 'channel_create'
+  | 'channel_delete'
+  | 'channel_update'
+  | 'emoji_create'
+  | 'emoji_delete'
+  | 'emoji_update'
+  | 'guild_available'
+  | 'guild_unavailable'
+  | 'guild_update'
+  | 'invite_create'
+  | 'invite_delete'
+  | 'member_avatar_changed'
+  | 'member_ban'
+  | 'member_join'
+  | 'member_kick'
+  | 'member_leave'
+  | 'member_nickname_changed'
+  | 'member_roles_changed'
+  | 'member_timeout'
+  | 'member_timeout_removed'
+  | 'member_unban'
+  | 'member_username_changed'
+  | 'member_warn'
+  | 'message_bulk_delete'
+  | 'message_create'
+  | 'message_delete'
+  | 'message_edit'
+  | 'role_create'
+  | 'role_delete'
+  | 'role_update'
+  | 'sticker_create'
+  | 'sticker_delete'
+  | 'sticker_update'
+  | 'thread_create'
+  | 'thread_delete';
+
 export interface LogCardView {
   readonly kind: LogCardKind;
   /** One line of already-safe Markdown: mentions and escaped names only. */
@@ -36,8 +83,8 @@ export interface LogCardView {
 
 type Meta = { icon: IconName; label: string; tone: Tone };
 
-/** One row per kind (ADR 0141 decision 1). Labels are upper-cased in the eyebrow. */
-export const LOG_KIND_META: Readonly<Record<string, Meta>> = {
+/** One row per kind (ADR 0141 decision 1), plus `gap`. Labels are upper-cased in the eyebrow. */
+export const LOG_KIND_META: Readonly<Record<LogEventKind | 'gap', Meta>> = {
   message_create: { icon: 'message', label: 'Message sent', tone: 'neutral' },
   message_edit: { icon: 'edited', label: 'Message edited', tone: 'neutral' },
   message_delete: { icon: 'deleted', label: 'Message deleted', tone: 'neutral' },
@@ -138,7 +185,10 @@ const changesBlock = (lines: readonly string[]): string =>
   ['```', truncate(lines.join('\n').replaceAll('```', 'ˋˋˋ'), CHANGES_MAX), '```'].join('\n');
 
 export const renderLogCard = (view: LogCardView, guildId: string): CardMessage => {
-  const meta = LOG_KIND_META[view.kind] ?? FALLBACK;
+  // `view.kind` is a plain string (audit items and the subscriber build views
+  // from one), so a value outside `LogEventKind | 'gap'` can still reach this
+  // lookup — the fallback stays for exactly that case.
+  const meta = (LOG_KIND_META as Readonly<Record<string, Meta>>)[view.kind] ?? FALLBACK;
   const head = [
     subtext(`${ICON[meta.icon]} ${meta.label.toUpperCase()}`),
     view.headline,

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
+  cardTexts,
   createLoggingSubscriber,
   JOB_KINDS,
   parseGuildId,
@@ -44,20 +45,6 @@ const USER = '333333333333333333';
 const MESSAGE = '444444444444444444';
 const ROLE = '555555555555555555';
 const logger = pino({ level: 'silent' });
-
-/** Every Text Display joined: the card's headline, quote, changes and footer. */
-const textOf = (message: OutgoingMessage): string => {
-  const out: string[] = [];
-  const walk = (v: unknown): void => {
-    if (Array.isArray(v)) return v.forEach(walk);
-    if (typeof v !== 'object' || v === null) return;
-    const o = v as Record<string, unknown>;
-    if (o['type'] === 10 && typeof o['content'] === 'string') out.push(o['content']);
-    walk(o['components']);
-  };
-  walk(message.components);
-  return out.join('\n');
-};
 
 const sentMessage = (call: RestCall | undefined): OutgoingMessage => {
   const message = call?.args[2] as OutgoingMessage | undefined;
@@ -203,7 +190,7 @@ describe('message edits', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(OTHER_CHANNEL);
-    expect(textOf(sentMessage(calls[0]))).toContain('edited text');
+    expect(cardTexts(sentMessage(calls[0]).components ?? [])).toContain('edited text');
   });
 
   it('posts a Components V2 card with the eyebrow, mentions, jump link and buttons', async () => {
@@ -216,7 +203,7 @@ describe('message edits', () => {
     const message = sentMessage(calls[0]);
     expect(message.flags).toBe(32768);
     expect(message.allowedMentions).toEqual({ parse: [] });
-    const text = textOf(message);
+    const text = cardTexts(message.components ?? []);
     expect(text).toContain('-# ✏️ MESSAGE EDITED');
     expect(text).toContain(`<@${USER}> edited a message in <#${CHANNEL}>`);
     expect(text).toContain('edited text');
@@ -233,7 +220,7 @@ describe('message edits', () => {
     await subscriber.handle(messageEdit({ content: 'should not appear' }));
 
     const call = discord.restCalls('sendMessage')[0];
-    expect(textOf(sentMessage(call))).not.toContain('should not appear');
+    expect(cardTexts(sentMessage(call).components ?? [])).not.toContain('should not appear');
   });
 
   it('does not log an edit from an excluded source channel', async () => {
@@ -413,7 +400,7 @@ describe('members', () => {
 
     const call = discord.restCalls('sendMessage')[0];
     expect(call?.args[1]).toBe(CHANNEL);
-    expect(textOf(sentMessage(call))).toContain(USER);
+    expect(cardTexts(sentMessage(call).components ?? [])).toContain(USER);
   });
 
   it('logs a leave to the configured channel', async () => {
@@ -473,7 +460,7 @@ describe('member changes end to end', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     const message = sentMessage(calls[0]);
-    const text = textOf(message);
+    const text = cardTexts(message.components ?? []);
     expect(text).toContain(`<@${USER}> changed nickname`);
     expect(text).toContain('(none) → new');
     expect(message).toMatchObject({ allowedMentions: { parse: [] } });
@@ -503,7 +490,7 @@ describe('roles', () => {
     await subscriber.handle(roleEvent('roleDelete', 'old-name'));
 
     const call = discord.restCalls('sendMessage')[0];
-    expect(textOf(sentMessage(call))).toContain('old-name');
+    expect(cardTexts(sentMessage(call).components ?? [])).toContain('old-name');
   });
 
   it('does not double-post an identical role-update redelivery', async () => {
@@ -559,7 +546,7 @@ describe('gap markers (ADR 0023 decision 5)', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
-    const text = textOf(sentMessage(calls[0]));
+    const text = cardTexts(sentMessage(calls[0]).components ?? []);
     expect(text).toContain('<t:1:t>'); // disconnectedAtMs 1_000 -> 1s
     expect(text).toContain('<t:2:t>'); // receivedAtMs 2_000 -> 2s
   });
@@ -681,6 +668,6 @@ describe('audit-log entries', () => {
     const calls = discord.restCalls('sendMessage');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(LOG);
-    expect(textOf(sentMessage(calls[0]))).toContain(`Banned: <@${USER}>`);
+    expect(cardTexts(sentMessage(calls[0]).components ?? [])).toContain(`Banned: <@${USER}>`);
   });
 });
