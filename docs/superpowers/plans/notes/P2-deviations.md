@@ -18,3 +18,43 @@ Task 7: plan's Step 5 item 1 expected a type-only widening of `modConfirmationDe
 Task 7: plan-mandated test additions live in `packages/core/src/mod/cards.test.ts` and `packages/core/src/mod/confirmations.test.ts` (outside the task's Files list, covered by its forced-harness clause); `confirmations.test.ts`'s `deleteMessage` fake now records instead of throwing.
 Task 7: `npx prettier --write` on this task's files also reflowed pre-existing long lines in `cards.ts`/`cards.test.ts` that were already non-conformant at HEAD (verified via `prettier --check` on the HEAD blobs); assertions untouched.
 Task 7: the integration test hand-assembles the `guild.ts` port blocks (as `mod.integration.test.ts` does) because `guild.ts` needs a real discord.js `Client`; `modalSubmit` needed no wiring change since `Pipeline.dispatch` delivers every event to every subscriber.
+
+## Task 6 fix round 1: assertion mapping
+
+`git diff 6e1eada2..b076aee1` removed reply-text (`content`, `toMatch`, `toContain`) assertions when `/mod` replies became cards. Every removed line maps to a card-text assertion below (via `cardTexts`, `cardCustomIds` from `ui/discord/inspect.ts`). Line numbers are as of the fix-round commits; test names are the stable reference. Gaps closed in the round are marked `(added this round)`; intentional copy changes are marked `(by design)`.
+
+`apps/daemon/src/mod.integration.test.ts`:
+- `replies[0]?.content` `do not have permission` (unauthorized kick) → `mod.integration.test.ts:525` (`You can't take moderation actions`, unauthorized-kick test).
+- `replies[0]?.content` `refused` (owner timeout) → `:552` (`The server owner can't be moderated`, owner-target test).
+- `replies[0]?.content` `refused` (role-above-bot kick) → `:578` (`That member is above the bot`, high-role test).
+- `preview?.content` `Ban preview` → `:602` (`Ban <@T>?`, ban preview test).
+- `reply1?.content` `Ban applied` → `:630` (`Banned <@T>`, ban double-tap test).
+- `reply2?.content` `already executed` → `:632` (`This was already handled`, same test).
+- `preview?.content` `Purge preview` → `:721` (`Delete 5 messages from <#…>?`, purge test).
+
+`packages/core/src/mod/commands.test.ts`:
+- `/ban preview/i` → `commands.test.ts:291` (`Ban <@T>?`); `/purge preview/i` → `:310` (`Delete 0 messages` — the "Nothing to purge" empty-channel fact).
+- `/do not have permission/i` (kick, warn, note, evidence unauthorized) → `:328`, `:353`, `:703`, `:729` (`You can't take moderation actions`).
+- `/applied/` (timeout) → `:406` (`Timed out <@T> for 10 minutes`); (untimeout) → `:458` (`Ended <@T>'s timeout`); unban had no pre-Task-6 reply assertion, new applied coverage at `:477` (`Unbanned <@T>`).
+- `/refused/` (kick hierarchy) → `:432` (`That member is above the bot`, plus `not.toContain('role-above-bot')`).
+- `/Violation count: 1/` → `:503` (`warning 1`); `not /escalation tier/` kept verbatim at `:504`.
+- `/Violation count: 3/` + `/escalation tier/i` + `/applied/` (tier escalation) → `:519`–`:520` (`warning 3`, `its consequence was applied`).
+- `/Warning recorded/` (×2 onWarned tests) → `:574`, `:585` (`Warned <@T>`).
+- `/note recorded/i` → `:616` (`Added a note to <@T>'s case`); `/evidence.*recorded/i` → `:665` (`Added an evidence link to <@T>'s case`); detail lines (`:617`, `:666`) `(added this round)`.
+- `/something went wrong/i` (outer catch) → `:909` (`Couldn't finish that` + Ref).
+
+`packages/core/src/mod/confirmations.test.ts`:
+- Confirm (`style: 3`) / Cancel (`style: 4`) button-shape test → replaced by the custom-id test at `:267`–`:278`; Confirm is danger (`style: 4`) `(by design, plan copy)` and both styles in order (`[4, 2]`) are now asserted in `cards.test.ts` (fix task 4).
+- `message.content /raiding/` + `components toBeDefined` (ban preview) → `:308`–`:309` (`Ban <@T>?` + `raiding`).
+- `/do not have permission/i` (ban preview) → `:329`; (ban confirm re-auth) → `:523`; (purge preview) → `:642`; (purge confirm re-auth) → `:741`.
+- `/applied/i` (ban confirm) → `:375` (`Banned <@T>`).
+- `/already executed/i` (ban replay) → `:411`; (purge double-tap) → `:725` (`This was already handled`).
+- `/only the moderator who ran this command/i` → `:426` (`Only the moderator who started this can confirm it`).
+- `/cancelled/i` on `Cancelled. Nothing was done.` → `:449` (`Cancelled`) + `:450` (`Nothing was done`) `(added this round)`.
+- `/expired/i` → `:470` (`This confirmation expired`).
+- `/something went wrong/i` → `:504` (`Couldn't finish that`).
+- Over-budget: old asserted the raw `PURGE_MAX_MESSAGES` number in `content` and `components toBeUndefined` → `:581` (`Too many messages to purge at once`). The number itself is gone `(by design: ERROR_COPY mod.over-budget carries no count)`.
+- `/5 message/`, `/3 in the last 14 days/`, `/2 older/` → `:611`, `:613` (`Delete 5 messages from <#…>?`, `3 can go in bulk. 2 are older than 14 days…`).
+- `/confirmed/i` on `Purge of <#> confirmed — …background…` → `:699` (`Purging <#>`) + `:700` (`It runs in the background`) `(added this round)`.
+
+Checklist spot-checks: "Purging…" → `:699`–`:700`; "Cancelled" → `:449`–`:450`; "Nothing to purge" → `commands.test.ts:310`; "Cannot purge" (over-budget) → `:581` (number dropped by design, see above); "Cannot unban" → no pre-Task-6 test ever asserted an unban refusal reply, so nothing to restore — the refusal path is shared with kick (`commands.test.ts:432`) and unit-covered for every action via the `modOutcomeCard` refused/failed tests in `cards.test.ts`, with unban-applied at `commands.test.ts:477`; "already executed" → `:411`, `:725`; "Violation count: 3" → `commands.test.ts:519`; "escalation tier" → `:504` + `:520`; "do not have permission" → all `You can't take moderation actions` sites listed above.

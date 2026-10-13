@@ -445,9 +445,9 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
-      'Cancelled',
-    );
+    const cancelledText = cardTexts(harness.calls.respond.at(-1)?.message.components ?? []);
+    expect(cancelledText).toContain('Cancelled');
+    expect(cancelledText).toContain('Nothing was done');
     expect(harness.pendingActions.peek(intentId)).toBeUndefined();
   });
 
@@ -695,9 +695,9 @@ describe('purge confirm', () => {
 
     // Purge execution is a job the daemon runs later, not this handler's job.
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
-      `Purging <#${CHANNEL}>`,
-    );
+    const queuedText = cardTexts(harness.calls.respond.at(-1)?.message.components ?? []);
+    expect(queuedText).toContain(`Purging <#${CHANNEL}>`);
+    expect(queuedText).toContain('It runs in the background');
   });
 
   it('a double-tap on Confirm enqueues exactly one job — the second click finds the intent already taken', async () => {
