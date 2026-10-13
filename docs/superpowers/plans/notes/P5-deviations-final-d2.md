@@ -34,7 +34,33 @@ packages/dashboard/src/ui/n15-reorder-focus.test.tsx`, one process per run):
 
 - runs 1–10: 24 passed, 0 failed.
 
-10 isolated runs after the change (`npx vitest run
+## D2 inventory
+
+`grep -n -E '<select|<textarea|type="radio"|type="checkbox"|<table|JSON\.stringify|text-danger|text-xl'` over each page file in the Files list (2026-10-13, clean tree at `7709df18`):
+
+- packages/dashboard/src/pages/behaviours/create.tsx — 160 `<select`, 177 `<select`, 219 `<textarea`, 246 `type="checkbox"`
+- packages/dashboard/src/pages/behaviours/access.tsx — 119 `type="checkbox"`, 150 `type="checkbox"`, 181 `<select`, 364 `<textarea`, 379 `<select`
+- packages/dashboard/src/pages/behaviours/settings.tsx — 247 `<select`, 267 `text-danger`, 297 `<select`, 312 `text-danger`
+- packages/dashboard/src/pages/behaviours/prompt.tsx — 105 `<textarea`
+- packages/dashboard/src/pages/behaviours/try.tsx — 180 `<textarea`, 207 `text-danger`
+- packages/dashboard/src/pages/behaviours/index.tsx — (no hits)
+- packages/dashboard/src/pages/behaviours/detail.tsx — (no hits)
+- packages/dashboard/src/pages/behaviours/tab-panels.tsx — (no hits)
+- packages/dashboard/src/pages/behaviours/create-dialog.tsx — (no hits)
+- packages/dashboard/src/app/shell-chrome.tsx — 29 `<select`
+- packages/dashboard/src/pages/assistant-shared.tsx — 113 `type="checkbox"`, 151 `type="checkbox"`
+- packages/dashboard/src/pages/messages-assistant/assistant-skill.tsx — 179 `type="radio"`, 188 `type="radio"`, 197 `type="radio"`
+- packages/dashboard/src/pages/messages-assistant/skill-items.tsx — 168 `JSON.stringify` (recurrence-body comparison), 178 `JSON.stringify` x2 (draft dirty check), 217 `JSON.stringify` (recurrence change check), 289 `type="checkbox"`
+- packages/dashboard/src/pages/messages-assistant/assistant-prompt-wizard.tsx — 180 raw `<input type="checkbox">` (CheckRow helper), 201 raw `<input type="radio">` (RadioRow helper), 244 `JSON.stringify` (answers baseline), 246 `JSON.stringify` (dirty check)
+- packages/dashboard/src/pages/accounts/detail/password.tsx — 63 `type="radio"`, 72 `type="radio"`
+- packages/dashboard/src/pages/logging/index.tsx — 54 `type="checkbox"` (TriCheckbox helper; the page body already uses kit `Checkbox`)
+- packages/dashboard/src/pages/assistant-live.tsx — (no hits)
+- packages/dashboard/src/pages/assistant-live-buffer.tsx — (no hits)
+- packages/dashboard/src/ui/n15-reorder-focus.test.tsx — (no hits)
+
+No `<table` or `text-xl` hits in any listed file.
+
+10 isolated runs before the ruling (`npx vitest run
 packages/dashboard/src/ui/n15-reorder-focus.test.tsx`, one process per run):
 
 - runs 1–10: 23 passed, 1 failed — the same single test every time:
