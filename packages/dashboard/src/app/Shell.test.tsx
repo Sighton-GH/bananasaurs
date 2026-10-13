@@ -16,6 +16,26 @@ import { Shell } from './Shell.js';
 import { ThemeProvider } from './theme.js';
 import css from '../styles.css?raw';
 
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+
 const HEALTH = {
   guildId: '1540816150026518620',
   guildName: 'Bananasaurs dev',
@@ -313,14 +333,11 @@ describe('Shell', () => {
         onLoggedOut,
       },
     );
-    const select = await screen.findByLabelText('Server');
-    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
-      'Bananasaurs dev',
-      'Club',
-    ]);
-    await act(async () => {
-      fireEvent.change(select, { target: { value: CLUB } });
-    });
+    const select = await screen.findByRole('combobox', { name: 'Server' });
+    const user = userEvent.setup();
+    await user.click(select);
+    expect(await screen.findAllByRole('option')).toHaveLength(2);
+    await user.click(await screen.findByRole('option', { name: 'Club' }));
     const call = mock.mock.calls.find((c) => (c[0] as string) === '/api/session/guild');
     expect(call).toBeTruthy();
     expect(bodyOf(call!)).toEqual({ guildId: CLUB });
