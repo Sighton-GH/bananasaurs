@@ -1,9 +1,30 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { Route } from 'wouter';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../../test-support.js';
 import { AssistantBehaviourDetailPage } from './detail.js';
+
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());

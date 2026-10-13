@@ -10,6 +10,26 @@ import { TEST_SESSION } from '../../test-support.js';
 import { ToastProvider } from '../../ui/Toast.js';
 import { NewBehaviourDialog } from './create-dialog.js';
 
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+
 const data: AssistantData = {
   behaviours: [],
   resources: [],
@@ -93,12 +113,18 @@ function fill() {
   fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
     target: { value: ' New member help ' },
   });
-  fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
-    target: { value: 'mention-role' },
-  });
   fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
     target: { value: ' Help with reviewed club knowledge. ' },
   });
+}
+
+async function pickOption(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string | RegExp,
+  option: string | RegExp,
+) {
+  await user.click(screen.getByRole('combobox', { name }));
+  await user.click(await screen.findByRole('option', { name: option }));
 }
 
 describe('R6 Create behaviour', () => {
@@ -135,7 +161,8 @@ describe('R6 Create behaviour', () => {
     const s = setup();
     await s.open();
     fill();
-    await s.user.selectOptions(screen.getByRole('combobox', { name: 'Tag' }), 'help');
+    await pickOption(s.user, 'Mention role', '@Club helper');
+    await pickOption(s.user, 'Tag', /it-services/);
     await s.user.click(screen.getByRole('checkbox', { name: /Club members/ }));
     await s.user.click(screen.getByRole('checkbox', { name: /Find club knowledge/ }));
     await s.user.keyboard('{Escape}');
@@ -147,11 +174,9 @@ describe('R6 Create behaviour', () => {
         name: 'Instructions for the new behaviour',
       }).value,
     ).toBe('');
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Tag' }).value).toBe(
-      'bananasaurs',
-    );
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Mention role' }).value).toBe(
-      '',
+    expect(screen.getByRole('combobox', { name: 'Tag' }).textContent).toContain('@bananasaurs');
+    expect(screen.getByRole('combobox', { name: 'Mention role' }).textContent).toContain(
+      'Choose a role',
     );
     expect(screen.getAllByRole<HTMLInputElement>('checkbox').every((box) => !box.checked)).toBe(
       true,
@@ -172,14 +197,12 @@ describe('R6 Create behaviour', () => {
         name: 'Instructions for the new behaviour',
       }).required,
     ).toBe(true);
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Mention role' }).required).toBe(
-      true,
-    );
     const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Create behaviour' });
     expect(submit.disabled).toBe(true);
     await s.user.click(submit);
     expect(s.write).not.toHaveBeenCalled();
     fill();
+    await pickOption(s.user, 'Mention role', '@Club helper');
     expect(submit.disabled).toBe(false);
     cleanup();
     const withoutRoles = { ...data };
@@ -198,7 +221,8 @@ describe('R6 Create behaviour', () => {
     const s = setup();
     await s.open();
     fill();
-    await s.user.selectOptions(screen.getByRole('combobox', { name: 'Tag' }), 'it-services');
+    await pickOption(s.user, 'Mention role', '@Club helper');
+    await pickOption(s.user, 'Tag', /it-services/);
     await s.user.click(screen.getByRole('checkbox', { name: /Club members/ }));
     await s.user.click(screen.getByRole('checkbox', { name: /Find club knowledge/ }));
     expect(screen.queryByRole('checkbox', { name: /Owner private/ })).toBeNull();
@@ -277,6 +301,7 @@ describe('R6 Create behaviour', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'New behaviour' }));
     fill();
+    await pickOption(user, 'Mention role', '@Club helper');
     await user.click(screen.getByRole('button', { name: 'Create behaviour' }));
     const heading = await screen.findByRole('heading', { name: 'Created behaviour' });
     // Radix dispatches close-auto-focus from a delayed unmount callback.
@@ -300,6 +325,7 @@ describe('R6 Create behaviour', () => {
       );
       await s.open();
       fill();
+      await pickOption(s.user, 'Mention role', '@Club helper');
       await s.user.click(screen.getByRole('checkbox', { name: /Club members/ }));
       await s.user.click(screen.getByRole('button', { name: 'Create behaviour' }));
       await screen.findByText('Nothing was changed.');
@@ -309,8 +335,8 @@ describe('R6 Create behaviour', () => {
       expect(screen.getByRole('textbox', { name: 'Name' }).getAttribute('aria-invalid')).toBe(
         'true',
       );
-      expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Mention role' }).value).toBe(
-        'mention-role',
+      expect(screen.getByRole('combobox', { name: 'Mention role' }).textContent).toContain(
+        '@Club helper',
       );
       expect(screen.getByRole<HTMLInputElement>('checkbox', { name: /Club members/ }).checked).toBe(
         true,
@@ -324,6 +350,7 @@ describe('R6 Create behaviour', () => {
     const s = setup(() => Promise.resolve(undefined));
     await s.open();
     fill();
+    await pickOption(s.user, 'Mention role', '@Club helper');
     await s.user.click(screen.getByRole('button', { name: 'Create behaviour' }));
     expect(s.created).not.toHaveBeenCalled();
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Name' }).value).toBe(
@@ -340,6 +367,7 @@ describe('R6 Create behaviour', () => {
     const s = setup(() => pending);
     await s.open();
     fill();
+    await pickOption(s.user, 'Mention role', '@Club helper');
     const submit = screen.getByRole<HTMLButtonElement>('button', { name: 'Create behaviour' });
     await s.user.click(submit);
     expect(submit.disabled).toBe(true);

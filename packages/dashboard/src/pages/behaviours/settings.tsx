@@ -5,6 +5,7 @@ import { type Session } from '../../app/session.js';
 import { Card } from '../../ui/Card.js';
 import { ErrorNotice } from '../../ui/ErrorNotice.js';
 import { Field } from '../../ui/Field.js';
+import { Select } from '../../ui/Select.js';
 import { useToast } from '../../ui/Toast.js';
 
 /**
@@ -244,18 +245,14 @@ export function BotTagCard({ data, savedTag, tag, tagProblem, onTag }: SettingsC
           label="When someone tags @Bananasaurs, answer with"
           {...(behaviourProblem === undefined ? {} : { error: behaviourProblem })}
         >
-          <select
-            value={tag}
-            onChange={(e) => onTag(e.target.value)}
-            className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-          >
-            <option value="">Nobody</option>
-            {offered.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={tag === '' ? '__none' : tag}
+            onValueChange={(value) => onTag(value === '__none' ? '' : value)}
+            options={[
+              { value: '__none', label: 'Nobody' },
+              ...offered.map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
         </Field>
       </div>
       {savedTag === '' && (
@@ -264,7 +261,7 @@ export function BotTagCard({ data, savedTag, tag, tagProblem, onTag }: SettingsC
         </p>
       )}
       {tagProblem === 'not-saved' && (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-3 text-sm text-tone-danger-ink">
           Not saved. Your choice is kept here; try again.
         </p>
       )}
@@ -294,22 +291,18 @@ export function LogChannelCard({ data, log, logProblem, onLog }: SettingsCardsPr
       </p>
       <div className="mt-3">
         <Field label="Post every assistant request to">
-          <select
-            value={log}
-            onChange={(e) => onLog(e.target.value)}
-            className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-          >
-            <option value="">No log channel</option>
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>
-                #{c.name}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={log === '' ? '__none' : log}
+            onValueChange={(value) => onLog(value === '__none' ? '' : value)}
+            options={[
+              { value: '__none', label: 'No log channel' },
+              ...channels.map((c) => ({ value: c.id, label: `#${c.name}` })),
+            ]}
+          />
         </Field>
       </div>
       {logProblem && (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-3 text-sm text-tone-danger-ink">
           Not saved. Your choice is kept here; try again.
         </p>
       )}

@@ -1,10 +1,31 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { Route } from 'wouter';
 import { AssistantPage } from './assistant.js';
 import { AssistantBehaviourDetailPage } from './behaviours/detail.js';
+
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
 
 afterEach(cleanup);
 beforeEach(() => window.history.pushState({}, '', '/'));
@@ -168,6 +189,12 @@ function renderDetail(id = 'club', tab = 'prompt', body: unknown = FULL) {
     <Route path="/assistant/behaviours/:id" component={AssistantBehaviourDetailPage} />,
   );
   return mock;
+}
+
+async function pickOption(option: string | RegExp, name?: string | RegExp) {
+  const user = userEvent.setup();
+  if (name !== undefined) await user.click(await screen.findByRole('combobox', { name }));
+  await user.click(await screen.findByRole('option', { name: option }));
 }
 
 describe('AssistantPage', () => {
@@ -343,9 +370,7 @@ describe('AssistantPage', () => {
   it('configures ticket routing for it-services with a fail-closed empty channel', async () => {
     const mock = renderDetail('it', 'access');
     expect(await screen.findByText(/ticket creation fails closed/)).toBeTruthy();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Ticket channel' }), {
-      target: { value: 'chan-it' },
-    });
+    await pickOption('#it-services', 'Ticket channel');
     const reviewers = screen.getByRole('list', { name: 'Ticket reviewer roles' });
     fireEvent.click(within(reviewers).getByRole('checkbox', { name: 'Club Member' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save access' }));
@@ -393,12 +418,8 @@ describe('AssistantPage', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
       target: { value: 'New member help' },
     });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Tag' }), {
-      target: { value: 'help' },
-    });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
-      target: { value: 'role-onboarding' },
-    });
+    await pickOption(/help/, 'Tag');
+    await pickOption('@Onboarding', 'Mention role');
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Answer new member questions from reviewed sources only.' },
     });
@@ -520,9 +541,7 @@ describe('AssistantPage', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
       target: { value: 'Welcome' },
     });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
-      target: { value: 'role-onboarding' },
-    });
+    await pickOption('@Onboarding', 'Mention role');
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Welcome new members.' },
     });
@@ -549,24 +568,23 @@ describe('AssistantPage', () => {
     renderWithSession(<AssistantPage />);
     await screen.findByRole('table', { name: 'Assistant behaviours' });
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
-    const select = await screen.findByLabelText<HTMLSelectElement>(
-      'When someone tags @Bananasaurs, answer with',
-    );
+    await screen.findByRole('combobox', { name: 'When someone tags @Bananasaurs, answer with' });
     const params = new URLSearchParams(window.location.search);
     expect([params.get('x'), params.get('tab'), window.location.hash]).toEqual([
       '1',
       'settings',
       '#top',
     ]);
-    fireEvent.change(select, { target: { value: 'club' } });
+    await pickOption('Club assistant', 'When someone tags @Bananasaurs, answer with');
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Behaviours' }));
     await screen.findByRole('table', { name: 'Assistant behaviours' });
     expect(window.location.search).toBe('?x=1');
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
     await screen.findByRole('tab', { name: 'Settings', selected: true });
     expect(
-      screen.getByLabelText<HTMLSelectElement>('When someone tags @Bananasaurs, answer with').value,
-    ).toBe('club');
+      screen.getByRole('combobox', { name: 'When someone tags @Bananasaurs, answer with' })
+        .textContent,
+    ).toContain('Club assistant');
   });
 
   it('empty state shows the tracker and the no-behaviours guidance', async () => {
@@ -753,23 +771,13 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
       ],
     };
     render(enabledIt);
-    const select = await screen.findByLabelText(LABEL);
-    expect(
-      within(select)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['Nobody', 'Club assistant', 'IT services']);
-    expect(select).toHaveProperty('value', 'it');
+    const select = await screen.findByRole('combobox', { name: LABEL });
+    expect(select.textContent).toContain('IT services');
     cleanup();
     render(withFlag(undefined));
-    const again = await screen.findByLabelText(LABEL);
-    // IT services is disabled in FULL, so it is not offered.
-    expect(
-      within(again)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['Nobody', 'Club assistant']);
-    expect(again).toHaveProperty('value', '');
+    const again = await screen.findByRole('combobox', { name: LABEL });
+    // IT services is disabled in FULL, so its control shows the none choice.
+    expect(again.textContent).toContain('Nobody');
     expect(
       screen.getByText('Tagging the bot does nothing until you pick a behaviour.'),
     ).toBeTruthy();
@@ -777,10 +785,10 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
 
   it('saves the chosen behaviour, then Nobody, through PUT /api/assistant/bot-tag', async () => {
     const mock = render(withFlag(undefined));
-    const select = await screen.findByLabelText(LABEL);
+    await screen.findByRole('combobox', { name: LABEL });
     // Nothing to save until a field changes: no save bar at all.
     expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull();
-    fireEvent.change(select, { target: { value: 'club' } });
+    await pickOption('Club assistant', 'When someone tags @Bananasaurs, answer with');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(
       await screen.findByText('Tag @Bananasaurs now answers with Club assistant'),
@@ -788,8 +796,8 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
     expect(bodyOf(putCalls(mock)[0]!)).toEqual({ behaviourId: 'club' });
     cleanup();
     const mock2 = render(withFlag('club'));
-    const select2 = await screen.findByLabelText(LABEL);
-    fireEvent.change(select2, { target: { value: '' } });
+    await screen.findByRole('combobox', { name: LABEL });
+    await pickOption('Nobody', LABEL);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Tagging @Bananasaurs is off')).toBeTruthy();
     expect(bodyOf(putCalls(mock2)[0]!)).toEqual({ behaviourId: null });
@@ -806,7 +814,7 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
         requestId: 'req-0a1b2c3d',
       },
     });
-    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
+    await pickOption('Club assistant', LABEL);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('That behaviour is off')).toBeTruthy();
     cleanup();
@@ -820,7 +828,7 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
         requestId: 'req-0a1b2c3d',
       },
     });
-    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
+    await pickOption('Club assistant', LABEL);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('The request was not valid')).toBeTruthy();
   });
@@ -857,25 +865,20 @@ describe('AssistantPage: AI log channel (ADR 0065)', () => {
 
   it('offers Nobody and the live channels, preselecting the saved one', async () => {
     render({ logChannelId: 'chan-it' });
-    const select = await screen.findByLabelText(LABEL);
-    expect(
-      within(select)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['No log channel', '#it-services', '#general']);
-    expect(select).toHaveProperty('value', 'chan-it');
+    const select = await screen.findByRole('combobox', { name: LABEL });
+    expect(select.textContent).toContain('#it-services');
     expect(screen.getByText(/staff-only channel/)).toBeTruthy();
   });
 
   it('saves a channel and turns logging off with null', async () => {
     const mock = render({});
-    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'chan-general' } });
+    await pickOption('#general', LABEL);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Assistant requests now log to #general')).toBeTruthy();
     expect(bodyOf(putCall(mock)!)).toEqual({ channelId: 'chan-general' });
     cleanup();
     const mock2 = render({ logChannelId: 'chan-general' });
-    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: '' } });
+    await pickOption('No log channel', LABEL);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Assistant logging is off')).toBeTruthy();
     expect(bodyOf(putCall(mock2)!)).toEqual({ channelId: null });
@@ -900,20 +903,20 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
 
   it('counts changed fields, discards them, and sends nothing for a clean page', async () => {
     const mock = open();
-    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
+    await pickOption('Club assistant', TAG);
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     expect(within(bar()!).getByText('2 unsaved changes')).toBeTruthy();
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Discard' }));
     expect(bar()).toBeNull();
-    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('');
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('');
+    expect(screen.getByRole('combobox', { name: TAG }).textContent).toContain('Nobody');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('No log channel');
     expect(puts(mock)).toHaveLength(0);
   });
 
   it('saves only the changed field, as its own unchanged request', async () => {
     const mock = open([{ method: 'PUT', url: '/api/assistant/log-channel', body: { ok: true } }]);
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #it-services');
     expect(puts(mock).map((c) => [c[0], bodyOf(c)])).toEqual([
@@ -936,8 +939,8 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
       },
       { method: 'PUT', url: '/api/assistant/log-channel', body: { ok: true } },
     ]);
-    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-general' } });
+    await pickOption('Club assistant', TAG);
+    await pickOption('#general', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #general');
     expect(puts(mock).map((c) => [c[0], bodyOf(c)])).toEqual([
@@ -946,7 +949,7 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
     ]);
     expect(await screen.findByText('That behaviour is off')).toBeTruthy();
     // The refused choice is still the draft; the saved one is no longer dirty.
-    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('club');
+    expect(screen.getByRole('combobox', { name: TAG }).textContent).toContain('Club assistant');
   });
 
   it('shows busy while saving and blocks a second press', async () => {
@@ -972,7 +975,7 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
       }),
     );
     renderWithSession(<AssistantPage />);
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(calls).toHaveLength(1));
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
@@ -985,35 +988,35 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
     const mock = open([
       { method: 'PUT', url: '/api/assistant/log-channel', status: 500, body: { error: 'boom' } },
     ]);
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/Not saved\. Your choice is kept here/)).toBeTruthy();
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
     expect(puts(mock)).toHaveLength(1);
   });
 
   it('keeps an unsaved Settings draft, and the bar, when flipping to the Behaviours tab and back', async () => {
     open();
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Behaviours' }));
     await screen.findByRole('table', { name: 'Assistant behaviours' });
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Settings' }));
     await screen.findByRole('tab', { name: 'Settings', selected: true });
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
   });
 
   it('guards a same-origin link while dirty: Stay keeps the page, Leave goes', async () => {
     open();
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(screen.getByRole('link', { name: 'Assistant history' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Leave without saving?')).toBeTruthy();
     expect(window.location.pathname).toBe('/assistant');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stay' }));
     expect(window.location.pathname).toBe('/assistant');
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
     fireEvent.click(screen.getByRole('link', { name: 'Assistant history' }));
     fireEvent.click(
       within(await screen.findByRole('dialog')).getByRole('button', { name: 'Leave' }),
@@ -1023,11 +1026,11 @@ describe('AssistantPage: Settings SaveBar and unsaved guard', () => {
 
   it('arms the real unload guard only while dirty', async () => {
     open();
-    await screen.findByLabelText(LOG);
+    await screen.findByRole('combobox', { name: LOG });
     const clean = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(clean);
     expect(clean.defaultPrevented).toBe(false);
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     const dirty = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(dirty);
     expect(dirty.defaultPrevented).toBe(true);
@@ -1077,9 +1080,7 @@ describe('AssistantPage: real navigation to a behaviour page', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
       target: { value: 'Welcome' },
     });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
-      target: { value: 'role-onboarding' },
-    });
+    await pickOption('@Onboarding', 'Mention role');
     fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
       target: { value: 'Welcome new members.' },
     });

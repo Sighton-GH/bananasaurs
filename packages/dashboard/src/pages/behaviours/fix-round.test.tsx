@@ -18,6 +18,27 @@ import { TEST_SESSION } from '../../test-support.js';
 import { AssistantPage } from '../assistant.js';
 import { AssistantBehaviourDetailPage } from './detail.js';
 import { useStickyResource, type Tagged } from './sticky-resource.js';
+import userEvent from '@testing-library/user-event';
+
+const { Element: DomElement } = globalThis as unknown as {
+  Element: {
+    prototype: {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      scrollIntoView?: () => void;
+    };
+  };
+};
+if (!DomElement.prototype.hasPointerCapture) DomElement.prototype.hasPointerCapture = () => false;
+if (!DomElement.prototype.releasePointerCapture)
+  DomElement.prototype.releasePointerCapture = () => undefined;
+if (!DomElement.prototype.scrollIntoView) DomElement.prototype.scrollIntoView = () => undefined;
+if (!('ResizeObserver' in globalThis))
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -90,6 +111,12 @@ const detail = (info: SessionInfo = TEST_SESSION) =>
 const at = (path: string) => window.history.pushState({}, '', path);
 const promptBox = () =>
   screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Instructions the assistant follows' });
+
+async function pickOption(option: string | RegExp, name: string | RegExp) {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('combobox', { name }));
+  await user.click(await screen.findByRole('option', { name: option }));
+}
 
 describe('B1: a stale prompt draft is never sent with a reloaded revision', () => {
   const MINE = 'My unsaved rewrite.';
@@ -336,18 +363,18 @@ describe('S1: Settings save advances the baseline without waiting for the refres
       return gets === 1 ? { body: data() } : refresh.promise;
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #it-services');
     // The refresh has not returned, yet nothing is left to save.
     expect(bar()).toBeNull();
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
     expect(s.puts()).toHaveLength(1);
     await act(async () => {
       refresh.resolve({ body: { ...data(), settings: { logChannelId: 'chan-it' } } });
     });
     await waitFor(() =>
-      expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it'),
+      expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services'),
     );
     expect(bar()).toBeNull();
     expect(s.puts()).toHaveLength(1);
@@ -366,13 +393,13 @@ describe('S1: Settings save advances the baseline without waiting for the refres
       return gets === 1 ? { body: data() } : refresh.promise;
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-general' } });
+    await pickOption('Club assistant', TAG);
+    await pickOption('#general', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await screen.findByText('Assistant requests now log to #general');
     expect(await screen.findByText('That behaviour is off')).toBeTruthy();
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
-    expect(screen.getByLabelText<HTMLSelectElement>(TAG).value).toBe('club');
+    expect(screen.getByRole('combobox', { name: TAG }).textContent).toContain('Club assistant');
     // Retrying re-sends only the refused field.
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(s.puts()).toHaveLength(3));
@@ -393,14 +420,14 @@ describe('S1: Settings save advances the baseline without waiting for the refres
       return { body: data() };
     });
     settingsPage();
-    fireEvent.change(await screen.findByLabelText(TAG), { target: { value: 'club' } });
-    fireEvent.change(screen.getByLabelText(LOG), { target: { value: 'chan-it' } });
+    await pickOption('Club assistant', TAG);
+    await pickOption('#it-services', LOG);
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Save' }));
     // Tag saved, log failed (draft kept), and the reload then errors.
     await screen.findByText(/You have unsaved Settings changes/);
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
-    expect(await screen.findByLabelText(LOG)).toBeTruthy();
-    expect(screen.getByLabelText<HTMLSelectElement>(LOG).value).toBe('chan-it');
+    expect(await screen.findByRole('combobox', { name: LOG })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: LOG }).textContent).toContain('#it-services');
     expect(within(bar()!).getByText('1 unsaved change')).toBeTruthy();
     fireEvent.click(within(bar()!).getByRole('button', { name: 'Discard' }));
     expect(bar()).toBeNull();

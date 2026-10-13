@@ -14,7 +14,9 @@ import { Badge } from '../../ui/Badge.js';
 import { Button } from '../../ui/Button.js';
 import { Card } from '../../ui/Card.js';
 import { DataTable } from '../../ui/DataTable.js';
-import { Field, Input } from '../../ui/Field.js';
+import { Checkbox, Field, Input } from '../../ui/Field.js';
+import { Select } from '../../ui/Select.js';
+import { Textarea } from '../../ui/Textarea.js';
 import { useToast } from '../../ui/Toast.js';
 import {
   behaviourBody,
@@ -114,17 +116,11 @@ export function BehaviourAccessEditor({
           <ul aria-label="Preferred skills" className="mt-2 grid gap-1 sm:grid-cols-2">
             {data.skills.map((skill) => (
               <li key={skill.id}>
-                <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={preferredSkillIds.includes(skill.id)}
-                    onChange={() => setPreferredSkillIds((ids) => toggleIn(ids, skill.id))}
-                  />
-                  <span>
-                    <span className="block">{skill.name}</span>
-                    <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
-                  </span>
-                </label>
+                <Checkbox
+                  label={`${skill.name} — ${skillEffectLabel(skill)}`}
+                  checked={preferredSkillIds.includes(skill.id)}
+                  onChange={() => setPreferredSkillIds((ids) => toggleIn(ids, skill.id))}
+                />
               </li>
             ))}
           </ul>
@@ -145,14 +141,11 @@ export function BehaviourAccessEditor({
           <ul aria-label="Preferred resources" className="mt-2 grid gap-1 sm:grid-cols-2">
             {data.resources.map((resource) => (
               <li key={resource.id}>
-                <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={resourceIds.includes(resource.id)}
-                    onChange={() => setResourceIds((ids) => toggleIn(ids, resource.id))}
-                  />
-                  <span className="min-w-0 truncate">{resource.title}</span>
-                </label>
+                <Checkbox
+                  label={resource.title}
+                  checked={resourceIds.includes(resource.id)}
+                  onChange={() => setResourceIds((ids) => toggleIn(ids, resource.id))}
+                />
               </li>
             ))}
           </ul>
@@ -178,20 +171,17 @@ export function BehaviourAccessEditor({
             </p>
           ) : (
             <Field label="Ticket channel" hint="Only channels Discord reports for this server.">
-              <select
-                value={channelId}
-                onChange={(e) => setChannelId(e.target.value)}
-                className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                <option value="">No channel selected</option>
-                {[...data.channels]
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((channel) => (
-                    <option key={channel.id} value={channel.id}>
-                      #{channel.name}
-                    </option>
-                  ))}
-              </select>
+              <Select
+                value={channelId === '' ? undefined : channelId}
+                placeholder="No channel selected"
+                onValueChange={(value) => setChannelId(value === '__none' ? '' : value)}
+                options={[
+                  { value: '__none', label: 'No channel selected' },
+                  ...[...data.channels]
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((channel) => ({ value: channel.id, label: `#${channel.name}` })),
+                ]}
+              />
             </Field>
           )}
           {channelId === '' && (
@@ -361,9 +351,8 @@ export function DecisionsCard({
                         }))
                       }
                     />
-                    <textarea
+                    <Textarea
                       aria-label={`Memory content ${d.id}`}
-                      className="min-h-20 rounded-sm border border-line bg-canvas p-2 text-sm"
                       value={memoryDrafts[d.id]?.content ?? d.summary}
                       onChange={(e) =>
                         setMemoryDrafts((all) => ({
@@ -376,28 +365,27 @@ export function DecisionsCard({
                         }))
                       }
                     />
-                    <select
+                    <Select
                       aria-label={`Memory subject ${d.id}`}
-                      className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm"
-                      value={memoryDrafts[d.id]?.subjectId ?? ''}
-                      onChange={(e) =>
+                      value={(memoryDrafts[d.id]?.subjectId ?? '') === '' ? '__none' : (memoryDrafts[d.id]?.subjectId ?? '')}
+                      onValueChange={(value) =>
                         setMemoryDrafts((all) => ({
                           ...all,
                           [d.id]: {
                             section: all[d.id]?.section ?? '',
                             content: all[d.id]?.content ?? d.summary,
-                            subjectId: e.target.value,
+                            subjectId: value === '__none' ? '' : value,
                           },
                         }))
                       }
-                    >
-                      <option value="">Club-wide</option>
-                      {data.members?.map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: '__none', label: 'Club-wide' },
+                        ...(data.members ?? []).map((member) => ({
+                          value: member.id,
+                          label: member.name,
+                        })),
+                      ]}
+                    />
                     <Button
                       disabled={(memoryDrafts[d.id]?.section ?? '').trim() === ''}
                       onClick={() => {
