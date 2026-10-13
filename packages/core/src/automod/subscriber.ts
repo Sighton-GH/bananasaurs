@@ -2,6 +2,8 @@ import type { Subscriber } from '../pipeline/pipeline.js';
 import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type {
+  DeleteMessageIntent,
+  DeleteMessageOutcome,
   ModerationIntent,
   ModerationOutcome,
   ModerationSafetyState,
@@ -46,6 +48,10 @@ export interface ModerationGatewayPort {
     auth: Authorized<'moderation.act'>,
     intent: ModerationIntent,
   ): Promise<ModerationOutcome>;
+  deleteMessage(
+    auth: Authorized<'moderation.act'>,
+    intent: DeleteMessageIntent,
+  ): Promise<DeleteMessageOutcome>;
 }
 
 /**

@@ -194,6 +194,9 @@ function buildHarness(
       calls.applyAction.push({ auth, intent });
       return opts.applyActionResult ?? { status: 'applied' };
     },
+    async deleteMessage() {
+      throw new Error('not used in this test');
+    },
   };
 
   const deps: AutomodSubscriberDeps = {
