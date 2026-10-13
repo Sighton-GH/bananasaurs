@@ -1101,6 +1101,23 @@ export const assistantInvokeHandler = (deps: {
             > =
               deps.fetchAttachmentBytes ??
               (() => Promise.resolve({ ok: false as const, code: 'unavailable' }));
+            // One total byte budget per question: the quoted message and the
+            // current message share a single run-wide allowance equal to the
+            // one-message maximum, so two fully-loaded messages cannot fetch
+            // twice. Each fetch passes `Math.min(kindCap, remaining)` as its
+            // max and decrements what it actually received.
+            let budgetRemaining =
+              attachmentCaps.imageMaxBytes * attachmentCaps.imageMaxCount +
+              attachmentCaps.pdfMaxBytes * attachmentCaps.pdfMaxCount +
+              attachmentCaps.textMaxBytes * attachmentCaps.textMaxCount;
+            const cappedCaps = (): AttachmentCaps => ({
+              ...attachmentCaps,
+              textMaxBytes: Math.min(attachmentCaps.textMaxBytes, budgetRemaining),
+              imageMaxBytes: Math.min(attachmentCaps.imageMaxBytes, budgetRemaining),
+              pdfMaxBytes: Math.min(attachmentCaps.pdfMaxBytes, budgetRemaining),
+            });
+            const budgetSkippedMarker = (source: FetchedAttachment): string =>
+              `${attachmentMarker(source)} (skipped: the attachment limit for this question is used up)`;
             // One message's attachments end to end: markers plus envelopes
             // for text files; images and PDFs (and embed thumbnails) go to
             // `media` up to their caps; anything else is marker-plus-note.
@@ -1138,10 +1155,14 @@ export const assistantInvokeHandler = (deps: {
                 );
               }
               for (const source of readable) {
+                if (budgetRemaining <= 0) {
+                  markers.push(budgetSkippedMarker(source));
+                  continue;
+                }
                 const fetched = await fetchAttachment(
                   { fetchBytes: attachmentFetchBytes },
                   source,
-                  attachmentCaps,
+                  cappedCaps(),
                 );
                 if (!fetched.ok) {
                   refusal(source, fetched.note);
@@ -1149,6 +1170,10 @@ export const assistantInvokeHandler = (deps: {
                 }
                 // Unreachable for a text-classified source: narrows the union.
                 if (fetched.kind !== 'text') continue;
+                budgetRemaining = Math.max(
+                  0,
+                  budgetRemaining - Buffer.byteLength(fetched.text, 'utf8'),
+                );
                 markers.push(attachmentMarker(source));
                 attachmentSummary.push({
                   name: safeAttachmentLabel(source.fileName),
@@ -1182,10 +1207,14 @@ export const assistantInvokeHandler = (deps: {
                 forceKind?: 'image',
               ): Promise<void> => {
                 for (const source of list.slice(0, max)) {
+                  if (budgetRemaining <= 0) {
+                    markers.push(budgetSkippedMarker(source));
+                    continue;
+                  }
                   const fetched = await fetchAttachment(
                     { fetchBytes: attachmentFetchBytes },
                     source,
-                    attachmentCaps,
+                    cappedCaps(),
                     forceKind,
                   );
                   if (!fetched.ok) {
@@ -1193,6 +1222,7 @@ export const assistantInvokeHandler = (deps: {
                     continue;
                   }
                   if (fetched.kind === 'text') continue;
+                  budgetRemaining = Math.max(0, budgetRemaining - fetched.sizeBytes);
                   markers.push(attachmentMarker(source));
                   media.push({
                     kind: fetched.kind,
