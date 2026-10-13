@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { assistantLogMessage } from './log-message.js';
+import {
+  cardTexts,
+  countComponents,
+  countText,
+  TONE_ACCENT,
+  toOutgoingMessage,
+} from '@bananasaurs/core';
+import { assistantLogMessage, clip, clipLines } from './log-message.js';
 
 const base = {
   userId: '111111111111111111',
@@ -17,9 +24,8 @@ type Embed = {
   fields: { name: string; value: string; inline?: boolean }[];
   timestamp: string;
 };
-const embedOf = (message: ReturnType<typeof assistantLogMessage>): Embed =>
-  (message.embeds as Embed[])[0]!;
-const field = (embed: Embed, name: string) => embed.fields.find((f) => f.name === name)?.value;
+const textsOf = (message: ReturnType<typeof assistantLogMessage>): string =>
+  cardTexts(message.components ?? []);
 
 describe('assistantLogMessage (ADR 0065)', () => {
   it('reports who asked, the question, the answer, tools, sources, model and latency', () => {
@@ -40,20 +46,24 @@ describe('assistantLogMessage (ADR 0065)', () => {
       },
     });
     expect(message.allowedMentions).toEqual({ parse: [] });
-    const embed = embedOf(message);
-    expect(embed.title).toBe('Mention · answered');
-    expect(field(embed, 'Asked by')).toBe('<@111111111111111111> in <#222222222222222222>');
-    expect(field(embed, 'Behaviour')).toBe('Club assistant');
-    expect(field(embed, 'Question')).toBe('When is the battery order arriving?');
-    expect(field(embed, 'Answer')).toBe('It ships Friday.');
-    expect(field(embed, 'Tools')).toBe('search_archive ✓, web_search ✗');
-    expect(field(embed, 'Sources')).toBe('[Handbook](https://example.com/handbook)');
-    expect(field(embed, 'Model')).toBe('gemini-2.5-flash (backup model) · 1.2 s');
-    expect(embed.timestamp).toBe('2026-09-23T19:30:00.000Z');
+    expect(message.flags).toBe(32768);
+    expect(message.embeds).toBeUndefined();
+    const texts = textsOf(message);
+    expect(texts).toContain('-# 🤖 MENTION · ANSWERED');
+    expect(texts).toContain('<@111111111111111111> in <#222222222222222222>');
+    expect(texts).toContain('Behaviour: Club assistant');
+    expect(texts).toContain('**Question**');
+    expect(texts).toContain('When is the battery order arriving?');
+    expect(texts).toContain('**Answer**');
+    expect(texts).toContain('It ships Friday.');
+    expect(texts).toContain('Tools: search_archive ✓, web_search ✗');
+    expect(texts).toContain('Sources: [Handbook](https://example.com/handbook)');
+    expect(texts).toContain('Model: gemini-2.5-flash (backup model) · 1.2 s');
+    expect(texts).toContain('<t:1758655800:R>');
   });
 
-  it('says none for no tools or sources, and gives the reason for a failure', () => {
-    const embed = embedOf(
+  it('says none for no tools and gives the reason for a failure', () => {
+    const texts = textsOf(
       assistantLogMessage({
         ...base,
         command: 'find',
@@ -63,34 +73,108 @@ describe('assistantLogMessage (ADR 0065)', () => {
         reason: 'Gemini request failed with HTTP 503',
       }),
     );
-    expect(embed.title).toBe('/find · failed');
-    expect(field(embed, 'Tools')).toBe('none');
-    expect(field(embed, 'Sources')).toBe('none');
-    expect(field(embed, 'Reason')).toBe('Gemini request failed with HTTP 503');
-    expect(field(embed, 'Model')).toBeUndefined();
+    expect(texts).toContain('-# 🤖 /find · FAILED');
+    expect(texts).toContain('Tools: none');
+    expect(texts).toContain('**Reason**');
+    expect(texts).toContain('Gemini request failed with HTTP 503');
   });
 
-  it('keeps every field inside Discord limits', () => {
+  it('omits the reason and backup marker when not given', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'answered',
+        answer: 'It ships Friday.',
+        trace: {
+          latencyMs: 2_300,
+          model: 'gemini-2.5-flash',
+          tools: [],
+          sources: [],
+          web: false,
+          usedFallback: false,
+        },
+      }),
+    );
+    expect(texts).not.toContain('**Reason**');
+    expect(texts).toContain('Model: gemini-2.5-flash · 2.3 s');
+    expect(texts).not.toContain('(backup model)');
+  });
+
+  it('maps each outcome to its tone', () => {
+    for (const [outcome, tone] of [
+      ['answered', 'ok'],
+      ['refused', 'hold'],
+      ['failed', 'danger'],
+    ] as const) {
+      const message = assistantLogMessage({ ...base, outcome, answer: 'an answer' });
+      expect(message.components?.[0]).toMatchObject({ accent_color: TONE_ACCENT[tone] });
+    }
+  });
+
+  it('carries sources as links only, stripping brackets from titles', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'answered',
+        answer: 'an answer',
+        trace: {
+          latencyMs: 1,
+          tools: [],
+          sources: [{ title: 'A [bracketed] title', url: 'https://example.com/x' }],
+          web: false,
+        },
+      }),
+    );
+    expect(texts).toContain('[A bracketed title](https://example.com/x)');
+    expect(texts).not.toContain('A [bracketed] title');
+  });
+
+  it('escapes the question and the reason, and keeps the answer Markdown', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        outcome: 'refused',
+        question: '@everyone is **late**',
+        answer: 'Join **like this**.',
+        reason: '@everyone did it',
+      }),
+    );
+    expect(texts).toContain('@​everyone is \\*\\*late\\*\\*');
+    expect(texts).toContain('@​everyone did it');
+    expect(texts).toContain('Join **like this**.');
+  });
+
+  it('escapes the behaviour name', () => {
+    const texts = textsOf(
+      assistantLogMessage({
+        ...base,
+        behaviourName: '**x**',
+        outcome: 'answered',
+        answer: 'an answer',
+      }),
+    );
+    expect(texts).toContain('Behaviour: \\*\\*x\\*\\*');
+  });
+
+  it('caps question and answer at 1,000 characters', () => {
     const long = 'x'.repeat(5_000);
-    const embed = embedOf(
+    const texts = textsOf(
       assistantLogMessage({
         ...base,
         outcome: 'answered',
         question: long,
         answer: long,
-        trace: {
-          latencyMs: 1,
-          sources: Array.from({ length: 50 }, (_, i) => ({
-            title: `Source ${String(i)}`,
-            url: `https://example.com/${'p'.repeat(40)}/${String(i)}`,
-          })),
-        },
       }),
     );
-    for (const f of embed.fields) expect(f.value.length).toBeLessThanOrEqual(1_024);
-    const total =
-      embed.title.length + embed.fields.reduce((n, f) => n + f.name.length + f.value.length, 0);
-    expect(total).toBeLessThanOrEqual(6_000);
-    expect(field(embed, 'Question')?.endsWith('…')).toBe(true);
+    const questionPart = texts.split('**Question**\n')[1]?.split('\n**Answer**')[0] ?? '';
+    const answerPart = texts.split('**Answer**\n')[1]?.split('\n-# Tools:')[0] ?? '';
+    const stripQuotes = (section: string): string =>
+      section
+        .split('\n')
+        .filter((line) => line.startsWith('> '))
+        .map((line) => line.slice(2))
+        .join('\n');
+    expect(stripQuotes(questionPart).length).toBeLessThanOrEqual(1_000);
+    expect(stripQuotes(answerPart).length).toBeLessThanOrEqual(1_000);
+    expect(questionPart).toContain('…');
   });
-});
