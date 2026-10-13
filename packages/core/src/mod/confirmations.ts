@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { authorize, type Authorized, type AuthzStore, type Denied, type Result } from '../authz.js';
 import type { ModerationGatewayPort } from '../automod/subscriber.js';
+import type { ErrorCode } from '../copy/errors.js';
+import { refFor } from '../copy/refusals.js';
 import type { SlashCommandEvent, SlashCommandOption } from '../discord/events.js';
 import type { DiscordPort, InteractionRef, Snowflake } from '../discord/port.js';
 import { checkPurgeBudget, PURGE_MAX_MESSAGES } from '../effects/budget.js';
@@ -12,6 +14,15 @@ import { purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
+import { toOutgoingMessage, type CardMessage } from '../ui/discord/card.js';
+import { errorCard } from '../ui/discord/common-cards.js';
+import {
+  banConfirmCard,
+  cancelledCard,
+  modOutcomeCard,
+  purgeConfirmCard,
+  purgeQueuedCard,
+} from './cards.js';
 import { BULK_DELETE_CEILING_MS } from './purge.js';
 import { MANUAL_RULE_ID } from './warn.js';
 
@@ -156,31 +167,6 @@ export const parseModConfirmCustomId = (raw: string): ParsedModConfirmCustomId |
 };
 
 /** Discord's raw wire shapes, mirroring `panels/components.ts`'s ACTION_ROW/BUTTON literals (`core` may not import discord.js — ADR 0014). */
-const ACTION_ROW = 1;
-const BUTTON = 2;
-/** Discord's `ButtonStyle` enum: Success (green) and Danger (red) — a confirmation's two honest colours. */
-const BUTTON_STYLE_SUCCESS = 3;
-const BUTTON_STYLE_DANGER = 4;
-
-export const buildConfirmCancelComponents = (intentId: string): readonly unknown[] => [
-  {
-    type: ACTION_ROW,
-    components: [
-      {
-        type: BUTTON,
-        style: BUTTON_STYLE_SUCCESS,
-        custom_id: buildModConfirmCustomId(intentId),
-        label: 'Confirm',
-      },
-      {
-        type: BUTTON,
-        style: BUTTON_STYLE_DANGER,
-        custom_id: buildModCancelCustomId(intentId),
-        label: 'Cancel',
-      },
-    ],
-  },
-];
 
 // --- ports -------------------------------------------------------------------
 
@@ -368,7 +354,11 @@ export const handleBanPreview = async (
       }),
       '/mod ban refused: caller lacks moderation.act',
     );
-    await deps.responder.respond(ref, { content: 'You do not have permission to ban members.' });
+    await reply(
+      deps.responder,
+      ref,
+      errorCard('mod.not-allowed', { ref: refFor(event.interactionId) }),
+    );
     return;
   }
 
@@ -394,10 +384,7 @@ export const handleBanPreview = async (
     '/mod ban preview issued, nothing executed yet',
   );
 
-  await deps.responder.respond(ref, {
-    content: `Ban preview: <@${targetId}> — reason: ${reason}\nNothing has happened yet. Confirm to ban, or Cancel.`,
-    components: buildConfirmCancelComponents(intentId),
-  });
+  await reply(deps.responder, ref, banConfirmCard({ targetId, reason, intentId }));
 };
 
 // --- purge preview ---------------------------------------------------------
@@ -458,7 +445,11 @@ export const handlePurgePreview = async (
       }),
       '/mod purge refused: caller lacks moderation.act',
     );
-    await deps.responder.respond(ref, { content: 'You do not have permission to purge messages.' });
+    await reply(
+      deps.responder,
+      ref,
+      errorCard('mod.not-allowed', { ref: refFor(event.interactionId) }),
+    );
     return;
   }
 
@@ -477,11 +468,11 @@ export const handlePurgePreview = async (
       }),
       '/mod purge preview refused: over budget',
     );
-    await deps.responder.respond(ref, {
-      content:
-        `<#${channelId}> has at least ${messages.length} messages, over the ${PURGE_MAX_MESSAGES}-message ` +
-        `purge budget. Narrow the scope (a newer channel, or a smaller window) and try again.`,
-    });
+    await reply(
+      deps.responder,
+      ref,
+      errorCard('mod.over-budget', { ref: refFor(event.interactionId) }),
+    );
     return;
   }
 
@@ -512,13 +503,19 @@ export const handlePurgePreview = async (
     '/mod purge preview issued, nothing executed yet',
   );
 
-  await deps.responder.respond(ref, {
-    content:
-      `Purge preview for <#${channelId}>: ${messages.length} message(s) found — ${freshCount} in the ` +
-      `last 14 days (bulk-deletable), ${oldCount} older (deleted one at a time). Reason: ${reason}\n` +
-      `Nothing has happened yet. Confirm to purge, or Cancel.`,
-    components: buildConfirmCancelComponents(intentId),
-  });
+  await reply(
+    deps.responder,
+    ref,
+    purgeConfirmCard({
+      channelId,
+      total: messages.length,
+      fresh: freshCount,
+      old: oldCount,
+      newestAtMs: messages[0]?.createdAtMs,
+      reason,
+      intentId,
+    }),
+  );
 };
 
 // --- confirm / cancel -------------------------------------------------------
@@ -555,11 +552,33 @@ const resolveIntentForClick = (
   return { kind: 'ok', row: peeked };
 };
 
-const RESOLUTION_MESSAGE: Record<'expired' | 'not-found' | 'wrong-moderator', string> = {
-  expired: 'This confirmation has expired. Run the command again.',
-  'not-found': 'This action was already executed (or cancelled).',
-  'wrong-moderator': 'Only the moderator who ran this command can confirm or cancel it.',
-};
+/** Every reply this module sends is a card. */
+const reply = (responder: SlashResponder, ref: InteractionRef, message: CardMessage): Promise<void> =>
+  responder.respond(ref, toOutgoingMessage(message));
+
+const RESOLUTION_CODE = {
+  expired: 'confirm.expired',
+  'not-found': 'confirm.done',
+  'wrong-moderator': 'confirm.not-yours',
+} as const satisfies Record<string, ErrorCode>;
+
+const respondResolution = (
+  responder: SlashResponder,
+  ref: InteractionRef,
+  kind: keyof typeof RESOLUTION_CODE,
+  interactionId: string,
+): Promise<void> =>
+  reply(responder, ref, errorCard(RESOLUTION_CODE[kind], { ref: refFor(interactionId) }));
+
+const respondBanOutcome = (
+  responder: SlashResponder,
+  ref: InteractionRef,
+  targetId: SnowflakeId,
+  outcome: ModerationOutcome,
+  reason: string,
+  interactionId: string,
+): Promise<void> =>
+  reply(responder, ref, modOutcomeCard({ action: 'ban', targetId, outcome, reason, interactionId }));
 
 /** One value per `ModerationOutcome` variant — mirrors `commands.ts`'s `ACTION_TAKEN_FOR`. */
 const BAN_ACTION_TAKEN: Record<
@@ -575,21 +594,6 @@ const BAN_ACTION_TAKEN: Record<
   failed: 'escalation_failed',
   'dry-run': 'escalation_dry_run',
   skipped: 'escalation_skipped',
-};
-
-const describeBanOutcome = (targetId: SnowflakeId, outcome: ModerationOutcome): string => {
-  switch (outcome.status) {
-    case 'applied':
-      return `Ban applied to <@${targetId}>.`;
-    case 'dry-run':
-      return `Ban would apply to <@${targetId}> — dry run is on, so nothing actually changed.`;
-    case 'skipped':
-      return `Ban was already applied to <@${targetId}> (skipped as a duplicate — this confirmation was likely a replay).`;
-    case 'refused':
-      return `Ban refused for <@${targetId}>: ${outcome.reason}.`;
-    case 'failed':
-      return `Ban failed for <@${targetId}>: ${outcome.code}.`;
-  }
 };
 
 const recordBanOutcome = (
@@ -627,6 +631,7 @@ const executeConfirmedBan = async (
   ref: InteractionRef,
   intentId: string,
   userId: Snowflake,
+  interactionId: Snowflake,
   payload: Extract<ModPendingActionPayload, { kind: 'ban' }>,
   auth: Authorized<'moderation.act'>,
   nowMs: number,
@@ -664,7 +669,14 @@ const executeConfirmedBan = async (
     '/mod ban confirmed',
   );
 
-  await deps.responder.respond(ref, { content: describeBanOutcome(payload.targetId, outcome) });
+  await respondBanOutcome(
+    deps.responder,
+    ref,
+    payload.targetId,
+    outcome,
+    payload.reason,
+    interactionId,
+  );
 };
 
 const executeConfirmedPurge = async (
@@ -704,9 +716,7 @@ const executeConfirmedPurge = async (
     '/mod purge confirmed, first tick enqueued',
   );
 
-  await deps.responder.respond(ref, {
-    content: `Purge of <#${payload.channelId}> confirmed — it will run in the background and may take a few minutes for a large channel.`,
-  });
+  await reply(deps.responder, ref, purgeQueuedCard(payload.channelId));
 };
 
 export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subscriber => ({
@@ -747,15 +757,15 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
         // moderator's own intent, it simply outlived its window; the take
         // is housekeeping, not a change to what the moderator is told.
         deps.pendingActions.take(parsed.intentId, nowMs);
-        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE.expired });
+        await respondResolution(deps.responder, ref, 'expired', event.interactionId);
         return;
       }
       if (resolved.kind === 'not-found') {
-        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['not-found'] });
+        await respondResolution(deps.responder, ref, 'not-found', event.interactionId);
         return;
       }
       if (resolved.kind === 'wrong-moderator') {
-        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['wrong-moderator'] });
+        await respondResolution(deps.responder, ref, 'wrong-moderator', event.interactionId);
         return;
       }
 
@@ -772,7 +782,7 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
           }),
           '/mod confirmation cancelled',
         );
-        await deps.responder.respond(ref, { content: 'Cancelled. Nothing was done.' });
+        await reply(deps.responder, ref, cancelledCard());
         return;
       }
 
@@ -801,9 +811,11 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
           }),
           'a pending action payload failed to validate on confirm',
         );
-        await deps.responder.respond(ref, {
-          content: 'Something went wrong confirming that. An operator has been notified.',
-        });
+        await reply(
+          deps.responder,
+          ref,
+          errorCard('mod.unavailable', { ref: refFor(event.interactionId) }),
+        );
         return;
       }
       const payload = payloadResult.data;
@@ -851,9 +863,11 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
         // window should still be able to confirm the same intent, the
         // same way a wrong-moderator click above leaves the row intact
         // for the right moderator rather than burning it.
-        await deps.responder.respond(ref, {
-          content: 'You do not have permission to confirm this action.',
-        });
+        await reply(
+          deps.responder,
+          ref,
+          errorCard('mod.not-allowed', { ref: refFor(event.interactionId) }),
+        );
         return;
       }
 
@@ -866,7 +880,7 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
       // guild, ADR 0008; a confirm click is not a tight loop).
       const taken = deps.pendingActions.take(parsed.intentId, nowMs);
       if (taken === undefined) {
-        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['not-found'] });
+        await respondResolution(deps.responder, ref, 'not-found', event.interactionId);
         return;
       }
 
@@ -876,6 +890,7 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
           ref,
           parsed.intentId,
           event.userId,
+          event.interactionId,
           payload,
           authResult.value,
           nowMs,
@@ -895,9 +910,11 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
         }),
         'a /mod confirmation failed unexpectedly',
       );
-      await deps.responder.respond(ref, {
-        content: 'Something went wrong running that. An operator has been notified.',
-      });
+      await reply(
+        deps.responder,
+        ref,
+        errorCard('mod.unavailable', { ref: refFor(event.interactionId) }),
+      );
     }
   },
 });

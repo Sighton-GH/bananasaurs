@@ -16,8 +16,8 @@ import { BULK_DELETE_CEILING_MS } from './purge.js';
 import { parseGuildId } from '../ids.js';
 import { modPurgePayload, purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
+import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
 import {
-  buildConfirmCancelComponents,
   buildModCancelCustomId,
   buildModConfirmCustomId,
   createModConfirmationSubscriber,
@@ -227,9 +227,8 @@ function buildHarness(
 }
 
 const extractIntentId = (message: OutgoingMessage): string => {
-  const rows = message.components as
-    readonly { components: readonly { custom_id: string }[] }[] | undefined;
-  const customId = rows?.[0]?.components?.[0]?.custom_id;
+  const ids = cardCustomIds(message.components ?? []);
+  const customId = ids[0];
   if (customId === undefined) throw new Error('no button on this message');
   const parsed = parseModConfirmCustomId(customId);
   if (parsed === undefined) throw new Error(`not a confirm custom id: ${customId}`);
@@ -254,20 +253,17 @@ describe('custom id parsing and button components', () => {
     expect(parseModConfirmCustomId('modconfirm')).toBeUndefined();
   });
 
-  it('builds a Confirm (success) and a Cancel (danger) button in one action row', () => {
-    const rows = buildConfirmCancelComponents('intent-xyz') as {
-      type: number;
-      components: { type: number; style: number; custom_id: string; label: string }[];
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.components).toHaveLength(2);
-    const [confirm, cancel] = rows[0]!.components;
-    expect(confirm).toMatchObject({
-      style: 3,
-      custom_id: 'modconfirm:intent-xyz',
-      label: 'Confirm',
+  it('the ban preview card carries a Confirm and a Cancel custom id', async () => {
+    const { deps, calls } = buildHarness();
+    await handleBanPreview(deps, slashCommandEvent(), {
+      interactionId: 'interaction-1',
+      token: 'token-1',
     });
-    expect(cancel).toMatchObject({ style: 4, custom_id: 'modcancel:intent-xyz', label: 'Cancel' });
+    const message = calls.respond[0]!.message;
+    const ids = cardCustomIds(message.components ?? []);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toMatch(/^modconfirm:/);
+    expect(ids[1]).toMatch(/^modcancel:/);
   });
 });
 
@@ -296,8 +292,10 @@ describe('/mod ban preview', () => {
     expect(calls.applyAction).toHaveLength(0);
     expect(calls.respond).toHaveLength(1);
     const message = calls.respond[0]!.message;
-    expect(message.content).toMatch(/raiding/);
-    expect(message.components).toBeDefined();
+    expect(message.flags).toBe(32768);
+    const previewText = cardTexts(message.components ?? []);
+    expect(previewText).toContain(`Ban <@${TARGET}>?`);
+    expect(previewText).toContain('raiding');
 
     const intentId = extractIntentId(message);
     const row = pendingActions.peek(intentId);
@@ -316,7 +314,9 @@ describe('/mod ban preview', () => {
     });
 
     expect(calls.applyAction).toHaveLength(0);
-    expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+    expect(cardTexts(calls.respond[0]?.message.components ?? [])).toContain(
+      "You can't take moderation actions",
+    );
     expect(pendingActions.rows.size).toBe(0);
 
     // Fix round, finding 4: an unauthorized /mod ban attempt must land in
@@ -360,7 +360,9 @@ describe('ban confirm/cancel', () => {
     expect(intent.reason).toBe('raiding');
 
     expect(harness.pendingActions.peek(intentId)).toBeUndefined();
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/applied/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      `Banned <@${TARGET}>`,
+    );
 
     expect(harness.calls.recordCaseEvent).toHaveLength(1);
     const event = harness.calls.recordCaseEvent[0]!;
@@ -394,7 +396,9 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(1);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/already executed/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'This was already handled',
+    );
   });
 
   it('Confirm by a different authorized moderator is refused, and the intent survives for the original moderator', async () => {
@@ -407,8 +411,8 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(
-      /only the moderator who ran this command/i,
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'Only the moderator who started this can confirm it',
     );
     // Still there — the wrong click must not have consumed it.
     expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
@@ -430,7 +434,7 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/cancelled/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain('Cancelled');
     expect(harness.pendingActions.peek(intentId)).toBeUndefined();
   });
 
@@ -449,7 +453,9 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/expired/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'This confirmation expired',
+    );
     void subscriber; // the un-advanced subscriber is unused in this test
 
     // Fix round, finding 1: `sweepExpiredPendingActions` has no scheduler
@@ -481,7 +487,9 @@ describe('ban confirm/cancel', () => {
 
     expect(harness.calls.defer).toHaveLength(1);
     expect(harness.calls.respond).toHaveLength(respondsAtPreview + 1);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/something went wrong/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      "Couldn't finish that",
+    );
     expect(harness.calls.applyAction).toHaveLength(0);
   });
 
@@ -498,8 +506,8 @@ describe('ban confirm/cancel', () => {
     );
 
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(
-      /do not have permission to confirm/i,
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      "You can't take moderation actions",
     );
     // Proves re-authorization actually ran at confirm time — deleting the
     // confirm path's own `authorizeInvoker` call and relying only on the
@@ -556,8 +564,9 @@ describe('/mod purge preview', () => {
     );
 
     expect(harness.calls.respond).toHaveLength(1);
-    expect(harness.calls.respond[0]?.message.components).toBeUndefined();
-    expect(harness.calls.respond[0]?.message.content).toMatch(new RegExp(`${PURGE_MAX_MESSAGES}`));
+    expect(cardTexts(harness.calls.respond[0]?.message.components ?? [])).toContain(
+      'Too many messages to purge at once',
+    );
     expect(harness.pendingActions.rows.size).toBe(0);
     expect(harness.calls.enqueuePurgeJob).toHaveLength(0);
   });
@@ -584,10 +593,10 @@ describe('/mod purge preview', () => {
     );
 
     const respondMessage = harness.calls.respond[0]!.message;
-    expect(respondMessage.content).toMatch(/5 message/);
-    expect(respondMessage.content).toMatch(/3 in the last 14 days/);
-    expect(respondMessage.content).toMatch(/2 older/);
-    expect(respondMessage.components).toBeDefined();
+    expect(respondMessage.flags).toBe(32768);
+    const previewText = cardTexts(respondMessage.components ?? []);
+    expect(previewText).toContain(`Delete 5 messages from <#${CHANNEL}>?`);
+    expect(previewText).toContain('3 can go in bulk. 2 are older than 14 days and go one at a time.');
     expect(harness.pendingActions.rows.size).toBe(1);
   });
 
@@ -614,7 +623,9 @@ describe('/mod purge preview', () => {
     );
 
     expect(fetchCalls).toBe(0);
-    expect(harness.calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+    expect(cardTexts(harness.calls.respond[0]?.message.components ?? [])).toContain(
+      "You can't take moderation actions",
+    );
 
     // Fix round, finding 4. Purge has no single target member — reuses
     // purge.ts's own resolution: attach to the initiating moderator's own,
@@ -669,7 +680,9 @@ describe('purge confirm', () => {
 
     // Purge execution is a job the daemon runs later, not this handler's job.
     expect(harness.calls.applyAction).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/confirmed/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      `Purging <#${CHANNEL}>`,
+    );
   });
 
   it('a double-tap on Confirm enqueues exactly one job — the second click finds the intent already taken', async () => {
@@ -693,7 +706,9 @@ describe('purge confirm', () => {
     );
 
     expect(harness.calls.enqueuePurgeJob).toHaveLength(1);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/already executed/i);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'This was already handled',
+    );
   });
 
   it('re-checks authorization at confirm time for purge too: a revoked capability refuses the confirm, never enqueues, and records the refusal on the initiator’s own case', async () => {
@@ -707,8 +722,8 @@ describe('purge confirm', () => {
     );
 
     expect(harness.calls.enqueuePurgeJob).toHaveLength(0);
-    expect(harness.calls.respond.at(-1)?.message.content).toMatch(
-      /do not have permission to confirm/i,
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      "You can't take moderation actions",
     );
     expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
 

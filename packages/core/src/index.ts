@@ -399,7 +399,6 @@ export {
 } from './mod/history.js';
 export {
   banConfirmDedupeKey,
-  buildConfirmCancelComponents,
   buildModCancelCustomId,
   buildModConfirmCustomId,
   createModConfirmationSubscriber,
