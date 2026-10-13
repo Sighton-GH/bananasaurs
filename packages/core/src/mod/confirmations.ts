@@ -7,7 +7,11 @@ import { refFor } from '../copy/refusals.js';
 import type { SlashCommandEvent, SlashCommandOption } from '../discord/events.js';
 import type { DiscordPort, InteractionRef, Snowflake } from '../discord/port.js';
 import { checkPurgeBudget, PURGE_MAX_MESSAGES } from '../effects/budget.js';
-import type { ModerationOutcome, ModerationRefusalReason } from '../effects/moderation-gateway.js';
+import type {
+  DeleteMessageOutcome,
+  ModerationOutcome,
+  ModerationRefusalReason,
+} from '../effects/moderation-gateway.js';
 import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId, snowflakeIdSchema } from '../ids.js';
 import { purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
@@ -19,6 +23,7 @@ import { errorCard } from '../ui/discord/common-cards.js';
 import {
   banConfirmCard,
   cancelledCard,
+  deleteOutcomeCard,
   modOutcomeCard,
   purgeConfirmCard,
   purgeQueuedCard,
@@ -94,9 +99,17 @@ const purgePendingPayload = z.object({
   reason: z.string().min(1).max(500),
 });
 
+const deletePendingPayload = z.object({
+  kind: z.literal('delete'),
+  channelId: snowflakeIdSchema,
+  messageId: snowflakeIdSchema,
+  authorId: snowflakeIdSchema,
+});
+
 export const modPendingActionPayload = z.discriminatedUnion('kind', [
   banPendingPayload,
   purgePendingPayload,
+  deletePendingPayload,
 ]);
 export type ModPendingActionPayload = z.infer<typeof modPendingActionPayload>;
 
@@ -112,6 +125,46 @@ export const PENDING_ACTION_TTL_MS = 15 * 60_000;
 /** `mod:<guildId>:ban:<intentId>` — recomputed identically at preview time (never) and confirm time (always), never stored. */
 export const banConfirmDedupeKey = (guildId: string, intentId: string): string =>
   `mod:${guildId}:ban:${intentId}`;
+
+/** `mod:<guildId>:delete:<intentId>` — the same pure-function idiom as the ban key above. */
+export const deleteConfirmDedupeKey = (guildId: string, intentId: string): string =>
+  `mod:${guildId}:delete:${intentId}`;
+
+/** The audit-log reason and case-history snippet for a delete that started on a log card. */
+const DELETE_FROM_LOG_CARD = 'Deleted from a log card';
+
+/**
+ * Writes the `delete` intent a log-card Delete click needs before it can show
+ * its confirm card (ADR 0141 decision 7). Returns the new intent id. The
+ * click handler lives in `card-actions.ts`; the confirm handler below reads
+ * the row back.
+ */
+export const writeDeleteIntent = (
+  deps: ModConfirmationDeps,
+  input: {
+    actorId: Snowflake;
+    channelId: SnowflakeId;
+    messageId: SnowflakeId;
+    authorId: SnowflakeId;
+  },
+): string => {
+  const intentId = randomUUID();
+  const payload: ModPendingActionPayload = {
+    kind: 'delete',
+    channelId: input.channelId,
+    messageId: input.messageId,
+    authorId: input.authorId,
+  };
+  const nowMs = deps.now();
+  deps.pendingActions.put({
+    intentId,
+    payload: JSON.stringify(payload),
+    createdBy: input.actorId,
+    now: nowMs,
+    expiresAt: nowMs + PENDING_ACTION_TTL_MS,
+  });
+  return intentId;
+};
 
 // --- custom ids and buttons --------------------------------------------------
 
@@ -220,7 +273,13 @@ export interface ModConfirmationCasePorts {
       | 'escalation_refused'
       | 'escalation_failed'
       | 'escalation_dry_run'
-      | 'escalation_skipped';
+      | 'escalation_skipped'
+      | 'deleted'
+      | 'delete_failed'
+      | 'delete_blocked_killswitch'
+      | 'delete_blocked_breaker'
+      | 'delete_blocked_dry_run'
+      | 'delete_blocked_guild_unknown';
     escalationAction?: 'ban';
     refusalReason?: ModerationRefusalReason;
     actorId: string;
@@ -275,6 +334,15 @@ const authorizeInvoker = async (
 };
 
 /**
+ * The same check under the name the log-card button subscriber uses: a click
+ * authorises exactly the way a preview does (ADR 0141 decision 5).
+ */
+export const authorizeForCard = (
+  deps: ModConfirmationDeps,
+  userId: Snowflake,
+): Promise<Result<Authorized<'moderation.act'>, Denied>> => authorizeInvoker(deps, userId);
+
+/**
  * Records an unauthorized ban/purge attempt on `mod_case_events`, the same
  * way `commands.ts`'s `recordDirectRefusal` durably records an unauthorized
  * `/mod kick` (Task 6) — brought here in the fix round after review found
@@ -295,7 +363,7 @@ const recordUnauthorizedRefusal = (
   deps: ModConfirmationDeps,
   input: {
     memberId: SnowflakeId;
-    category: 'ban' | 'purge';
+    category: 'ban' | 'purge' | 'delete';
     reason: string;
     actorId: Snowflake;
     now: number;
@@ -321,6 +389,24 @@ const recordUnauthorizedRefusal = (
     actorId: input.actorId,
   });
 };
+
+/**
+ * Records an unauthorized log-card Delete click on the message author's case,
+ * the same way a revoked `/mod ban` confirm is recorded on its target's
+ * (ADR 0141 decision 5). Shared with the button subscriber rather than
+ * duplicated there.
+ */
+export const recordCardRefusal = (
+  deps: ModConfirmationDeps,
+  input: { memberId: SnowflakeId; actorId: Snowflake; now: number },
+): void =>
+  recordUnauthorizedRefusal(deps, {
+    memberId: input.memberId,
+    category: 'delete',
+    reason: DELETE_FROM_LOG_CARD,
+    actorId: input.actorId,
+    now: input.now,
+  });
 
 // --- ban preview ---------------------------------------------------------
 
@@ -686,6 +772,114 @@ const executeConfirmedBan = async (
   );
 };
 
+/**
+ * One value per `DeleteMessageOutcome` variant (ADR 0141 decision 7).
+ * `undefined` means this moderator deleted nothing, so nothing is recorded:
+ * the message was already gone, or an earlier confirm already recorded it.
+ */
+const deleteActionTaken = (
+  outcome: DeleteMessageOutcome,
+):
+  | 'deleted'
+  | 'delete_failed'
+  | 'delete_blocked_killswitch'
+  | 'delete_blocked_breaker'
+  | 'delete_blocked_dry_run'
+  | 'delete_blocked_guild_unknown'
+  | 'escalation_refused'
+  | undefined => {
+  switch (outcome.status) {
+    case 'applied':
+      return 'deleted';
+    case 'dry-run':
+      return 'delete_blocked_dry_run';
+    case 'failed':
+      return 'delete_failed';
+    case 'skipped':
+      return undefined;
+    case 'refused':
+      switch (outcome.reason) {
+        case 'unauthorized':
+          return 'escalation_refused';
+        case 'killswitch':
+          return 'delete_blocked_killswitch';
+        case 'breaker-open':
+          return 'delete_blocked_breaker';
+        case 'guild-unknown':
+          return 'delete_blocked_guild_unknown';
+      }
+  }
+};
+
+const recordDeleteOutcome = (
+  deps: ModConfirmationDeps,
+  input: {
+    authorId: SnowflakeId;
+    actorId: Snowflake;
+    now: number;
+    outcome: DeleteMessageOutcome;
+  },
+): void => {
+  const actionTaken = deleteActionTaken(input.outcome);
+  if (actionTaken === undefined) return;
+  const { caseId } = deps.cases.openOrResolveCase({
+    memberId: input.authorId,
+    now: input.now,
+    countsAsViolation: false,
+  });
+  deps.cases.recordCaseEvent({
+    eventId: randomUUID(),
+    caseId,
+    ruleId: MANUAL_RULE_ID,
+    memberId: input.authorId,
+    at: input.now,
+    matchedCategory: 'delete',
+    matchedSnippet: DELETE_FROM_LOG_CARD,
+    actionTaken,
+    ...(actionTaken === 'escalation_refused' &&
+      input.outcome.status === 'refused' && { refusalReason: input.outcome.reason }),
+    actorId: input.actorId,
+  });
+};
+
+const executeConfirmedDelete = async (
+  deps: ModConfirmationDeps,
+  ref: InteractionRef,
+  intentId: string,
+  userId: Snowflake,
+  interactionId: Snowflake,
+  payload: Extract<ModPendingActionPayload, { kind: 'delete' }>,
+  auth: Authorized<'moderation.act'>,
+  nowMs: number,
+): Promise<void> => {
+  const outcome = await deps.moderationGateway.deleteMessage(auth, {
+    channelId: payload.channelId,
+    messageId: payload.messageId,
+    // The key minted at click time — except it was never minted there: it
+    // is a pure function of (guildId, intentId), computed identically here
+    // on confirm, the same idiom the ban key above follows.
+    dedupeKey: deleteConfirmDedupeKey(deps.guildId, intentId),
+    reason: DELETE_FROM_LOG_CARD,
+  });
+
+  recordDeleteOutcome(deps, { authorId: payload.authorId, actorId: userId, now: nowMs, outcome });
+
+  deps.logger.info(
+    safeLogFields({
+      component: 'mod-confirmations',
+      guildId: deps.guildId,
+      actorId: userId,
+      channelId: payload.channelId,
+      messageId: payload.messageId,
+      action: 'delete',
+      outcome: outcome.status,
+    }),
+    'a log-card delete confirmed',
+  );
+
+  await reply(deps.responder, ref, deleteOutcomeCard(outcome, interactionId));
+};
+
 const executeConfirmedPurge = async (
   deps: ModConfirmationDeps,
   ref: InteractionRef,
@@ -843,6 +1037,14 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
             now: nowMs,
             escalationAction: 'ban',
           });
+        } else if (payload.kind === 'delete') {
+          recordUnauthorizedRefusal(deps, {
+            memberId: payload.authorId,
+            category: 'delete',
+            reason: DELETE_FROM_LOG_CARD,
+            actorId: event.userId,
+            now: nowMs,
+          });
         } else {
           recordUnauthorizedRefusal(deps, {
             memberId: parseSnowflakeId(event.userId),
@@ -893,6 +1095,17 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
 
       if (payload.kind === 'ban') {
         await executeConfirmedBan(
+          deps,
+          ref,
+          parsed.intentId,
+          event.userId,
+          event.interactionId,
+          payload,
+          authResult.value,
+          nowMs,
+        );
+      } else if (payload.kind === 'delete') {
+        await executeConfirmedDelete(
           deps,
           ref,
           parsed.intentId,

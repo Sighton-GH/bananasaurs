@@ -10,10 +10,15 @@ import type {
   RecentMessagesPage,
   Snowflake,
 } from '../discord/port.js';
-import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
+import type {
+  DeleteMessageIntent,
+  DeleteMessageOutcome,
+  ModerationIntent,
+  ModerationOutcome,
+} from '../effects/moderation-gateway.js';
 import { PURGE_MAX_MESSAGES } from '../effects/budget.js';
 import { BULK_DELETE_CEILING_MS } from './purge.js';
-import { parseGuildId } from '../ids.js';
+import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import { modPurgePayload, purgeDedupeKey, type ModPurgePayload } from '../jobs/kinds.js';
 import type { SlashResponder } from '../ops/commands/slash-responder.js';
 import { cardCustomIds, cardTexts } from '../ui/discord/inspect.js';
@@ -21,11 +26,13 @@ import {
   buildModCancelCustomId,
   buildModConfirmCustomId,
   createModConfirmationSubscriber,
+  deleteConfirmDedupeKey,
   handleBanPreview,
   handlePurgePreview,
   modPendingActionPayload,
   parseModConfirmCustomId,
   PENDING_ACTION_TTL_MS,
+  writeDeleteIntent,
   type ModConfirmationCasePorts,
   type ModConfirmationDeps,
   type ModPendingActionPorts,
@@ -138,6 +145,7 @@ interface Harness {
   deps: ModConfirmationDeps;
   calls: {
     applyAction: { auth: unknown; intent: ModerationIntent }[];
+    deleteMessage: { auth: unknown; intent: DeleteMessageIntent }[];
     recordCaseEvent: Parameters<ModConfirmationCasePorts['recordCaseEvent']>[0][];
     enqueuePurgeJob: { payload: string; dedupeKey: string; now: number }[];
     defer: { ref: InteractionRef; options: { ephemeral: boolean } }[];
@@ -158,11 +166,13 @@ function buildHarness(
   opts: {
     authorized?: boolean;
     applyActionResult?: ModerationOutcome;
+    deleteMessageResult?: DeleteMessageOutcome;
     fetchRecentMessages?: ReturnType<typeof fakeFetchRecentMessages>;
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
     applyAction: [],
+    deleteMessage: [],
     recordCaseEvent: [],
     enqueuePurgeJob: [],
     defer: [],
@@ -178,8 +188,9 @@ function buildHarness(
       calls.applyAction.push({ auth, intent });
       return opts.applyActionResult ?? { status: 'applied' };
     },
-    async deleteMessage() {
-      throw new Error('not used in this test');
+    async deleteMessage(auth, intent) {
+      calls.deleteMessage.push({ auth, intent });
+      return opts.deleteMessageResult ?? { status: 'applied' };
     },
   };
 
@@ -738,5 +749,160 @@ describe('purge confirm', () => {
     expect(event.actionTaken).toBe('escalation_refused');
     expect(event.refusalReason).toBe('unauthorized');
     expect(event.escalationAction).toBeUndefined();
+  });
+});
+
+describe('delete intent', () => {
+  const AUTHOR: Snowflake = '555555555555555555';
+  const MESSAGE: Snowflake = '666666666666666666';
+
+  const writeIntent = (harness: Harness): string =>
+    writeDeleteIntent(harness.deps, {
+      actorId: MODERATOR,
+      channelId: parseSnowflakeId(CHANNEL),
+      messageId: parseSnowflakeId(MESSAGE),
+      authorId: parseSnowflakeId(AUTHOR),
+    });
+
+  const confirm = async (harness: Harness, intentId: string, userId: Snowflake = MODERATOR) => {
+    const subscriber = createModConfirmationSubscriber(harness.deps);
+    await subscriber.handle(
+      interactionEvent({ customId: buildModConfirmCustomId(intentId), userId }),
+    );
+  };
+
+  it('writeDeleteIntent stores the delete payload, the actor and the expiry', () => {
+    const harness = buildHarness();
+    const intentId = writeIntent(harness);
+    const row = harness.pendingActions.peek(intentId);
+    expect(row).not.toBeUndefined();
+    expect(row?.createdBy).toBe(MODERATOR);
+    expect(row?.expiresAt).toBe(NOW_MS + PENDING_ACTION_TTL_MS);
+    expect(modPendingActionPayload.parse(JSON.parse(row!.payload))).toEqual({
+      kind: 'delete',
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      authorId: AUTHOR,
+    });
+    expect(deleteConfirmDedupeKey(GUILD, intentId)).toBe(`mod:${GUILD}:delete:${intentId}`);
+  });
+
+  it('confirm calls deleteMessage once with the intent dedupe key, records deleted on the author’s case, and replies', async () => {
+    const harness = buildHarness();
+    const intentId = writeIntent(harness);
+    await confirm(harness, intentId);
+
+    expect(harness.calls.deleteMessage).toHaveLength(1);
+    const { auth, intent } = harness.calls.deleteMessage[0]!;
+    expect(auth).toBeDefined();
+    expect(intent).toEqual({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      dedupeKey: `mod:${GUILD}:delete:${intentId}`,
+      reason: 'Deleted from a log card',
+    });
+
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(AUTHOR);
+    expect(event.ruleId).toBe('manual');
+    expect(event.matchedCategory).toBe('delete');
+    expect(event.matchedSnippet).toBe('Deleted from a log card');
+    expect(event.actionTaken).toBe('deleted');
+    expect(event.actorId).toBe(MODERATOR);
+
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'Deleted the message',
+    );
+    expect(harness.pendingActions.peek(intentId)).toBeUndefined();
+  });
+
+  it.each([
+    [{ status: 'applied' } as const, 'deleted'],
+    [{ status: 'dry-run' } as const, 'delete_blocked_dry_run'],
+    [{ status: 'refused', reason: 'killswitch' } as const, 'delete_blocked_killswitch'],
+    [{ status: 'refused', reason: 'breaker-open' } as const, 'delete_blocked_breaker'],
+    [{ status: 'refused', reason: 'guild-unknown' } as const, 'delete_blocked_guild_unknown'],
+    [{ status: 'refused', reason: 'unauthorized' } as const, 'escalation_refused'],
+    [{ status: 'failed', code: 'DiscordApiError' } as const, 'delete_failed'],
+  ] as const)('%o records %s', async (outcome, actionTaken) => {
+    const harness = buildHarness({ deleteMessageResult: outcome });
+    await confirm(harness, writeIntent(harness));
+
+    expect(harness.calls.deleteMessage).toHaveLength(1);
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(AUTHOR);
+    expect(event.actionTaken).toBe(actionTaken);
+    if (outcome.status === 'refused' && outcome.reason === 'unauthorized') {
+      expect(event.refusalReason).toBe('unauthorized');
+    }
+  });
+
+  it.each([
+    { status: 'skipped', reason: 'message-gone' },
+    { status: 'skipped', reason: 'already-applied' },
+  ] as const)('%o records no case event', async (outcome) => {
+    const harness = buildHarness({ deleteMessageResult: outcome });
+    await confirm(harness, writeIntent(harness));
+
+    expect(harness.calls.deleteMessage).toHaveLength(1);
+    expect(harness.calls.recordCaseEvent).toHaveLength(0);
+  });
+
+  it('a second Confirm answers "already handled" and deletes through the gateway once total', async () => {
+    const harness = buildHarness();
+    const intentId = writeIntent(harness);
+    await confirm(harness, intentId);
+    const subscriber = createModConfirmationSubscriber(harness.deps);
+    await subscriber.handle(
+      interactionEvent({
+        interactionId: 'click-2',
+        customId: buildModConfirmCustomId(intentId),
+        userId: MODERATOR,
+      }),
+    );
+
+    expect(harness.calls.deleteMessage).toHaveLength(1);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'This was already handled',
+    );
+  });
+
+  it('Confirm by a different moderator is refused, calls nothing, and leaves the intent in place', async () => {
+    const harness = buildHarness();
+    const intentId = writeIntent(harness);
+    await confirm(harness, intentId, OTHER_MODERATOR);
+
+    expect(harness.calls.deleteMessage).toHaveLength(0);
+    expect(harness.calls.recordCaseEvent).toHaveLength(0);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      'Only the moderator who started this can confirm it',
+    );
+    expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
+
+    await confirm(harness, intentId, MODERATOR);
+    expect(harness.calls.deleteMessage).toHaveLength(1);
+  });
+
+  it('a capability revoked after the click refuses the confirm, records it on the author’s case, and leaves the intent intact', async () => {
+    const harness = buildHarness({ authorized: true });
+    const intentId = writeIntent(harness);
+    harness.setAuthorized(false);
+    await confirm(harness, intentId, MODERATOR);
+
+    expect(harness.calls.deleteMessage).toHaveLength(0);
+    expect(cardTexts(harness.calls.respond.at(-1)?.message.components ?? [])).toContain(
+      "You can't take moderation actions",
+    );
+    expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
+
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(AUTHOR);
+    expect(event.matchedCategory).toBe('delete');
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.actorId).toBe(MODERATOR);
   });
 });
