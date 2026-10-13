@@ -179,6 +179,7 @@ function buildModWiring(): {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -325,6 +326,7 @@ function buildModWiring(): {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       logger,
@@ -336,6 +338,7 @@ function buildModWiring(): {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,

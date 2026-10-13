@@ -8,4 +8,6 @@ export interface SlashResponder {
   deferUpdate(ref: InteractionRef): Promise<void>;
   /** Callback type 9: the first and only response. */
   showModal(ref: InteractionRef, modal: Modal): Promise<void>;
+  /** Replace the card this interaction's component sits on (after `deferUpdate`). */
+  editOriginal(ref: InteractionRef, message: OutgoingMessage): Promise<void>;
 }

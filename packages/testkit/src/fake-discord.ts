@@ -214,6 +214,12 @@ export interface FakeDiscordOptions {
 
 export class FakeDiscord implements DiscordPort {
   readonly guildId: Snowflake;
+  /**
+   * Every `editOriginalResponse` call, in order (P2 task 2): the in-place
+   * card edits, recorded so a test can assert them without inventing an
+   * `@original` message object.
+   */
+  readonly originalEdits: { interactionId: string; message: OutgoingMessage }[] = [];
 
   private roles = new Map<Snowflake, DiscordRole>();
   /** Display fields for roles `createRole` minted or `editRole` touched (MCP slice 4). */
@@ -1955,6 +1961,22 @@ export class FakeDiscord implements DiscordPort {
     // nothing today also needs it to be independently fetchable.
     if (state.channelId === undefined) return undefined;
     return { channelId: state.channelId, messageId: this.nextId() };
+  }
+
+  /**
+   * Replaces the card an interaction's component sits on (P2 task 2): records
+   * the edit on `originalEdits`, the same inspection shape `sentCard` gives
+   * channel messages. The token stays out of the recorded call, the way the
+   * other interaction methods record only the interaction id.
+   */
+  async editOriginalResponse(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    message: OutgoingMessage,
+  ): Promise<void> {
+    this.record('editOriginalResponse', [guildId, { interactionId: ref.interactionId }, message]);
+    this.check('editOriginalResponse', guildId);
+    this.originalEdits.push({ interactionId: ref.interactionId, message });
   }
 
   /**

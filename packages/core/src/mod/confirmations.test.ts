@@ -192,6 +192,7 @@ function buildHarness(
   const responder: SlashResponder = {
     deferUpdate: vi.fn(async () => undefined),
     showModal: vi.fn(async () => undefined),
+    editOriginal: vi.fn(async () => undefined),
     defer: async (ref, options) => {
       calls.defer.push({ ref, options });
     },

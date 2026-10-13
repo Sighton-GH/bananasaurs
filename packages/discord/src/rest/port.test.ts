@@ -2306,7 +2306,13 @@ describe('editOriginalResponse (P2 task 2)', () => {
     );
     expect(requests).toHaveLength(1);
     expect(last(requests).method).toBe('PATCH');
-    expect(last(requests).path).toBe(`/api/v10/webhooks/${APPLICATION}/tok/messages/@original`);
+    // Decoded, like the reaction-route tests above: the transport
+    // percent-encodes `@` as `%40`, and asserting the raw form would pass
+    // whether or not the adapter encoded — while decoding once catches a
+    // double encoding.
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/webhooks/${APPLICATION}/tok/messages/@original`,
+    );
     expect(last(requests).authorization).toBeUndefined();
     expect(last(requests).body).toMatchObject({
       flags: 32768,
@@ -2336,7 +2342,9 @@ describe('editOriginalResponse (P2 task 2)', () => {
       },
     );
     expect(last(requests).method).toBe('PATCH');
-    expect(last(requests).path).toBe(`/api/v10/webhooks/${APPLICATION}/tok/messages/@original`);
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/webhooks/${APPLICATION}/tok/messages/@original`,
+    );
     expect(last(requests).authorization).toBeUndefined();
     const body = last(requests).body as {
       payload: Record<string, unknown>;

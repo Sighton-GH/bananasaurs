@@ -706,6 +706,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -837,6 +838,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       logger,
@@ -848,6 +850,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       respond: async (ref, message) => {
         await discord.respondToInteraction(guildId, ref, message);
       },
+      editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
     },
     now,
     logger,
@@ -1126,6 +1129,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: async (ref, message) => {
           await discord.respondToInteraction(guildId, ref, message);
         },
+        editOriginal: (ref, message) => discord.editOriginalResponse(guildId, ref, message),
       },
       now,
       listForMember: async (userId) => {

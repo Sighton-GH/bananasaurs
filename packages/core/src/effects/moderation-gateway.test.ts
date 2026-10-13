@@ -206,6 +206,9 @@ class MinimalModerationDiscord implements DiscordPort {
   async respondToInteraction(): Promise<never> {
     this.notUsed('respondToInteraction');
   }
+  async editOriginalResponse(): Promise<void> {
+    this.notUsed('editOriginalResponse');
+  }
   async fetchMessageContent(): Promise<never> {
     this.notUsed('fetchMessageContent');
   }

@@ -1356,3 +1356,15 @@ describe('an interaction has only one initial acknowledgement', () => {
     },
   );
 });
+
+it('records original-response edits in order', async () => {
+  const first = { components: [{ type: 10, content: 'one' }], flags: 32768 };
+  const second = { components: [{ type: 10, content: 'two' }], flags: 32768 };
+  const ref = { interactionId: '111111111111111111', token: 'tok' };
+  await d.editOriginalResponse(GUILD, ref, first);
+  await d.editOriginalResponse(GUILD, ref, second);
+  expect(d.originalEdits).toEqual([
+    { interactionId: '111111111111111111', message: first },
+    { interactionId: '111111111111111111', message: second },
+  ]);
+});
