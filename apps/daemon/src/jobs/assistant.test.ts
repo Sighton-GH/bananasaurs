@@ -189,7 +189,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect(sent.length).toBeGreaterThan(0);
     expect(JSON.stringify(sent)).not.toContain('SECRETKEY');
     expect(sent[0]?.message.content).toBe(
-      'I could not complete that request. No action was taken.',
+      "I couldn't finish that answer, so nothing was done. Try again in a minute.",
     );
     // The Pino error line still carries the provider's truncated reason.
     const errLine = lines().find(
@@ -217,7 +217,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     const unix = Math.floor(resetAt / 1000);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.message.content).toBe(
-      `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`,
+      `Today's free AI allowance is used up, so nothing was done. It resets <t:${unix}:t>.`,
     );
   });
 
@@ -246,7 +246,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     );
     const unix = Math.floor(nextMidnight / 1000);
     expect(sent[0]?.message.content).toBe(
-      `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`,
+      `Today's free AI allowance is used up, so nothing was done. It resets <t:${unix}:t>.`,
     );
   });
 
@@ -327,7 +327,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
 
     await handler.run(payload, context({ attempts: 2 }));
     expect(sent[0]?.message.content).toBe(
-      'The AI service is busy right now. Try again in a minute. No action was taken.',
+      'The AI is busy right now, so nothing was done. Try again in a minute.',
     );
   });
 
@@ -341,7 +341,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     await handler.run(payload, context({ attempts: 1 }));
 
     expect(sent[0]?.message.content).toBe(
-      'The AI service is busy right now. Try again in a minute. No action was taken.',
+      'The AI is busy right now, so nothing was done. Try again in a minute.',
     );
   });
 
@@ -355,7 +355,7 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     await handler.run(payload, context({ attempts: 4 }));
 
     expect(sent[0]?.message.content).toBe(
-      'The AI service is busy right now. Try again in a minute. No action was taken.',
+      'The AI is busy right now, so nothing was done. Try again in a minute.',
     );
   });
 });
@@ -3301,7 +3301,7 @@ describe('Task 10 (c): ChainFailedError writes a trace per job attempt', () => {
       expect(stored).toBeDefined();
       expect(stored?.flags).toEqual(['gave-up']);
       expect(sent[0]?.message.content).toBe(
-        'The AI service is busy right now. Try again in a minute. No action was taken.',
+        'The AI is busy right now, so nothing was done. Try again in a minute.',
       );
     } finally {
       t.close();
@@ -3735,7 +3735,7 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
     const turns = h.turnsOf(convId!);
     const failureTurn = turns.find((turn) => turn.turnId === `turn_${key}_a`);
     expect(failureTurn?.traceId).toBe(`trace_${key}_a1`);
-    expect(failureTurn?.text).toBe('I could not complete that request. No action was taken.');
+    expect(failureTurn?.text).toBe("I couldn't finish that answer, so nothing was done. Try again in a minute.");
     expect(h.sent).toHaveLength(1);
     expect(conversationRepo.lookupMessage(scope3(), '829000000000000001')?.conversationId).toBe(
       convId,
@@ -3895,7 +3895,7 @@ describe('assistantInvokeHandler (ADR 0129: one trace per terminal path)', () =>
       expect(error).toBeUndefined();
       expect(sent).toHaveLength(1);
       expect(sent[0]?.message.content).toBe(
-        'I could not complete that request. No action was taken.',
+        "I couldn't finish that answer, so nothing was done. Try again in a minute.",
       );
       expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({ runId: key }),

@@ -815,7 +815,7 @@ export const assistantInvokeHandler = (deps: {
           const behaviours = await deps.service.behavioursForGuild(deps.guildId);
           const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
           if (behaviour === undefined || !behaviour.enabled) {
-            const text = 'That assistant behaviour is no longer available. No action was taken.';
+            const text = 'That assistant behaviour was switched off or removed, so nothing was done.';
             if (deps.conversations !== undefined) {
               const key = payload.invocationId;
               const traceId = `trace_${key}`;
@@ -1769,7 +1769,7 @@ export const assistantInvokeHandler = (deps: {
           const text =
             err instanceof ProviderError && err.retryable
               ? BUSY_REPLY
-              : 'I could not complete that request. No action was taken.';
+              : "I couldn't finish that answer, so nothing was done. Try again in a minute.";
           const posted = await answerSingle(text);
           if (traceId !== undefined) appendFailureTurn(text, traceId, posted);
           const reason =

@@ -6,7 +6,7 @@
 
 /** Every assistant model is busy, rate-limited or timed out: try again in a minute. */
 export const BUSY_REPLY =
-  'The AI service is busy right now. Try again in a minute. No action was taken.';
+  'The AI is busy right now, so nothing was done. Try again in a minute.';
 
 /** Midnight UTC after `nowMs`, when a `:free` daily allowance resets. */
 export const nextUtcMidnight = (nowMs: number): number => {
@@ -22,5 +22,5 @@ export const nextUtcMidnight = (nowMs: number): number => {
  */
 export const dailyQuotaReply = (resetAt: number | undefined, nowMs: number): string => {
   const unix = Math.floor((resetAt ?? nextUtcMidnight(nowMs)) / 1000);
-  return `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`;
+  return `Today's free AI allowance is used up, so nothing was done. It resets <t:${unix}:t>.`;
 };

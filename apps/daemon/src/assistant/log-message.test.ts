@@ -14,6 +14,7 @@ const base = {
   command: 'ask' as const,
   source: 'mention' as const,
   question: 'When is the battery order arriving?',
+  outcome: 'answered' as const,
   at: Date.UTC(2026, 8, 23, 19, 30),
 };
 
@@ -58,7 +59,7 @@ describe('assistantLogMessage (ADR 0065)', () => {
     expect(texts).toContain('Tools: search_archive ✓, web_search ✗');
     expect(texts).toContain('Sources: [Handbook](https://example.com/handbook)');
     expect(texts).toContain('Model: gemini-2.5-flash (backup model) · 1.2 s');
-    expect(texts).toContain('<t:1758655800:R>');
+    expect(texts).toContain('<t:1790191800:R>');
   });
 
   it('says none for no tools and gives the reason for a failure', () => {

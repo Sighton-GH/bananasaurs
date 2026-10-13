@@ -1329,7 +1329,7 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     expect(d.send).toHaveBeenCalledWith(
       channelId,
       expect.objectContaining({
-        content: 'The AI service is busy right now. Try again in a minute. No action was taken.',
+        content: 'The AI is busy right now, so nothing was done. Try again in a minute.',
       }),
     );
   });
