@@ -213,4 +213,66 @@ describe('assistantLogMessage (ADR 0065)', () => {
       countText(assistantLogMessage({ ...base, answer: 'an answer' }).components ?? []),
     ).toBeLessThanOrEqual(4_000);
   });
+
+  it('stays within budget on a worst-case entry', () => {
+    const multiline = 'a\n'.repeat(750);
+    expect(multiline).toHaveLength(1_500);
+    const tools = Array.from({ length: 60 }, (_, index) => ({
+      name: `t${String(index)}`.padEnd(40, 'n'),
+      ok: index % 2 === 0,
+    }));
+    for (const tool of tools) expect(tool.name).toHaveLength(40);
+    const sources = Array.from({ length: 40 }, (_, index) => ({
+      title: `s${String(index)}`.padEnd(80, 't'),
+      url: `https://example.com/${`u${String(index)}`.padEnd(80, 'u')}`,
+    }));
+    for (const source of sources) {
+      expect(source.title).toHaveLength(80);
+      expect(source.url).toHaveLength(100);
+    }
+    const input = {
+      ...base,
+      behaviourName: 'b'.repeat(200),
+      outcome: 'failed' as const,
+      question: multiline,
+      answer: multiline,
+      reason: multiline,
+      trace: {
+        latencyMs: 1_234,
+        model: 'm'.repeat(200),
+        tools,
+        sources,
+        web: true,
+        usedFallback: true,
+      },
+    };
+    expect(() => assistantLogMessage(input)).not.toThrow();
+    const message = assistantLogMessage(input);
+    const components = message.components ?? [];
+    expect(countText(components)).toBeLessThanOrEqual(4_000);
+    expect(countComponents(components)).toBeLessThanOrEqual(40);
+    const displays: string[] = [];
+    const walk = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item);
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      const node = value as Record<string, unknown>;
+      if (node['type'] === 10 && typeof node['content'] === 'string')
+        displays.push(node['content']);
+      walk(node['components']);
+    };
+    walk(components);
+    const questionDisplay = displays[displays.indexOf('**Question**') + 1] ?? '';
+    const answerDisplay = displays[displays.indexOf('**Answer**') + 1] ?? '';
+    const reasonDisplay = displays[displays.indexOf('**Reason**') + 1] ?? '';
+    expect(questionDisplay.length).toBeLessThanOrEqual(1_000);
+    expect(answerDisplay.length).toBeLessThanOrEqual(1_000);
+    expect(reasonDisplay.length).toBeLessThanOrEqual(600);
+    for (const display of [questionDisplay, answerDisplay, reasonDisplay]) {
+      expect(display.length).toBeGreaterThan(0);
+      for (const line of display.split('\n')) expect(line.startsWith('> ')).toBe(true);
+    }
+  });
 });
