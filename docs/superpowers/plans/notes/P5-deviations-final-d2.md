@@ -14,6 +14,26 @@ two-commit pointer test) at the point the old timer was meant to fire — after
 the keyboard/click steps whose pre-commit state it asserts. No test name and
 no assertion changed. Product code (`ui/OrderedList.tsx`) is untouched.
 
+## Controller ruling (step 1 follow-up)
+
+Per the continuation brief: with duplicate React keys the product's guarantee
+is "focus is on the moved row's own control at its new position", not DOM-node
+identity. In `duplicate-keyed distinct objects` only, the final
+`expect(document.activeElement).toBe(xDown)` became:
+
+```tsx
+// React does not define DOM reuse for duplicate keys; the guarantee is the moved row's control at its new position.
+expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move x down' }));
+expect(screen.getAllByRole('listitem')[1]?.contains(document.activeElement)).toBe(true);
+```
+
+The earlier pre-commit `expect(document.activeElement).toBe(xDown)` is unchanged.
+
+10 isolated runs after the ruling (`npx vitest run
+packages/dashboard/src/ui/n15-reorder-focus.test.tsx`, one process per run):
+
+- runs 1–10: 24 passed, 0 failed.
+
 10 isolated runs after the change (`npx vitest run
 packages/dashboard/src/ui/n15-reorder-focus.test.tsx`, one process per run):
 

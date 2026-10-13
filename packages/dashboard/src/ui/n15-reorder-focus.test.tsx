@@ -477,7 +477,9 @@ describe('N15: keyboard reorder preserves focus on the moved item', () => {
     await waitFor(() => {
       expect(focusedName()).toBe('Move x down');
     });
-    expect(document.activeElement).toBe(xDown);
+    // React does not define DOM reuse for duplicate keys; the guarantee is the moved row's control at its new position.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move x down' }));
+    expect(screen.getAllByRole('listitem')[1]?.contains(document.activeElement)).toBe(true);
   });
 
   it('duplicate keys: focus follows the moved row to its new position', async () => {
