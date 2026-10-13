@@ -6,6 +6,7 @@
 // constrained key/model cells, reorder identity through the page, and draft
 // preservation. Pixel verification belongs to the native recheck, not JSDOM.
 import { cleanup, fireEvent, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ASSISTANT_PROVIDERS_URL, PROVIDER_MODELS_URL } from '../../api/assistant.js';
 import { renderWithSession, stubFetch } from '../../test-support.js';
@@ -127,7 +128,7 @@ describe('Model order narrow layout (R2 / N03)', () => {
     renderWithSession(<ProvidersPage />);
     await screen.findByRole('heading', { name: 'Model order' });
     const keySelect = screen.getByLabelText('Key for row 1');
-    expect(keySelect.className).toContain('max-w-full');
+    expect(keySelect.closest('label')?.className).toContain('max-w-full');
     const keyLabel = keySelect.closest('label');
     expect(keyLabel?.className).toContain('min-w-0');
     expect(keyLabel?.className).toContain('w-64');
@@ -141,7 +142,7 @@ describe('Model order narrow layout (R2 / N03)', () => {
     expect(modelLabel?.className).toContain('max-w-full');
     expect(modelLabel?.className).not.toContain('min-w-40');
     // The long saved model stays selectable even before it appears in the list.
-    expect((modelSelect as HTMLSelectElement).value).toBe(LONG_MODEL);
+    expect(modelSelect).toHaveTextContent(LONG_MODEL);
   });
 
   it('keeps the typed model field for non-Gemini providers on a constrained row', async () => {
@@ -197,12 +198,14 @@ describe('Model order narrow layout (R2 / N03)', () => {
     stubPage(geminiSetup());
     renderWithSession(<ProvidersPage />);
     await screen.findByRole('heading', { name: 'Model order' });
-    const select = await screen.findByLabelText<HTMLSelectElement>('Model for row 1');
-    fireEvent.change(select, { target: { value: 'gemini-2.5-flash-lite' } });
-    expect(select.value).toBe('gemini-2.5-flash-lite');
+    const user = userEvent.setup();
+    const select = await screen.findByRole('combobox', { name: 'Model for row 1' });
+    await user.click(select);
+    await user.click(await screen.findByRole('option', { name: /Gemini 2.5 Flash-Lite/ }));
+    expect(select).toHaveTextContent('Gemini 2.5 Flash-Lite');
     await openTab('Keys');
     await openTab('Model order');
-    const back = await screen.findByLabelText<HTMLSelectElement>('Model for row 1');
-    expect(back.value).toBe('gemini-2.5-flash-lite');
+    const back = await screen.findByRole('combobox', { name: 'Model for row 1' });
+    expect(back).toHaveTextContent('Gemini 2.5 Flash-Lite');
   });
 });

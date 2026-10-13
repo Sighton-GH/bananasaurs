@@ -3,6 +3,8 @@ import { MODEL_CHECK_URL, type ModelCheckResponse } from '../api/assistant.js';
 import { ApiError } from '../api.js';
 import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
+import { DataTable } from '../ui/DataTable.js';
+import { InlineAlert } from '../ui/InlineAlert.js';
 
 const REFUSAL: Readonly<Record<string, string>> = {
   'budget-exhausted': 'Out of test budget — try again after the reset',
@@ -52,40 +54,24 @@ export function AssistantModelCheck({
           compares the expected versus first action. Nothing is posted.
         </span>
       </div>
-      {failure !== undefined && (
-        <p role="alert" className="text-danger">
-          {failure}
-        </p>
-      )}
+      {failure !== undefined && <InlineAlert tone="danger" title="The check could not run.">{failure}</InlineAlert>}
       {outcome?.ok === false && (
-        <p role="alert" className="text-danger">
+        <InlineAlert tone="danger" title="The check was refused.">
           {REFUSAL[outcome.error ?? ''] ?? outcome.error ?? 'The check did not run.'}
-        </p>
+        </InlineAlert>
       )}
       {outcome?.ok === true && (
-        <table
-          aria-label={`Check results for entry ${String(position + 1)}: ${model} on ${keyLabel}`}
-          className="text-left"
-        >
-          <thead>
-            <tr className="text-xs text-ink-muted">
-              <th className="pr-3">Test</th>
-              <th className="pr-3">Wanted</th>
-              <th className="pr-3">First action</th>
-              <th>Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(outcome.results ?? []).map((r) => (
-              <tr key={r.id}>
-                <td className="pr-3">{r.id}</td>
-                <td className="pr-3">{r.expectedFirstAction}</td>
-                <td className="pr-3">{r.firstAction}</td>
-                <td>{r.matches ? 'Match' : (r.error ?? 'Different')}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataTable
+          caption={`Check results for entry ${String(position + 1)}: ${model} on ${keyLabel}`}
+          rows={outcome.results ?? []}
+          rowKey={(r) => r.id}
+          columns={[
+            { key: 'id', header: 'Test', cell: (r) => r.id },
+            { key: 'expected', header: 'Wanted', cell: (r) => r.expectedFirstAction },
+            { key: 'first', header: 'First action', cell: (r) => r.firstAction },
+            { key: 'result', header: 'Result', cell: (r) => (r.matches ? 'Match' : (r.error ?? 'Different')) },
+          ]}
+        />
       )}
     </div>
   );

@@ -5,6 +5,9 @@ import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { Field, Input } from '../ui/Field.js';
+import { InlineAlert } from '../ui/InlineAlert.js';
+import { Select } from '../ui/Select.js';
+import { Textarea } from '../ui/Textarea.js';
 
 type CostClass = 'free' | 'paid' | 'unknown';
 
@@ -50,42 +53,36 @@ export function AssistantKeysPaste({ onSaved }: { readonly onSaved?: () => void 
     <Card title="Add many keys at once">
       <div className="grid gap-2">
         <Field label="Paste keys" hint="One key per line. Keys already saved are skipped.">
-          <textarea
-            className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 font-mono text-ink"
+          <Textarea
             rows={4}
             value={text}
             autoComplete="off"
             spellCheck={false}
             onChange={(event) => setText(event.target.value)}
+            className="font-mono"
           />
         </Field>
         <div className="flex flex-wrap gap-3">
-          <label className="grid gap-0.5 text-xs text-ink-muted">
-            Service
-            <select
-              className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+          <Field label="Service">
+            <Select
               value={provider}
-              onChange={(event) => setProvider(event.target.value)}
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-0.5 text-xs text-ink-muted">
-            Cost
-            <select
-              className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+              onValueChange={setProvider}
+              options={PROVIDERS.map((p) => ({ value: p.id, label: p.name }))}
+              aria-label="Service"
+            />
+          </Field>
+          <Field label="Cost">
+            <Select
               value={costClass}
-              onChange={(event) => setCostClass(event.target.value as CostClass)}
-            >
-              <option value="free">Free</option>
-              <option value="paid">Paid</option>
-              <option value="unknown">Not sure</option>
-            </select>
-          </label>
+              onValueChange={(value) => setCostClass(value as CostClass)}
+              options={[
+                { value: 'free', label: 'Free' },
+                { value: 'paid', label: 'Paid' },
+                { value: 'unknown', label: 'Not sure' },
+              ]}
+              aria-label="Cost"
+            />
+          </Field>
           <Field
             label="Project label (optional)"
             hint="Keys with the same label share one daily allowance."
@@ -111,11 +108,7 @@ export function AssistantKeysPaste({ onSaved }: { readonly onSaved?: () => void 
               {message}
             </span>
           )}
-          {error !== undefined && (
-            <span role="alert" className="text-sm text-danger">
-              {error}
-            </span>
-          )}
+          {error !== undefined && <InlineAlert tone="danger" title="Keys were not saved.">{error}</InlineAlert>}
         </div>
       </div>
     </Card>

@@ -17,6 +17,8 @@ import { DataTable } from '../../ui/DataTable.js';
 import { Card } from '../../ui/Card.js';
 import { ErrorNotice } from '../../ui/ErrorNotice.js';
 import { Checkbox, Field, Input } from '../../ui/Field.js';
+import { RadioGroup } from '../../ui/RadioGroup.js';
+import { Textarea } from '../../ui/Textarea.js';
 import { useToast } from '../../ui/Toast.js';
 
 const trainsLabel = (trainsOnInput: string): string =>
@@ -88,51 +90,28 @@ function TermsForm({
         void submit();
       }}
     >
-      <fieldset>
-        <legend className="mb-1 block text-sm text-ink-muted">
-          Does {providerName} use your server&apos;s data to train its models?
-        </legend>
-        <div className="flex flex-col gap-1 text-sm">
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="radio"
-              name={`trains-${provider}`}
-              value="no"
-              checked={trains === 'no'}
-              onChange={() => setTrains('no')}
-            />
-            No
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="radio"
-              name={`trains-${provider}`}
-              value="yes"
-              checked={trains === 'yes'}
-              onChange={() => setTrains('yes')}
-            />
-            Yes
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="radio"
-              name={`trains-${provider}`}
-              value="unknown"
-              checked={trains === 'unknown'}
-              onChange={() => setTrains('unknown')}
-            />
-            The terms don&apos;t say
-          </label>
-        </div>
-      </fieldset>
+      <RadioGroup
+        legend={`Does ${providerName} use your server's data to train its models?`}
+        name={`trains-${provider}`}
+        value={trains}
+        onChange={(value) => setTrains(value as 'no' | 'yes' | 'unknown')}
+        options={[
+          { value: 'no', label: 'No' },
+          { value: 'yes', label: 'Yes' },
+          { value: 'unknown', label: "The terms don't say" },
+        ]}
+      />
       <Field
         label="Quote the sentence from the terms that says so"
-        hint={`${clause.length}/2000 characters`}
+        hint="Quote the exact sentence from the provider terms."
         {...(clauseProblem === undefined ? {} : { error: clauseProblem })}
+        htmlFor="terms-clause"
       >
-        <textarea
-          className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+        <Textarea
+          id="terms-clause"
           rows={3}
+          maxLength={2000}
+          showCount
           value={clause}
           onChange={(e) => setClause(e.target.value)}
         />

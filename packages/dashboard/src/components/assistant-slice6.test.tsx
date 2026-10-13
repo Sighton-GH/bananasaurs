@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { DEFAULT_ROUTER_RULES, routeRun } from '@bananasaurs/core';
 import type { SetupChainRow } from '../api/assistant.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -242,8 +243,11 @@ describe('Slice 6 dashboard (ADR 0143/0144)', () => {
         onChanged={() => undefined}
       />,
     );
-    fireEvent.change(screen.getByLabelText(/pool for row 1/i), { target: { value: 'provider' } });
-    fireEvent.change(screen.getByLabelText(/tier for row 1/i), { target: { value: 'light' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: /pool for row 1/i }));
+    await user.click(await screen.findByRole('option', { name: 'Whole provider' }));
+    await user.click(screen.getByRole('combobox', { name: /tier for row 1/i }));
+    await user.click(await screen.findByRole('option', { name: 'Light' }));
     fireEvent.click(screen.getByRole('button', { name: /save pools and tiers/i }));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(bodyOf(fetchMock.mock.calls[0] as unknown[])).toEqual({
@@ -299,10 +303,10 @@ describe('Slice 6 dashboard (ADR 0143/0144)', () => {
       </SessionProvider>
     );
     const { rerender } = render(tree(base));
-    expect(screen.getByLabelText(/pool for row 1/i)).toHaveProperty('value', 'key');
+    expect(screen.getByRole('combobox', { name: /pool for row 1/i })).toHaveTextContent('One key');
     rerender(tree({ ...base, pool: 'provider', tier: 'light' }));
-    expect(screen.getByLabelText(/pool for row 1/i)).toHaveProperty('value', 'provider');
-    expect(screen.getByLabelText(/tier for row 1/i)).toHaveProperty('value', 'light');
+    expect(screen.getByRole('combobox', { name: /pool for row 1/i })).toHaveTextContent('Whole provider');
+    expect(screen.getByRole('combobox', { name: /tier for row 1/i })).toHaveTextContent('Light');
     fireEvent.click(screen.getByRole('button', { name: /save pools and tiers/i }));
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(bodyOf(fetchMock.mock.calls[0] as unknown[])).toMatchObject({

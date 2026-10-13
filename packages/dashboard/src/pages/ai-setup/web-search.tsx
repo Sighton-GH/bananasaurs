@@ -17,6 +17,8 @@ import { Card } from '../../ui/Card.js';
 import { ConfirmDialog } from '../../ui/ConfirmDialog.js';
 import { DataState } from '../../ui/DataState.js';
 import { Checkbox, Field, Input } from '../../ui/Field.js';
+import { InlineAlert } from '../../ui/InlineAlert.js';
+import { RadioGroup } from '../../ui/RadioGroup.js';
 import { useToast } from '../../ui/Toast.js';
 
 /** A search limit is blank (no limit) or a whole number from 1 to 1,000,000. */
@@ -136,7 +138,7 @@ function SearchKeyItem({
       : `${String(keyRow.usage.last31d)} searches in the last 31 days`;
 
   return (
-    <li className="grid gap-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
+    <li className="grid gap-1.5 rounded-panel border border-line bg-canvas px-2 py-1.5 text-sm">
       <p className="flex flex-wrap items-center gap-2">
         <strong>{keyRow.label}</strong>
         <Badge tone={keyRow.enabled ? 'ok' : 'neutral'}>{keyRow.enabled ? 'On' : 'Off'}</Badge>
@@ -199,11 +201,7 @@ function SearchKeyItem({
             checked={editEnabled}
             onChange={(e) => setEditEnabled(e.target.checked)}
           />
-          {editError !== undefined && (
-            <p role="alert" className="text-sm text-danger">
-              {editError}
-            </p>
-          )}
+          {editError !== undefined && <InlineAlert tone="danger" title="The key could not be saved.">{editError}</InlineAlert>}
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" busy={busy} onClick={() => void saveEdit()}>
               Save key
@@ -364,111 +362,41 @@ export function WebSearchCard({
           }}
         >
           <fieldset disabled={!isOwner}>
-            <legend className="mb-1 block text-sm font-medium">Search service</legend>
-            <div className="grid gap-3">
-              <div className="grid gap-1">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="search-source"
-                    value="brave"
-                    checked={source === 'brave'}
-                    onChange={() => {
-                      setSource('brave');
-                      setAddMonthly((v) => (v === '4500' ? '1000' : v));
-                    }}
-                    disabled={!isOwner}
-                  />
-                  Brave Search
-                </label>
-                <p className="text-sm text-ink-muted">
-                  About 1,000 free searches a month. Answers that use it end with &ldquo;Powered by
-                  Brave Search&rdquo;. Brave’s terms forbid using results to train AI.{' '}
-                  <a
-                    className="underline"
-                    href="https://api-dashboard.search.brave.com/terms-of-service"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Read the terms
-                  </a>{' '}
-                  ·{' '}
-                  <a
-                    className="underline"
-                    href="https://api-dashboard.search.brave.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Get an API key
-                  </a>
-                </p>
-              </div>
-              <div className="grid gap-1">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="search-source"
-                    value="tavily"
-                    checked={source === 'tavily'}
-                    onChange={() => {
-                      setSource('tavily');
-                      setAddMonthly((v) => (v === '4500' ? '1000' : v));
-                    }}
-                    disabled={!isOwner}
-                  />
-                  Tavily
-                </label>
-                <p className="text-sm text-ink-muted">
-                  1,000 free searches a month, no card needed. Tavily may keep search queries and
-                  use them to improve its services, including training AI.{' '}
-                  <a
-                    className="underline"
-                    href="https://tavily.com/terms"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Read the terms
-                  </a>{' '}
-                  ·{' '}
-                  <a
-                    className="underline"
-                    href="https://app.tavily.com"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Get an API key
-                  </a>
-                </p>
-              </div>
-              <div className="grid gap-1">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="search-source"
-                    value="parallel"
-                    checked={source === 'parallel'}
-                    onChange={() => {
-                      setSource('parallel');
-                      setAddMonthly((v) => (v === '1000' ? '4500' : v));
-                    }}
-                    disabled={!isOwner}
-                  />
-                  Parallel
-                </label>
-                <p className="text-sm text-ink-muted">
-                  Parallel offers 5,000 free searches a month, then $1 per 1,000. Parallel may use
-                  search queries to train its models.{' '}
-                  <a
-                    className="underline"
-                    href="https://parallel.ai/terms"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Read the terms
-                  </a>
-                </p>
-              </div>
-            </div>
+            <RadioGroup
+              legend="Search service"
+              name="search-source"
+              value={source}
+              onChange={(value) => {
+                const next = value as SearchSource;
+                setSource(next);
+                setAddMonthly((current) =>
+                  next === 'parallel'
+                    ? current === '1000'
+                      ? '4500'
+                      : current
+                    : current === '4500'
+                      ? '1000'
+                      : current,
+                );
+              }}
+              options={[
+                {
+                  value: 'brave',
+                  label: 'Brave Search',
+                  hint: 'About 1,000 free searches a month. Answers that use it end with “Powered by Brave Search”. Brave’s terms forbid using results to train AI.',
+                },
+                {
+                  value: 'tavily',
+                  label: 'Tavily',
+                  hint: '1,000 free searches a month, no card needed. Tavily may keep search queries and use them to improve its services, including training AI.',
+                },
+                {
+                  value: 'parallel',
+                  label: 'Parallel',
+                  hint: 'Parallel offers 5,000 free searches a month, then $1 per 1,000. Parallel may use search queries to train its models. Read the terms',
+                },
+              ]}
+            />
           </fieldset>
           <Checkbox
             label="Let the assistant search the web"
@@ -562,11 +490,7 @@ export function WebSearchCard({
                   />
                 </Field>
               </div>
-              {addError !== undefined && (
-                <p role="alert" className="text-sm text-danger">
-                  {addError}
-                </p>
-              )}
+              {addError !== undefined && <InlineAlert tone="danger" title="The key could not be added.">{addError}</InlineAlert>}
               <div>
                 <Button variant="primary" type="submit" busy={adding}>
                   Add key

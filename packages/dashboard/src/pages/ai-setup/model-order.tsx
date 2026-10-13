@@ -25,6 +25,8 @@ import { Button } from '../../ui/Button.js';
 import { Card } from '../../ui/Card.js';
 import { ErrorNotice, DescribedNotice } from '../../ui/ErrorNotice.js';
 import { Field, Input } from '../../ui/Field.js';
+import { InlineAlert } from '../../ui/InlineAlert.js';
+import { Select } from '../../ui/Select.js';
 import { HelpTip } from '../../ui/HelpTip.js';
 import { OrderedList } from '../../ui/OrderedList.js';
 import { StatusPill } from '../../ui/StatusPill.js';
@@ -209,7 +211,7 @@ export function ModelOrderSection({
       </p>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-muted">
-          No models yet. Add a key below, then add a row here to choose what answers first.
+          Model order rows will appear here. Add a key below, then add a row to choose what answers first.
         </p>
       ) : (
         <OrderedList
@@ -249,47 +251,41 @@ export function ModelOrderSection({
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="grid w-64 min-w-0 max-w-full flex-none gap-0.5 text-xs text-ink-muted">
                     Key for row {number}
-                    <select
-                      aria-label={`Key for row ${number}`}
+                    <Select
                       value={row.keyId}
-                      onChange={(event) => {
-                        const keyId = event.target.value;
+                      onValueChange={(keyId) =>
                         setRows((current) =>
                           current.map((r, i) => (i === index ? { ...r, keyId } : r)),
-                        );
-                      }}
-                      className="mt-0.5 block w-full max-w-full rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
-                    >
-                      {setup.keys.map((option) => (
-                        <option key={option.keyId} value={option.keyId}>
-                          {option.label} ({providerName(option.provider)})
-                        </option>
-                      ))}
-                    </select>
+                        )
+                      }
+                      options={setup.keys.map((option) => ({
+                        value: option.keyId,
+                        label: `${option.label} (${providerName(option.provider)})`,
+                      }))}
+                      aria-label={`Key for row ${number}`}
+                    />
                   </label>
                   {key?.provider === 'gemini' && geminiModels !== undefined ? (
                     <label className="grid min-w-[min(16rem,100%)] max-w-full flex-1 basis-64 gap-0.5 text-xs text-ink-muted">
                       Model for row {number}
-                      <select
-                        aria-label={`Model for row ${number}`}
+                      <Select
                         value={row.model}
-                        onChange={(event) => {
-                          const model = event.target.value;
+                        onValueChange={(model) =>
                           setRows((current) =>
                             current.map((r, i) => (i === index ? { ...r, model } : r)),
-                          );
-                        }}
-                        className="mt-0.5 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
-                      >
-                        {row.model !== '' && !geminiModels.some((m) => m.id === row.model) && (
-                          <option value={row.model}>{row.model}</option>
-                        )}
-                        {geminiModels.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} ({m.id})
-                          </option>
-                        ))}
-                      </select>
+                          )
+                        }
+                        options={[
+                          ...(row.model !== '' && !geminiModels.some((m) => m.id === row.model)
+                            ? [{ value: row.model, label: row.model }]
+                            : []),
+                          ...geminiModels.map((m) => ({
+                            value: m.id,
+                            label: `${m.name} (${m.id})`,
+                          })),
+                        ]}
+                        aria-label={`Model for row ${number}`}
+                      />
                     </label>
                   ) : (
                     <div className="min-w-[min(16rem,100%)] max-w-full flex-1 basis-64">
@@ -357,12 +353,11 @@ export function ModelOrderSection({
                   )}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
-                {saved?.listing?.listed === false && (
-                  <p role="alert" className="text-sm text-danger">
-                    OpenRouter no longer lists this model; requests to it will fail. Pick another
-                    model.
-                  </p>
-                )}
+                  {saved?.listing?.listed === false && (
+                    <InlineAlert tone="danger" title="This model is no longer listed.">
+                      Requests to it will fail. Pick another model.
+                    </InlineAlert>
+                  )}
                 {saved?.listing?.listed !== false && saved?.listing !== undefined && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     {saved.listing.image && <Badge>Reads images</Badge>}
@@ -448,15 +443,13 @@ export function ModelOrderSection({
                         )}
                       />
                     ) : typeof result.error === 'string' ? (
-                      <span role="alert" className="text-sm text-danger">
+                      <InlineAlert tone="danger" title="The test returned a refusal.">
                         {result.error}
-                      </span>
+                      </InlineAlert>
                     ) : result.error !== undefined ? (
                       <ErrorNotice error={result.error} compact />
                     ) : (
-                      <span role="alert" className="text-sm text-danger">
-                        The test request failed.
-                      </span>
+                      <InlineAlert tone="danger" title="The test request could not complete." />
                     ))}
                 </div>
               </div>
@@ -466,11 +459,7 @@ export function ModelOrderSection({
           label="Model order"
         />
       )}
-      {error !== undefined && (
-        <p role="alert" className="mt-2 text-sm text-danger">
-          {error}
-        </p>
-      )}
+      {error !== undefined && <InlineAlert tone="danger" title="The model order needs attention.">{error}</InlineAlert>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           onClick={() =>
