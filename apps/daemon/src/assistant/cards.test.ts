@@ -140,6 +140,22 @@ describe('renderAssistantReminderCard', () => {
     expect(countText(card.components)).toBeLessThanOrEqual(4000);
     expect(countComponents(card.components)).toBeLessThanOrEqual(40);
   });
+
+  it('renders a hostile fenced body literally: neutralised, unbolded, unpinged, within budget', () => {
+    const middle = `@everyone **x** ${'z'.repeat(2_976)}`;
+    const body = `\`\`\`\n${middle}\n\`\`\``;
+    expect(body).toHaveLength(3_000);
+    const card = renderAssistantReminderCard(reminder({ text: body }));
+    const texts = cardTexts(card.components);
+    expect(texts).toContain('```');
+    expect(texts).toContain('@\u200beveryone **x**');
+    expect(texts).not.toContain('@everyone');
+    expect(texts).toContain('**x**');
+    expect(texts).not.toContain('\\*\\*x\\*\\*');
+    expect(card.allowedMentions).toEqual({ parse: [] });
+    expect(countText(card.components)).toBeLessThanOrEqual(4000);
+    expect(countComponents(card.components)).toBeLessThanOrEqual(40);
+  });
 });
 
 describe('renderEscalationCard', () => {
