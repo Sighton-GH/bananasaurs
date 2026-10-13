@@ -34,11 +34,6 @@ export interface PermissionsDraftEntry {
 
 export type PermissionsDraftPatch = Partial<PermissionsDraftEntry>;
 
-// The username whose save just succeeded. The reload that follows unmounts
-// the permissions panel, so the fresh mount checks this to land focus on
-// the section heading instead of leaving it on <body>.
-let pendingSavedFocus: string | undefined;
-
 export function usePermissionsDrafts(): {
   readonly store: Readonly<Record<string, PermissionsDraftEntry>>;
   readonly clear: (username: string) => void;
@@ -94,6 +89,7 @@ export function PermissionsSection({
   draft,
   onDraftChange,
   onSaved,
+  savedFocusRef,
 }: {
   readonly session: Session;
   readonly username: string;
@@ -101,6 +97,12 @@ export function PermissionsSection({
   readonly draft: PermissionsDraftEntry | undefined;
   readonly onDraftChange: (patch: PermissionsDraftPatch) => void;
   readonly onSaved: () => void;
+  /**
+   * Page-owned ref naming the account whose save just succeeded. The reload
+   * that follows unmounts this panel, so the fresh mount checks it to land
+   * focus on the section heading instead of leaving it on <body>.
+   */
+  readonly savedFocusRef: { current: string | undefined };
 }) {
   const toast = useToast();
   const role = draft?.role ?? roleForCapabilities(held);
@@ -112,15 +114,15 @@ export function PermissionsSection({
   // <body>. Only the account just saved claims it, and only once.
   const sectionRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (pendingSavedFocus === undefined) return;
-    const mine = pendingSavedFocus === username;
-    pendingSavedFocus = undefined;
+    if (savedFocusRef.current === undefined) return;
+    const mine = savedFocusRef.current === username;
+    savedFocusRef.current = undefined;
     if (!mine) return;
     const heading = sectionRef.current?.querySelector<HTMLElement>('h2');
     if (heading === undefined || heading === null) return;
     heading.setAttribute('tabindex', '-1');
     heading.focus();
-  }, [username]);
+  }, [username, savedFocusRef]);
   // The in-flight Save disables, which drops focus to <body> in a real
   // browser. When a refusal leaves focus there, put it back on Save; when
   // the operator moved elsewhere mid-flight, leave them alone. Deferred
@@ -179,8 +181,8 @@ export function PermissionsSection({
             }),
       });
       // A successful save reconciles deliberately: the page clears the draft
-      // and reloads, so the fresh response becomes the baseline.
-      pendingSavedFocus = username;
+      // and reloads, so the fresh response becomes the baseline. The page
+      // records the focus landing before reloading (see savedFocusRef).
       onSaved();
     } catch (err) {
       // writeOrThrow lets the server's 400/409 answers through; everything

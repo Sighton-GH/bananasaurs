@@ -65,6 +65,11 @@ export function AccountEditPage() {
   // An account whose save completes off-route needs a truthful baseline when
   // the operator returns; its refetch is deferred until that route visit.
   const staleAfterOffRouteSave = useRef<Set<string>>(new Set());
+  // A successful permissions save reloads the accounts, which unmounts the
+  // panel; the fresh mount checks this to land focus on the section heading.
+  // Page-owned (above DataState) so it survives the reload and dies with
+  // the page; only the saved account claims it, once.
+  const savedFocusRef = useRef<string | undefined>(undefined);
   const reloadAccounts = accounts.reload;
   useEffect(() => {
     if (username !== undefined && staleAfterOffRouteSave.current.delete(username)) {
@@ -164,13 +169,13 @@ export function AccountEditPage() {
               onSelectTab={selectTab}
               draft={store[account.username]}
               onDraftChange={(patch) => update(account.username, caps, patch)}
-              onSaved={() => {
-                // A successful save reconciles only its own account: drop its
+              onSaved={() => {                // A successful save reconciles only its own account: drop its
                 // entry (the server has the change) and reload the baseline
                 // only when the route still shows that account. A late
                 // completion for another account must not disturb the view,
                 // so that account is marked stale and refetched when the
                 // operator returns to it.
+                savedFocusRef.current = account.username;
                 clear(account.username);
                 if (routeUsername.current === account.username) {
                   accounts.reload();
@@ -180,6 +185,7 @@ export function AccountEditPage() {
               }}
               onReload={accounts.reload}
               onDeleted={() => navigate('/accounts')}
+              savedFocusRef={savedFocusRef}
             />
           );
         }}
@@ -207,6 +213,7 @@ function NonOwnerAccountSections({
   onSaved,
   onReload,
   onDeleted,
+  savedFocusRef,
 }: {
   readonly session: Session;
   readonly account: Account;
@@ -220,6 +227,7 @@ function NonOwnerAccountSections({
   readonly onSaved: () => void;
   readonly onReload: () => void;
   readonly onDeleted: () => void;
+  readonly savedFocusRef: { current: string | undefined };
 }): ReactElement {
   const selected =
     requestedTab !== null && ACCOUNT_TABS.some((t) => t.value === requestedTab)
@@ -253,6 +261,7 @@ function NonOwnerAccountSections({
             draft={draft}
             onDraftChange={onDraftChange}
             onSaved={onSaved}
+            savedFocusRef={savedFocusRef}
           />
         </div>
       </TabPanel>
